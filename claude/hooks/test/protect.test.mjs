@@ -182,3 +182,16 @@ test('author-owned run files: file tools allowed, MCP save_to only into figma/',
   assert.ok(!denied(protect(mcp(`${RUN}/figma/1-2.json`))));
   assert.ok(denied(protect(mcp(`${RUN}/figma/../run.json`))));
 });
+
+test('env pid and storage records are CLI-owned (file tools, shell, MCP save_to)', () => {
+  const pid = `${FH_POSIX}/env/acme/web.pid`;
+  const storage = `${FH_POSIX}/env/acme/web.storage.json`;
+  for (const f of [pid, storage]) {
+    assert.ok(denied(protect(write(f))), f);
+    assert.ok(denied(protect(bash(`echo 1 > ${f}`, '/work'))), f);
+    assert.ok(denied(protect(bash(`Set-Content ${f} x`, '/work'))), f);
+    assert.ok(denied(protect({ tool_name: 'mcp__dev_mcp__x', tool_input: { save_to: f } })), f);
+  }
+  assert.ok(!denied(protect(write(`${FH_POSIX}/env/acme/notes.txt`))));
+  assert.ok(!denied(protect(bash(`cat ${pid}`, '/work'))));
+});

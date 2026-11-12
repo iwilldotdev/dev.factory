@@ -142,3 +142,12 @@ test('FACTORY_ROLE=auditor only for the auditor; encoded PowerShell denied', () 
     assert.ok(!denied(guard(role, bash('pwsh -NoProfile -Command "Get-Date"'))), role);
   }
 });
+
+test('env pid and storage records are denied to every worker', () => {
+  const pid = `${FH_POSIX}/env/acme/web.pid`;
+  for (const role of ['scout', 'author', 'builder', 'auditor']) {
+    assert.ok(denied(guard(role, write(pid))), role);
+    assert.ok(denied(guard(role, write(`${FH_POSIX}/env/acme/web.storage.json`))), role);
+  }
+  for (const role of ['author', 'builder', 'auditor']) assert.ok(denied(guard(role, bash(`echo 1 > ${pid}`))), role);
+});

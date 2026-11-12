@@ -88,7 +88,16 @@ function isProtected(p, home) {
 }
 
 /** A normalised path that only the factory CLI may write. */
+/** env/<ws>/<alias>.pid and .storage.json: the CLI's worktree binding records (a forged pid defeats the binding). */
+function isEnvOwned(p, home) {
+  const prefix = `${home}/env/`;
+  if (!p.startsWith(prefix)) return false;
+  const parts = p.slice(prefix.length).split('/');
+  return parts.length >= 2 && /\.pid$|\.storage\.json$/.test(parts[parts.length - 1]);
+}
+
 function isCliOwned(p, home) {
+  if (isEnvOwned(p, home)) return true;
   const rel = relToRuns(p, home);
   if (rel === null) return false;
   const parts = rel.split('/');
@@ -135,7 +144,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md))$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -284,6 +293,7 @@ function runsMention(text, home) {
   const forms = [home, home.replace(/^([a-z]):/, '/$1'), home.replace(/^([a-z]):/, '/mnt/$1')];
   if (forms.some((f) => t.includes(`${f}/runs`))) return true;
   if (/(?:^|[\s'"=(])~\/\.factory\/runs/.test(t)) return true;
+  if (/\/env\/[^/\s]+\/[^/\s]*(?:\.pid|\.storage\.json)/.test(t)) return true;
   return /\.factory\/runs|factory_home\}?%?\/runs/.test(t) || RUN_FILE_TAIL.test(t);
 }
 

@@ -3,6 +3,9 @@
 // Denies hand-written changes to CLI-owned run files under FACTORY_HOME/runs/<id>/:
 // run.json, metrics.json, ship-plan.json, review-report.json|md, evidence/**, reviews/**, baseline/**.
 // MCP tools (mcp__*) whose input has `save_to` are checked the same way.
+// Also author-owned (intake/plan): acs.json, diagnosis.md, checks/**, figma/** - denied to shell writes and
+// MCP save_to (except into figma/); file tools may write them here, worker-guard restricts the role.
+// Defence in depth only: the factory CLI's evidence digests / plan-lock hashes are authoritative.
 // `factory` / `python -m factory` commands are the legitimate writers and pass.
 // Usage: protect.js [--factory-home <dir>]   (env FACTORY_HOME wins when set)
 // Fails closed on unreadable input.
@@ -40,16 +43,22 @@ process.stdin.on('end', () => {
     const dest = args.save_to;
     if (typeof dest === 'string' && dest.trim()) {
       const p = lib.normPath(dest, ctx.cwd);
-      if (lib.isProtected(p, home) || lib.isProtectedOrAncestor(p, home) || lib.wordProtected(dest, ctx, true)) {
+      // The Figma pack (runs/<id>/figma/**) is the one author-owned area MCP may save into.
+      const figma = lib.inRunSub(p, home, 'figma') && !p.includes('/../');
+      if (!figma && (lib.isProtected(p, home) || lib.isProtectedOrAncestor(p, home) || lib.wordProtected(dest, ctx, true))) {
         deny(`${tool} save_to ${dest}`);
       }
     }
   } else if (WRITE_TOOLS.includes(tool)) {
     const target = String(args.file_path || args.notebook_path || '');
     if (!target) deny('write without a target path');
-    if (lib.isProtected(lib.normPath(target, ctx.cwd), home)) deny(`write to ${target}`);
+    // File tools: only CLI-owned files are denied here; acs.json, checks/, figma/, diagnosis.md are
+    // author-written during intake/plan (worker-guard denies them for builder/auditor/scout).
+    if (lib.isCliOwned(lib.normPath(target, ctx.cwd), home)) deny(`write to ${target}`);
   } else if (SHELL_TOOLS.includes(tool)) {
-    const reason = lib.bashWriteReason(String(args.command || ''), ctx);
+    const command = String(args.command || '');
+    if (lib.setsFactoryRole(command)) deny('FACTORY_ROLE must not be set from a command');
+    const reason = lib.bashWriteReason(command, ctx);
     if (reason) deny(reason);
   }
   process.exit(0);

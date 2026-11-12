@@ -1,11 +1,19 @@
 // Shared path and shell analysis for dev.factory hooks (protect.js, worker-guard.js).
 // A guardrail against mistakes, not a sandbox: it catches direct writes, shell
 // redirection and common file commands aimed at CLI-owned run files.
+// A shell guard can never be complete (encoded commands, indirection, scripts on disk).
+// The AUTHORITATIVE defence is the factory CLI's evidence digests and plan-lock hashes,
+// which detect tampering after the fact; this hook is defence in depth that makes the
+// obvious and the cheap-to-catch bypasses fail loudly.
 'use strict';
 const os = require('os');
 
 const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md']);
 const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
+// Written by the author worker during intake/plan (and the Figma pack by MCP save_to);
+// denied to builder/auditor/scout and to shell writes. The CLI's plan-lock hashes catch later edits.
+const OWNED_FILES = new Set(['acs.json', 'diagnosis.md']);
+const OWNED_DIRS = new Set(['checks', 'figma']);
 const CONFIG = { homeRaw: '' };
 
 // ---------- paths ----------
@@ -64,8 +72,23 @@ function relToRuns(p, home) {
   return p.startsWith(prefix) ? p.slice(prefix.length) : null;
 }
 
-/** A normalised path that only the factory CLI may write. */
+/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, figma/** (author-written). */
+function isAuthorOwned(p, home) {
+  const rel = relToRuns(p, home);
+  if (rel === null) return false;
+  const parts = rel.split('/');
+  if (parts.length < 2) return false;
+  if (parts.length === 2 && OWNED_FILES.has(parts[1])) return true;
+  return OWNED_DIRS.has(parts[1]);
+}
+
+/** CLI-owned or author-owned: what shell commands and MCP save_to must not touch. */
 function isProtected(p, home) {
+  return isCliOwned(p, home) || isAuthorOwned(p, home);
+}
+
+/** A normalised path that only the factory CLI may write. */
+function isCliOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
   const parts = rel.split('/');
@@ -112,7 +135,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|review-report\.(?:json|md))$|(?:^|[\\/])(?:evidence|reviews|baseline)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md))$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -234,6 +257,74 @@ function textMentionsProtected(text, ctx) {
   return (text.match(CANDIDATE) || []).some((c) => wordProtected(c, ctx, true));
 }
 
+// ---------- broad (cheap, coarse) guard ----------
+
+const VERB_LIST = [
+  'rm', 'rmdir', 'del', 'erase', 'rd', 'unlink', 'shred', 'mv', 'move', 'ren', 'rename', 'cp', 'copy', 'xcopy',
+  'robocopy', 'rsync', 'scp', 'install', 'tee', 'touch', 'truncate', 'dd', 'ln', 'mklink', 'chmod', 'chown', 'tar',
+  'unzip', '7z', 'expand-archive', 'certutil', 'wget', 'iwr', 'irm', 'invoke-webrequest', 'invoke-restmethod',
+  'start-bitstransfer', 'bitsadmin', 'set-content', 'add-content', 'out-file', 'new-item', 'remove-item',
+  'copy-item', 'move-item', 'rename-item', 'clear-content', 'export-csv', 'export-clixml', 'sc', 'ac', 'ni', 'ri',
+  'mi', 'rni', 'cpi', 'clc', 'writealltext', 'writeallbytes', 'writealllines', 'appendalltext', 'appendallbytes',
+  'writefile', 'write_text', 'write_bytes', 'writefilesync', 'appendfile', 'appendfilesync', 'rmsync', 'rmtree',
+];
+const WRITE_VERBS = new RegExp(
+  `(?:^|[\\s;&|(\`'"=\\[.:])(?:${VERB_LIST.join('|')})(?=[\\s;&|)'"(\\[:]|$)`
+  + '|\\bcurl\\b[^;&|]*\\s(?:-[a-z]*o|--output|--remote-name)\\b'
+  + '|\\bsed\\b[^;&|]*\\s-[a-z]*i'
+  + '|\\[io\\.file\\]::|(?:^|\\s)-(?:outfile|destination|literalpath|c)\\s',
+  'i',
+);
+const INTERP_REFS = /factory_home|\.factory|process\.env|os\.environ|getenv|\$env:|%factory/i;
+const SCRIPT_FILE = /\.(?:py|pyw|js|mjs|cjs|ts|rb|pl|ps1|php|lua)$/i;
+const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|acs\.json|checks|figma|diagnosis\.md)/;
+
+function runsMention(text, home) {
+  const t = expandVars(text).replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
+  const forms = [home, home.replace(/^([a-z]):/, '/$1'), home.replace(/^([a-z]):/, '/mnt/$1')];
+  if (forms.some((f) => t.includes(`${f}/runs`))) return true;
+  if (/(?:^|[\s'"=(])~\/\.factory\/runs/.test(t)) return true;
+  return /\.factory\/runs|factory_home\}?%?\/runs/.test(t) || RUN_FILE_TAIL.test(t);
+}
+
+/**
+ * Coarse checks over the whole command text, skipping `factory ...` segments:
+ *  1. mentions a run path (any slash style / env-var form) together with ANY write-capable verb or flag;
+ *  2. runs a script interpreter on stdin / -c / -e / a script file while the command references
+ *     FACTORY_HOME or .factory (the factory CLI itself is exempt).
+ */
+function broadReason(command, ctx) {
+  const segs = segments(tokenize(command)).filter((seg) => {
+    const w = stripPrefix(seg.words);
+    return !(w.length && isFactory(w));
+  });
+  const text = segs.map((s) => s.words.join(' ')).join('\n');
+  if (runsMention(text, ctx.home) && WRITE_VERBS.test(text)) {
+    return 'command mentions run files together with a write-capable verb';
+  }
+  if (!INTERP_REFS.test(text)) return '';
+  const piped = /<<|\|\s*(?:python3?|py|node|deno|bun|ruby|perl)\b/i.test(command);
+  for (const seg of segs) {
+    const words = stripPrefix(seg.words);
+    if (!words.length) continue;
+    const cmd = baseName(words[0]);
+    if (!INTERPRETERS.has(cmd)) continue;
+    const args = words.slice(1);
+    if (args[0] === '-m') continue;
+    const stdin = args.length === 0 || args.includes('-') || piped;
+    const inline = args.some((a) => /^(?:-c|-e|--eval|-p|-pe|--print)$/.test(a));
+    const file = args.some((a) => !a.startsWith('-') && SCRIPT_FILE.test(a));
+    if (stdin || inline || file) return `${cmd} script/inline code while the command references FACTORY_HOME or .factory`;
+  }
+  return '';
+}
+
+/** A command that assigns FACTORY_ROLE (shell, PowerShell, cmd, interpreter env syntaxes). */
+function setsFactoryRole(command) {
+  return /FACTORY_ROLE/i.test(command)
+    && /FACTORY_ROLE["']?\s*(?:=|,)|\b(?:set|export|setx|setenv|env)\b[^;&|\n]*FACTORY_ROLE|SetEnvironmentVariable|putenv|environ|process\.env/i.test(command);
+}
+
 /** Returns a reason string when the shell command writes a protected path, else ''. */
 function bashWriteReason(command, ctxIn, depth = 0) {
   let ctx = ctxIn;
@@ -244,6 +335,10 @@ function bashWriteReason(command, ctxIn, depth = 0) {
   for (const sub of subs) {
     const r = bashWriteReason(sub, ctx, depth + 1);
     if (r) return r;
+  }
+  if (depth === 0) {
+    const broad = broadReason(command, ctx);
+    if (broad) return broad;
   }
   const segs = segments(tokenize(flat));
   const mentions = textMentionsProtected(flat, ctx);
@@ -323,6 +418,6 @@ function bashWriteReason(command, ctxIn, depth = 0) {
 }
 
 module.exports = {
-  factoryHome, normPath, wordProtected, isProtected, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
+  factoryHome, normPath, wordProtected, isProtected, isCliOwned, isAuthorOwned, setsFactoryRole, broadReason, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
   tokenize, segments, bashWriteReason, isFactory, stripPrefix, baseName,
 };

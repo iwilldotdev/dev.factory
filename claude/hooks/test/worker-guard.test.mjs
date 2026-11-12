@@ -94,7 +94,7 @@ test('no role writes protected run files', () => {
 
 test('author write scope', () => {
   for (const rel of ['acs.json', 'checks/browser/ac-1.spec.ts', 'checks/style/drawer.json', 'figma/1-2.json',
-    'remote/issue-DEV-1.json', 'notes/diagnosis.md']) {
+    'remote/issue-DEV-1.json', 'notes/diagnosis.md', 'diagnosis.md']) {
     assert.ok(!denied(guard('author', write(`${RUN}/${rel}`))), rel);
   }
   assert.ok(!denied(guard('author', write(path.join(TMP, 'scratch', 'plan.json')))));
@@ -106,8 +106,11 @@ test('author write scope', () => {
 
 test('builder write scope', () => {
   assert.ok(!denied(guard('builder', write('/wt/dev-1-react/src/app.tsx', '/wt/dev-1-react'))));
-  assert.ok(!denied(guard('builder', write(`${RUN}/checks/browser/ac-1.spec.ts`))));
+  assert.ok(denied(guard('builder', write(`${RUN}/checks/browser/ac-1.spec.ts`))));
   assert.ok(denied(guard('builder', write(`${RUN}/acs.json`))));
+  assert.ok(denied(guard('builder', write(`${RUN}/diagnosis.md`))));
+  assert.ok(denied(guard('builder', write(`${RUN}/figma/1-2.json`))));
+  assert.ok(!denied(guard('builder', write(`${RUN}/notes/b.md`))));
   assert.ok(denied(guard('builder', write(`${FH_POSIX}/secrets/acme.env`))));
 });
 
@@ -117,4 +120,25 @@ test('auditor write scope', () => {
   assert.ok(denied(guard('auditor', write(`${RUN}/acs.json`))));
   assert.ok(denied(guard('auditor', write(`${RUN}/checks/style/drawer.json`))));
   assert.ok(denied(guard('auditor', write('/repo/src/app.ts', '/repo'))));
+});
+
+test('roles other than author cannot save into author-owned run paths via MCP', () => {
+  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__figma_get_design_context', tool_input: { save_to } });
+  for (const role of ['scout', 'builder', 'auditor']) {
+    assert.ok(denied(guard(role, mcp(`${RUN}/figma/1-2.json`))), role);
+    assert.ok(denied(guard(role, mcp(`${RUN}/acs.json`))), role);
+    assert.ok(!denied(guard(role, mcp(`${RUN}/notes/a.json`))), role);
+  }
+  assert.ok(!denied(guard('author', mcp(`${RUN}/figma/1-2.json`))));
+});
+
+test('FACTORY_ROLE=auditor only for the auditor; encoded PowerShell denied', () => {
+  const cmd = 'FACTORY_ROLE=auditor factory review record x';
+  for (const role of ['builder', 'author']) assert.ok(denied(guard(role, bash(cmd))), role);
+  assert.ok(!denied(guard('auditor', bash(cmd))));
+  for (const role of ['builder', 'author', 'auditor']) {
+    assert.ok(denied(guard(role, bash('powershell -NoProfile -EncodedCommand ZQBjAGgAbwA='))), role);
+    assert.ok(denied(guard(role, bash('pwsh -enc ZQBjAGgAbwA='))), role);
+    assert.ok(!denied(guard(role, bash('pwsh -NoProfile -Command "Get-Date"'))), role);
+  }
 });

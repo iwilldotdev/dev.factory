@@ -90,13 +90,9 @@ test('allows factory CLI and read-only access', () => {
     `C:/Users/me/.claude/bin/factory.cmd ship plan acme-dev-1`,
     `cat ${RUN}/run.json`,
     `cat ${RUN}/evidence/CHK-1.json | head -5`,
-    `cp ${RUN}/evidence/CHK-3/app.png /tmp/app.png`,
     `ls -la ${RUN}/evidence`,
     `grep -r status ${RUN}/evidence`,
-    `python -c "import json; print(json.load(open('${RUN}/run.json'))['phase'])"`,
     `echo x > ${RUN}/notes/a.md`,
-    `echo x > ${RUN}/acs.json`,
-    `rm -rf ${RUN}/checks/tmp`,
     'git status 2>&1',
     'npm test > /tmp/out.txt 2>&1',
     `echo x > ${FH}/workspaces/acme/scratch.txt`.replace(/\\/g, '/'),
@@ -134,4 +130,55 @@ test('allows MCP save_to into agent-owned run folders and calls without save_to'
   }
   assert.ok(!denied(protect(mcp())));
   assert.ok(!denied(protect({ tool_name: 'mcp__x__y', tool_input: { save_to: 'C:/tmp/dev.mcp/a.json' } })));
+});
+
+const ps = (command) => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: '/work' });
+
+test('denies the audited shell bypasses', () => {
+  const cmds = [
+    `[IO.File]::WriteAllText("${RUN}/run.json", "{}")`,
+    `$p="${RUN}/run.json"; Set-Content $p x`,
+    `python - <<EOF
+open('${RUN}/run.json','w').write('{}')
+EOF`,
+    `python fix.py ${FH_POSIX}/runs/r/run.json`,
+    `node -e "require('fs').writeFileSync(process.env.FACTORY_HOME+'/runs/r/run.json','{}')"`,
+    `curl -o ${RUN}/evidence/CHK-1.json http://x/y`,
+    `Invoke-WebRequest http://x -OutFile ${RUN}/evidence/CHK-1.json`,
+    `tar -xf a.tar -C ${RUN}/evidence`,
+    `Expand-Archive a.zip ${RUN}/evidence`,
+    `certutil -decode a.b64 ${RUN}/evidence/x.json`,
+    String.raw`Set-Content $env:FACTORY_HOME\runs\r\run.json x`,
+    String.raw`cp a.json %FACTORY_HOME%\runs\r\evidence\x.json`,
+    `cp a.json $FACTORY_HOME/runs/r/evidence/x.json`,
+    `cp a.json ~/.factory/runs/r/evidence/x.json`,
+    `python -c "print(1)" # $FACTORY_HOME`,
+    `node script.js --out ${FH_POSIX}/x`,
+    `echo x > ${RUN}/acs.json`,
+    `rm -rf ${RUN}/checks/tmp`,
+    `cp a ${RUN}/diagnosis.md`,
+  ];
+  for (const cmd of cmds) assert.ok(denied(protect(bash(cmd, '/work'))), cmd);
+  assert.ok(denied(protect(ps(`Set-Content ${RUN.replace(/\//g, '\\')}\\run.json x`))));
+  assert.ok(!denied(protect(bash(`python -m factory ship plan x --out ${RUN}/ship-plan.json`, '/work'))));
+  assert.ok(!denied(protect(bash(`factory gate x plan # ${RUN}`, '/work'))));
+});
+
+test('denies commands that set FACTORY_ROLE in any session', () => {
+  for (const cmd of ['FACTORY_ROLE=auditor factory review record x', 'export FACTORY_ROLE=auditor',
+    '$env:FACTORY_ROLE="auditor"; factory review record x', 'set FACTORY_ROLE=auditor && factory review record x']) {
+    assert.ok(denied(protect(bash(cmd, '/work'))), cmd);
+    assert.ok(denied(protect(ps(cmd))), cmd);
+  }
+  assert.ok(!denied(protect(bash('echo hello', '/work'))));
+});
+
+test('author-owned run files: file tools allowed, MCP save_to only into figma/', () => {
+  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__figma_get_design_context', tool_input: { save_to } });
+  for (const rel of ['acs.json', 'diagnosis.md', 'checks/browser/a.ts']) {
+    assert.ok(!denied(protect(write(`${RUN}/${rel}`))), rel);
+    assert.ok(denied(protect(mcp(`${RUN}/${rel}`))), rel);
+  }
+  assert.ok(!denied(protect(mcp(`${RUN}/figma/1-2.json`))));
+  assert.ok(denied(protect(mcp(`${RUN}/figma/../run.json`))));
 });

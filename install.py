@@ -8,9 +8,14 @@ the protect.js PreToolUse entry in settings.json, the delegation snippet in CLAU
 (between markers), bin/factory(.cmd) shims, and the FACTORY_HOME directories.
 
 --mcp-config (default: ~/.claude.json for the profile ~/.claude, <profile>/.claude.json for any other
-profile when it exists) is the Claude MCP config. When it has a dev.mcp server entry, its `env` gets the
+profile; when that default file is absent it is skipped with a note, exit 0) is the Claude MCP config. When it has a dev.mcp server entry, its `env` gets the
 save_to settings (DEV_MCP_SAVE_ROOTS, DEV_MCP_SAVE_ALLOW_DOT, DEV_MCP_SPILL_KB) unless already set; other
-keys are untouched, the file is backed up first, and --dry-run prints the diff.
+keys are untouched, the file is backed up first, and --dry-run prints the diff (secret-looking values
+are printed as ***). A running Claude Code app may overwrite .claude.json, so editing it needs --yes
+while one is running.
+
+Before overwriting, settings.json, CLAUDE.md, existing agents/factory-*.md, skills/factory and the
+hooks are copied to <profile>/backups/factory-<timestamp>/.
 
 --remove-harness backs up and removes the dev.harness layer first: dev-* skills
 (links are unlinked, never followed), agents/dev-*.md, hooks/dev-worker-guard.js,
@@ -31,6 +36,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import difflib
@@ -45,6 +51,48 @@ HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js")
 # regex: file/shell tools plus every MCP tool (protect.js checks `save_to` on mcp__* calls)
 PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
 FACTORY_DIRS = ("workspaces", "runs", "env", "secrets")
+SECRET_KEY = re.compile(r"TOKEN|SECRET|PASS|KEY|AUTH", re.I)
+_JSON_PAIR = re.compile(r'("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,\n}\]]+)')
+_ENV_PAIR = re.compile(r"^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(=)(.*)$")
+
+
+def mask_secrets(text: str) -> str:
+    """Replace values of secret-looking keys (TOKEN|SECRET|PASS|KEY|AUTH, any case) with ***."""
+    def pair(m: re.Match) -> str:
+        if SECRET_KEY.search(m.group(1)) and not m.group(3).lstrip().startswith(("{", "[")):
+            return f'{m.group(1)}{m.group(2)}"***"'
+        return m.group(0)
+
+    def line(ln: str) -> str:
+        env = _ENV_PAIR.match(ln)
+        if env and SECRET_KEY.search(env.group(2)):
+            return f"{env.group(1)}{env.group(2)}=***"
+        return _JSON_PAIR.sub(pair, ln)
+
+    return "\n".join(line(ln) for ln in text.split("\n"))
+
+
+def claude_running() -> bool:
+    """True when a Claude Code / Claude desktop process seems to be running (best effort)."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15).stdout
+            return any(re.match(r'^"claude(?:\.exe)?"', ln, re.I) for ln in out.splitlines())
+        return subprocess.run(["pgrep", "-x", "-i", "claude"], capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def path_hint(bin_dir: Path) -> list[str]:
+    """Printable commands that add bin_dir to the user PATH. Never executed (setx truncates long PATHs)."""
+    if os.name == "nt":
+        d = str(bin_dir).replace("'", "''")
+        return [
+            "[Environment]::SetEnvironmentVariable('Path', "
+            f"[Environment]::GetEnvironmentVariable('Path','User').TrimEnd(';') + ';{d}', 'User')",
+            "(PowerShell; then open a new terminal. Do not use setx: it truncates PATH at 1024 characters.)",
+        ]
+    return [f'export PATH="{fwd(bin_dir)}:$PATH"   # add to ~/.profile or your shell rc']
 
 
 def fwd(path: Path | str) -> str:
@@ -88,7 +136,13 @@ class Installer:
         self.explicit_home = bool(args.factory_home)
         self.hooks_dir = self.profile / "hooks"
         self.skipped: list[str] = []
-        self.backup_dir = self.profile / "backups" / f"harness-{_dt.datetime.now():%Y%m%d-%H%M%S}"
+        stamp = f"{_dt.datetime.now():%Y%m%d-%H%M%S}"
+        self.backup_dir = self.profile / "backups" / f"harness-{stamp}"
+        self.install_backup_dir = self.profile / "backups" / f"factory-{stamp}"
+        n = 1
+        while self.install_backup_dir.exists():  # never overwrite an earlier backup
+            n += 1
+            self.install_backup_dir = self.profile / "backups" / f"factory-{stamp}-{n}"
 
     # ---------- output ----------
 
@@ -123,12 +177,13 @@ class Installer:
             path.write_text(text, encoding="utf-8", newline="\n")
         self.act(f"write {what}: {path}", go)
 
-    def backup(self, path: Path, rel: str) -> None:
-        dest = self.backup_dir / rel
+    def backup(self, path: Path, rel: str, base: Path | None = None) -> None:
+        base = base or self.backup_dir
+        dest = base / rel
         if is_link(path):
             def go():
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                links = self.backup_dir / "links.json"
+                links = base / "links.json"
                 data = json.loads(links.read_text(encoding="utf-8")) if links.is_file() else {}
                 data[str(path)] = link_target(path)
                 links.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -190,6 +245,7 @@ class Installer:
         print(f"== install dev.factory into {self.profile} (FACTORY_HOME {self.factory_home})")
         if not self.dry:
             self.profile.mkdir(parents=True, exist_ok=True)
+        self.backup_install_targets()
         self.install_skill()
         self.install_agents()
         self.install_hooks()
@@ -201,6 +257,24 @@ class Installer:
             d = self.factory_home / sub
             if not d.is_dir():
                 self.act(f"mkdir {d}", lambda d=d: d.mkdir(parents=True, exist_ok=True))
+
+    def backup_install_targets(self) -> None:
+        """Copy what install will overwrite to <profile>/backups/factory-<timestamp>/."""
+        b = self.install_backup_dir
+        for rel in ("settings.json", "CLAUDE.md"):
+            if (self.profile / rel).is_file():
+                self.backup(self.profile / rel, rel, b)
+        for src in sorted((SRC / "agents").glob("factory-*.md")):
+            old = self.profile / "agents" / src.name
+            if old.is_file():
+                self.backup(old, f"agents/{src.name}", b)
+        skill = self.profile / "skills" / "factory"
+        if skill.exists() or is_link(skill):
+            self.backup(skill, "skills/factory", b)
+        for name in HOOK_FILES:
+            old = self.hooks_dir / name
+            if old.is_file():
+                self.backup(old, f"hooks/{name}", b)
 
     def install_skill(self) -> None:
         skills = self.profile / "skills"
@@ -255,8 +329,7 @@ class Installer:
             return Path(self.args.mcp_config).expanduser().resolve()
         if self.profile == (Path.home() / ".claude").resolve():
             return Path.home() / ".claude.json"
-        cand = self.profile / ".claude.json"
-        return cand if cand.is_file() else None
+        return self.profile / ".claude.json"
 
     def mcp_env(self) -> dict[str, str]:
         return {
@@ -271,7 +344,10 @@ class Installer:
             self.note("no Claude MCP config found for this profile; pass --mcp-config <file> to set the dev.mcp save_to env")
             return
         if not path.is_file():
-            self.skip(f"--mcp-config {path} does not exist")
+            if self.args.mcp_config:
+                self.skip(f"--mcp-config {path} does not exist")
+            else:
+                self.note(f"default MCP config {path} not found; skipping dev.mcp env (pass --mcp-config <file> to set it)")
             return
         text = path.read_text(encoding="utf-8")
         try:
@@ -291,8 +367,15 @@ class Installer:
         diff = "".join(difflib.unified_diff(text.splitlines(keepends=True), out.splitlines(keepends=True),
                                             fromfile=str(path), tofile=str(path) + " (new)", n=1))
         print(f"MCP  dev.mcp env additions: {', '.join(added)}")
-        print(diff.rstrip("\n") if diff else "(no textual change)")
-        self.backup(path, path.name)
+        print(mask_secrets(diff.rstrip("\n")) if diff else "(no textual change)")
+        if claude_running():
+            msg = (f"a running Claude Code / Claude app was detected; it may overwrite {path} when it exits "
+                   "and lose this change. Close it first")
+            if not (self.args.yes or self.dry):
+                self.skip(f"{msg}, then re-run with --yes to edit {path}")
+                return
+            self.note(msg + (" (--yes given)" if self.args.yes else " (dry run, nothing written)"))
+        self.backup(path, path.name, self.install_backup_dir)
         self.write_text(path, out, "MCP config dev.mcp env")
 
     def write_snippet(self) -> None:
@@ -344,7 +427,9 @@ class Installer:
         self.act(f"write shim (cmd): {bin_dir / 'factory.cmd'}", go)
         on_path = any(_same(p, bin_dir) for p in os.environ.get("PATH", "").split(os.pathsep) if p)
         if not on_path:
-            self.note(f"add {bin_dir} to PATH so `factory` resolves (or call it by full path)")
+            self.note(f"{bin_dir} is not on PATH; to make `factory` resolve, run this yourself (not executed here):")
+            for ln in path_hint(bin_dir):
+                print("     " + ln)
 
 
 def _same(a: str, b: Path) -> bool:

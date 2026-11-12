@@ -96,6 +96,12 @@ function checkBash(command, ctx) {
     if (pattern.test(command)) deny(why);
   }
   if (role !== 'auditor' && REVIEW_RECORD.test(command)) deny('only the auditor records reviews');
+  if (lib.setsFactoryRole(command) && role !== 'auditor' && /auditor/i.test(command)) {
+    deny('only the auditor may run as FACTORY_ROLE=auditor');
+  }
+  if (/\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc\w*)?\b/i.test(command)) {
+    deny('encoded PowerShell commands are forbidden for workers');
+  }
   const reason = lib.bashWriteReason(command, ctx);
   if (reason) deny(`${reason}; run files are CLI-written only`);
 }
@@ -104,7 +110,10 @@ function checkWrite(filePath, ctx) {
   if (!filePath) deny('write without a target path');
   const p = lib.normPath(filePath, ctx.cwd);
   const { home } = ctx;
-  if (lib.isProtected(p, home)) deny(`run state, evidence, reviews and baseline are CLI-written only (${filePath})`);
+  if (lib.isCliOwned(p, home)) deny(`run state, evidence, reviews and baseline are CLI-written only (${filePath})`);
+  if (role !== 'author' && lib.isAuthorOwned(p, home)) {
+    deny(`acs.json, diagnosis.md, checks/ and figma/ are written by the author during intake/plan only (${filePath})`);
+  }
   const notes = lib.inRunSub(p, home, 'notes');
   if (role === 'scout') {
     if (!notes) deny('scout may write only its report under FACTORY_HOME/runs/<id>/notes/');
@@ -112,8 +121,8 @@ function checkWrite(filePath, ctx) {
   }
   if (lib.under(p, `${home}/secrets`)) deny('secrets are provided by the user, never written by workers');
   if (role === 'builder') {
-    if (lib.under(p, home) && !notes && !lib.inRunSub(p, home, 'checks')) {
-      deny('builder may write in FACTORY_HOME only under runs/<id>/checks/ or notes/');
+    if (lib.under(p, home) && !notes) {
+      deny('builder may write in FACTORY_HOME only under runs/<id>/notes/');
     }
     return;
   }
@@ -140,6 +149,12 @@ process.stdin.on('end', () => {
   }
   const { tool_name: tool, tool_input: args = {}, cwd } = input;
   const ctx = { home: lib.factoryHome(), cwd: cwd || process.cwd() };
+  if (typeof tool === 'string' && tool.startsWith('mcp__') && role !== 'author') {
+    const dest = args && typeof args.save_to === 'string' ? args.save_to : '';
+    if (dest.trim() && lib.isAuthorOwned(lib.normPath(dest, ctx.cwd), ctx.home)) {
+      deny(`${role} may not save into acs.json, diagnosis.md, checks/ or figma/ (${dest})`);
+    }
+  }
   if (tool === 'Bash' || tool === 'PowerShell') {
     checkBash(String(args.command || ''), ctx);
   } else if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(tool)) {

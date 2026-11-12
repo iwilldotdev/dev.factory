@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +65,10 @@ class InstallTest(unittest.TestCase):
         self.profile = self.tmp / "profile"
         self.fh = self.tmp / "fhome"
         self.profile.mkdir()
+        self.running = False
+        patcher = mock.patch.object(install, "claude_running", lambda: self.running)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         # Remove links first so cleanup never follows them into targets.
@@ -248,7 +253,7 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(roots[1].endswith("/dev.mcp"))
         self.assertNotIn("env", data["mcpServers"]["other"])
         self.assertEqual(data["numStartups"], 3)
-        self.assertEqual(len(list((self.profile / "backups").glob("harness-*/.claude.json"))), 1)
+        self.assertEqual(len(list((self.profile / "backups").glob("factory-*/.claude.json"))), 1)
         code, out = run_install(*self.base("--mcp-config", str(path)))
         self.assertIn("already has the save_to settings", out)
 
@@ -269,7 +274,8 @@ class InstallTest(unittest.TestCase):
         self.assertIn("no dev.mcp entry", out)
         self.assertEqual(path.read_text(encoding="utf-8"), before)
         code, out = run_install(*self.base())
-        self.assertIn("no Claude MCP config found", out)
+        self.assertEqual(code, 0, out)
+        self.assertIn("default MCP config", out)
         code, out = run_install(*self.base("--mcp-config", str(self.tmp / "nope.json")))
         self.assertEqual(code, 1)
 
@@ -279,6 +285,65 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(code, 0, out)
         env = json.loads((self.profile / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]["dev.mcp"]["env"]
         self.assertEqual(env["DEV_MCP_SPILL_KB"], "64")
+
+    def test_mcp_diff_masks_secrets(self):
+        path = self.tmp / "c.json"
+        path.write_text(json.dumps({"mcpServers": {"dev.mcp": {"env": {
+            "JIRA_API_TOKEN": "tok-123", "Gitlab_Password": "pw-456", "AUTH_HEADER": "Bearer zzz"}}}}, indent=2),
+            encoding="utf-8")
+        for extra in ("--dry-run", None):
+            args = ("--mcp-config", str(path)) + ((extra,) if extra else ())
+            code, out = run_install(*self.base(*args))
+            for secret in ("tok-123", "pw-456", "Bearer zzz"):
+                self.assertNotIn(secret, out)
+            self.assertIn("***", out)
+        self.assertEqual(install.mask_secrets("MY_SECRET=abc\nPATH=x"), "MY_SECRET=***\nPATH=x")
+
+    def test_install_backs_up_what_it_overwrites(self):
+        (self.profile / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
+        (self.profile / "CLAUDE.md").write_text("# mine\n", encoding="utf-8")
+        (self.profile / "agents").mkdir()
+        (self.profile / "agents" / "factory-builder.md").write_text("old agent", encoding="utf-8")
+        (self.profile / "hooks").mkdir()
+        (self.profile / "hooks" / "protect.js").write_text("old hook", encoding="utf-8")
+        (self.profile / "skills" / "factory").mkdir(parents=True)
+        (self.profile / "skills" / "factory" / "SKILL.md").write_text("old skill", encoding="utf-8")
+        code, out = run_install(*self.base())
+        self.assertEqual(code, 0, out)
+        (b,) = list((self.profile / "backups").glob("factory-*"))
+        self.assertEqual((b / "settings.json").read_text(encoding="utf-8"), '{"theme": "dark"}')
+        self.assertEqual((b / "CLAUDE.md").read_text(encoding="utf-8"), "# mine\n")
+        self.assertEqual((b / "agents" / "factory-builder.md").read_text(encoding="utf-8"), "old agent")
+        self.assertEqual((b / "hooks" / "protect.js").read_text(encoding="utf-8"), "old hook")
+        self.assertEqual((b / "skills" / "factory" / "SKILL.md").read_text(encoding="utf-8"), "old skill")
+
+    def test_running_claude_blocks_mcp_edit_without_yes(self):
+        path = self.mcp_file({"dev.mcp": {}})
+        before = path.read_text(encoding="utf-8")
+        self.running = True
+        code, out = run_install(*self.base("--mcp-config", str(path)))
+        self.assertEqual(code, 1, out)
+        self.assertIn("running Claude", out)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        code, out = run_install(*self.base("--mcp-config", str(path), "--yes"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("DEV_MCP_SPILL_KB", path.read_text(encoding="utf-8"))
+
+    def test_running_claude_does_not_block_dry_run_or_unrelated_install(self):
+        self.running = True
+        code, out = run_install(*self.base())
+        self.assertEqual(code, 0, out)
+
+    def test_path_hint_is_printed_not_executed(self):
+        with mock.patch.dict(os.environ, {"PATH": os.defpath}):
+            code, out = run_install(*self.base("--dry-run"))
+        self.assertEqual(code, 0, out)
+        if os.name == "nt":
+            self.assertIn("SetEnvironmentVariable('Path'", out)
+            self.assertNotIn("setx PATH", out)
+        else:
+            self.assertIn("export PATH=", out)
+        self.assertIn(str(self.profile / "bin").replace("'", "''"), out.replace("/", "\\") if os.name == "nt" else out)
 
     def test_protect_matcher_covers_mcp_tools(self):
         run_install(*self.base())

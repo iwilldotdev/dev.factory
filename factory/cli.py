@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import pkgutil
 import sys
 
 from . import commands
-from .core import VERSION, FactoryError, GateFailed
+from .core import VERSION, FactoryError, GateFailed, fetch_call
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +30,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_fetch(items: list[dict], stream) -> None:
+    """Ready-to-run dev.mcp calls for missing remote files (save_to is absolute, forward slashes)."""
+    if not items:
+        return
+    print("fetch (run each dev.mcp call as-is; do not paste or rewrite the payload):", file=stream)
+    for item in items:
+        print(f"FETCH {fetch_call(item)}", file=stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -39,12 +49,20 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args) or 0)
     except GateFailed as err:
+        if getattr(args, "json", False) and err.fetch:
+            print(json.dumps({"passed": False, "reasons": err.reasons, "fetch": err.fetch}, ensure_ascii=False))
+            return 1
         print("FAIL")
         for reason in err.reasons:
             print(f"- {reason}")
+        _print_fetch(err.fetch, sys.stdout)
         return 1
     except FactoryError as err:
+        if getattr(args, "json", False) and err.fetch:
+            print(json.dumps({"error": str(err), "fetch": err.fetch}, ensure_ascii=False))
         print(f"ERROR: {err}", file=sys.stderr)
+        if not getattr(args, "json", False):
+            _print_fetch(err.fetch, sys.stderr)
         return 2
 
 

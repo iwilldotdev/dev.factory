@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -224,6 +225,67 @@ class InstallTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             run_install(*self.base())
         self.assertEqual((self.profile / "settings.json").read_text(encoding="utf-8"), "{not json")
+
+    def mcp_file(self, servers, name=".claude.json"):
+        path = self.tmp / name
+        path.write_text(json.dumps({"numStartups": 3, "mcpServers": servers}, indent=2), encoding="utf-8")
+        return path
+
+    def test_mcp_config_merges_env_without_overwriting(self):
+        path = self.mcp_file({
+            "dev.mcp": {"command": "node", "env": {"JIRA_TOKEN": "secret", "DEV_MCP_SPILL_KB": "128"}},
+            "other": {"command": "x"},
+        })
+        code, out = run_install(*self.base("--mcp-config", str(path)))
+        self.assertEqual(code, 0, out)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        env = data["mcpServers"]["dev.mcp"]["env"]
+        self.assertEqual(env["JIRA_TOKEN"], "secret")
+        self.assertEqual(env["DEV_MCP_SPILL_KB"], "128")
+        self.assertEqual(env["DEV_MCP_SAVE_ALLOW_DOT"], ".factory")
+        roots = env["DEV_MCP_SAVE_ROOTS"].split(os.pathsep)
+        self.assertEqual(roots[0], install.fwd(self.fh / "runs"))
+        self.assertTrue(roots[1].endswith("/dev.mcp"))
+        self.assertNotIn("env", data["mcpServers"]["other"])
+        self.assertEqual(data["numStartups"], 3)
+        self.assertEqual(len(list((self.profile / "backups").glob("harness-*/.claude.json"))), 1)
+        code, out = run_install(*self.base("--mcp-config", str(path)))
+        self.assertIn("already has the save_to settings", out)
+
+    def test_mcp_config_dry_run_prints_diff_and_keeps_file(self):
+        path = self.mcp_file({"dev_mcp": {"command": "node"}})
+        before = path.read_text(encoding="utf-8")
+        code, out = run_install(*self.base("--mcp-config", str(path), "--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertIn("+        \"DEV_MCP_SPILL_KB\": \"64\"", out)
+        self.assertFalse((self.profile / "backups").exists())
+
+    def test_mcp_config_without_entry_or_file(self):
+        path = self.mcp_file({"other": {"command": "x"}})
+        before = path.read_text(encoding="utf-8")
+        code, out = run_install(*self.base("--mcp-config", str(path)))
+        self.assertEqual(code, 0, out)
+        self.assertIn("no dev.mcp entry", out)
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        code, out = run_install(*self.base())
+        self.assertIn("no Claude MCP config found", out)
+        code, out = run_install(*self.base("--mcp-config", str(self.tmp / "nope.json")))
+        self.assertEqual(code, 1)
+
+    def test_mcp_config_defaults_to_profile_file(self):
+        (self.profile / ".claude.json").write_text(json.dumps({"mcpServers": {"dev.mcp": {}}}), encoding="utf-8")
+        code, out = run_install(*self.base())
+        self.assertEqual(code, 0, out)
+        env = json.loads((self.profile / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]["dev.mcp"]["env"]
+        self.assertEqual(env["DEV_MCP_SPILL_KB"], "64")
+
+    def test_protect_matcher_covers_mcp_tools(self):
+        run_install(*self.base())
+        settings = json.loads((self.profile / "settings.json").read_text(encoding="utf-8"))
+        matcher = settings["hooks"]["PreToolUse"][0]["matcher"]
+        self.assertTrue(re.fullmatch(matcher, "mcp__dev_mcp__figma_get_design_context"))
+        self.assertTrue(re.fullmatch(matcher, "Write"))
 
     def test_strip_harness_sections_without_sections(self):
         text = "# Title\n\nbody\n"

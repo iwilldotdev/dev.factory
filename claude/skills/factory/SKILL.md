@@ -20,6 +20,10 @@ You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to t
 7. **Git safety:** no hard reset, stash, destructive checkout, or force-push. Push only at ship, per the ship plan.
 8. **Loops are capped** by the workspace `autonomy` (`max_build_loops`, `max_review_rounds`). The CLI blocks the run when they are exceeded; then ask the user.
 
+## Remote payloads (dev.mcp `save_to`)
+
+Any file the CLI needs from Jira, GitLab, or Figma is written by the dev.mcp read tool itself: call it with `save_to=<absolute path>` and `overwrite: true`. The tool returns a short summary (`saved_to`, `bytes`, `sha256`). Never paste a payload into chat, never re-create it with Write, never edit it. When a gate or command lacks a file, it prints the exact call (`FETCH <tool> k=v ...`, or `fetch[{tool,args}]` with `--json`; unknown values are `<placeholders>`): run it as-is. Read a saved pack with a targeted Grep or Read, not a full dump. Paths must sit under `FACTORY_HOME/runs` (the installer sets `DEV_MCP_SAVE_ROOTS` for that); a refusal from dev.mcp means the env is not set up: tell the user, do not work around it. Hooks deny `save_to` into `run.json`, `metrics.json`, `ship-plan.json`, `review-report.*`, `evidence/`, `reviews/`, `baseline/`.
+
 ## Start
 
 1. Identify the workspace (`factory workspace check <ws>`; if none exists: `factory workspace init|import`, then put the missing fields in the question round).
@@ -34,13 +38,13 @@ Each phase ends with `factory gate <run> <phase>`. On FAIL, fix what it lists (d
 
 | Phase | Work | Who | Closes with |
 |---|---|---|---|
-| intake | Save raw dev.mcp responses: issue, links, parent/epic, Figma file meta → `remote/`, `figma/`. Classify feature/bug. Record dependencies. | author (scout for lookups) | `gate intake` |
+| intake | Fetch raw dev.mcp responses with `save_to`: issue, links, parent/epic, Figma file meta → `remote/`, `figma/`. Classify feature/bug. Record dependencies. | author (scout for lookups) | `gate intake` |
 | plan | `acs.json` + checks + Figma pack + style maps. Branches/worktrees (`run branch`). `env check`/`env up` early. `baseline`. One batched question round. `run decide` for choices. | author; you run CLI and ask | `gate plan` |
 | build | Implement in the run worktrees. Commits match `commit.header_regex`. Bugs: red test first. | builder (fresh per batch of ~5–7 tasks) | `gate build` |
 | prove | `factory prove <run>`. Failures go back to a builder with the evidence paths. | you run CLI; builder fixes | `gate prove` |
 | review | Fresh auditors in parallel: `code` and `qa`, each records its review. | auditor ×2 | `gate review` (fail → back to build, loop counted) |
-| ship | `git fetch`, `ship plan`, execute `ship-plan.json` actions in order, save readbacks, `ship verify`. | you | `gate ship` |
-| feedback | Save MR discussions + pipeline/jobs to `remote/`, `feedback ingest`. Findings → build. | scout reads; you run CLI | `gate feedback` → done |
+| ship | `git fetch`, `ship plan`, execute `ship-plan.json` actions in order, readbacks with `save_to`, `ship verify`. | you | `gate ship` |
+| feedback | Fetch MR notes + pipeline/jobs into `remote/` with `save_to`, `feedback ingest`. Findings → build. | scout reads; you run CLI | `gate feedback` → done |
 
 Details: epics in [references/epic.md](references/epic.md), workers and request format in [references/workers.md](references/workers.md), Figma pack in [references/figma-pack.md](references/figma-pack.md), ship in [references/ship.md](references/ship.md), feedback in [references/feedback.md](references/feedback.md).
 
@@ -67,7 +71,7 @@ An epic is a parent run plus one child run per ticket. Each child follows the ph
 
 For MRs the factory did not build. Triggers: "revisar MR", "review my queue", an MR URL, "tickets em code review". Full flow: [references/review.md](references/review.md).
 
-- Queue (`factory review queue`) → the user picks, or passes MRs. Save the MR, ticket and Figma raw payloads; `factory review start <ws> --mr <alias>!<iid> … --from <dir>`; `factory run branch <run> <repo> --mr <iid>` after your `git fetch origin <source_branch>`.
+- Queue (`factory review queue`) → the user picks, or passes MRs. Fetch the MR, ticket and Figma raw payloads with `save_to` (the CLI prints the calls); `factory review start <ws> --mr <alias>!<iid> … --from <dir>`; `factory run branch <run> <repo> --mr <iid>` after your `git fetch origin <source_branch>`.
 - Author writes ACs from the **ticket** (and Figma), never from the diff. Env up, `factory prove`, two fresh auditors, `factory review report`.
 - Give the verdict per MR in chat as a compact table (`ok` / `not-ok` / `incomplete`, blockers, unproven ACs). Post nothing to GitLab or Jira unless the user says so. Offer `factory review fix`.
 
@@ -86,4 +90,4 @@ Stop and ask only when a gate fails for a reason only the user can fix: credenti
 
 ## Do yourself vs delegate
 
-Do yourself: CLI commands, `git fetch`/`git push`, dev.mcp writes, saving small dev.mcp readbacks you just made (MR readback), questions to the user, and reading a CLI summary. Delegate everything else: reading tickets, Figma, code, and diffs (scout/author), writing ACs and checks (author), code (builder), reviews (auditor). Check worker reports cheaply (`git log`, `factory run status`, gate exit code) before relaying them.
+Do yourself: CLI commands, `git fetch`/`git push`, dev.mcp writes, dev.mcp readbacks you just made (MR readback with `save_to`), questions to the user, and reading a CLI summary. Delegate everything else: reading tickets, Figma, code, and diffs (scout/author), writing ACs and checks (author), code (builder), reviews (auditor). Check worker reports cheaply (`git log`, `factory run status`, gate exit code) before relaying them.

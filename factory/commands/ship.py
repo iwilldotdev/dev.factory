@@ -66,6 +66,13 @@ def _title(fmt: str, run: dict, alias: str, target: str) -> str:
     )
 
 
+def _unwrap_mr(data):
+    """gitlab_get_merge_request saves {"merge_request": {...}, notes?, ...}; the MR object is what we compare."""
+    if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
+        return data["merge_request"]
+    return data
+
+
 def _merged_mrs(run_id: str) -> list[dict]:
     out = []
     for p in sorted((run_dir(run_id) / "remote").glob("mr-*.json")):
@@ -75,6 +82,7 @@ def _merged_mrs(run_id: str) -> list[dict]:
             data = json.loads(p.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             continue
+        data = _unwrap_mr(data)
         if isinstance(data, dict):
             data["_file"] = p.name
             out.append(data)
@@ -289,6 +297,7 @@ def verify(run_id: str) -> list[str]:
         except json.JSONDecodeError as err:
             errors.append(f"{label}: readback is not valid JSON ({err})")
             continue
+        data = _unwrap_mr(data)
         if data.get("source_branch") != mr["source_branch"]:
             errors.append(f"{label}: source_branch {data.get('source_branch')!r} != planned {mr['source_branch']!r}")
         if data.get("target_branch") != mr["target_branch"]:
@@ -326,7 +335,9 @@ def _cmd_plan(args) -> int:
 def _cmd_verify(args) -> int:
     errs = verify(args.run)
     if errs:
-        raise GateFailed(errs)
+        from ..fetches import readback_fetches
+        run = run_load(args.run)
+        raise GateFailed(errs, fetch=readback_fetches(args.run, workspace_load(run["workspace"])))
     print("OK ship verified")
     return 0
 

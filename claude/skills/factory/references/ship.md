@@ -9,10 +9,10 @@
 5. Execute the actions in order:
    - `push`: `git -C <worktree> push -u origin <branch>`. Never force.
    - `mr`: `gitlab_save_merge_request` (create, or update when an MR already exists for the source → target) with title, description, `draft`, source/target branch, assignee/reviewer from the workspace. Keep the `Draft: ` title prefix when draft: the MCP may ignore the flag. Stacked MRs: fill `Depends on !N` from the readbacks of earlier MRs in the plan.
-   - `readback`: `gitlab_get_merge_request` → save the raw response, unedited, to the action's `save_to` (`R/remote/mr-<repo>-<target>.json`).
+   - `readback`: `gitlab_get_merge_request` with `save_to=<the action's save_to made absolute: R/remote/mr-<repo>-<target>.json>` and `overwrite: true`. The saved file wraps the MR as `{merge_request: {...}}`; `ship verify` reads both shapes. Never paste or rewrite it.
    - `jira_comment`: `jira_add_comment` with the plan's ADF on each issue. Replace `{mr_url:<repo>:<target>}` with `web_url` from the readbacks. If the epic has a `ship_comment` template, use that instead.
    - `jira_transition`: `jira_get_transitions`, then `jira_transition_issue` to the named transition.
-6. `factory ship verify <run>` compares the readbacks with the plan. Fix mismatches with another `gitlab_save_merge_request` and readback.
+6. `factory ship verify <run>` compares the readbacks with the plan; for a missing readback it prints the call (`FETCH gitlab_get_merge_request ... save_to=... overwrite=true`). Fix mismatches with another `gitlab_save_merge_request` and readback.
 7. `factory gate <run> ship`. Then go to feedback.
 
 Never un-draft, merge, or close an MR without an explicit user request for that MR.

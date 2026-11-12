@@ -6,7 +6,8 @@ import json
 import re
 from pathlib import Path
 
-from ..core import event, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
+from ..core import fetch_call, event, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
+from ..fetches import feedback_fetches
 
 
 def _is_resolved(disc: dict) -> bool:
@@ -19,9 +20,20 @@ def _is_resolved(disc: dict) -> bool:
     return False
 
 
+def _discussions(data) -> list:
+    """Discussions list, or flat notes from a saved gitlab_get_merge_request (includeNotes) as one-note threads."""
+    if not isinstance(data, dict):
+        return data
+    if isinstance(data.get("discussions"), list):
+        return data["discussions"]
+    if isinstance(data.get("notes"), list):
+        return [{"id": n.get("id", ""), "notes": [n]} for n in data["notes"] if isinstance(n, dict)]
+    return []
+
+
 def discussion_findings(data, repo: str | None) -> list[dict]:
     out = []
-    discs = data.get("discussions", []) if isinstance(data, dict) else data
+    discs = _discussions(data)
     for d in discs or []:
         if not isinstance(d, dict) or _is_resolved(d):
             continue
@@ -88,7 +100,13 @@ def ingest(run_id: str) -> tuple[int, Path | None]:
     for p in sorted(remote.glob("mr-*-discussions.json")):
         raw += discussion_findings(read_json(p), _repo_from(p.name))
     for p in sorted(remote.glob("pipeline-*.json")):
-        raw += pipeline_findings(read_json(p), _repo_from(p.name), p.stem)
+        if p.name.endswith("-jobs.json"):
+            continue
+        data = read_json(p)
+        jobs_file = p.with_name(f"{p.stem}-jobs.json")  # raw gitlab_get_pipeline_jobs save
+        if jobs_file.is_file() and isinstance(data, dict) and "jobs" not in data:
+            data = {"pipeline": data, "jobs": read_json(jobs_file)}
+        raw += pipeline_findings(data, _repo_from(p.name), p.stem)
     fresh = [f for f in raw if f["source"] not in seen]
     if not fresh:
         return 0, None
@@ -121,13 +139,20 @@ def ingest(run_id: str) -> tuple[int, Path | None]:
 
 
 def _cmd_ingest(args) -> int:
+    run = run_load(args.run)
+    fetch = feedback_fetches(args.run, workspace_load(run["workspace"]))  # computed before ingest changes nothing on disk
     n, path = ingest(args.run)
     if getattr(args, "json", False):
-        print(json.dumps({"findings": n, "record": str(path) if path else None}))
-    elif n:
+        print(json.dumps({"findings": n, "record": str(path) if path else None, "fetch": fetch}))
+        return 0
+    if n:
         print(f"{n} finding(s) -> {path}; phase set to build")
     else:
         print("no new unresolved threads or failed jobs")
+    if fetch:
+        print("missing feedback inputs (run these dev.mcp calls as-is, then ingest again):")
+        for item in fetch:
+            print(f"FETCH {fetch_call(item)}")
     return 0
 
 

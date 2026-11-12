@@ -107,3 +107,31 @@ test('allows factory CLI and read-only access', () => {
 test('ignores other tools', () => {
   assert.ok(!denied(protect({ tool_name: 'Read', tool_input: { file_path: `${RUN}/run.json` } })));
 });
+
+test('denies review-report files for file tools and shell', () => {
+  for (const rel of ['review-report.json', 'review-report.md']) {
+    assert.ok(denied(protect(write(`${RUN}/${rel}`))), rel);
+    assert.ok(denied(protect(bash(`echo x > ${RUN}/${rel}`, '/work'))), rel);
+  }
+});
+
+test('denies MCP tools whose save_to targets protected run files', () => {
+  const mcp = (save_to, tool = 'mcp__dev_mcp__figma_get_design_context') => ({ tool_name: tool, tool_input: { fileKey: 'k', save_to } });
+  for (const rel of ['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md',
+    'evidence/CHK-1.json', 'reviews/qa-1.json', 'baseline/React.json']) {
+    assert.ok(denied(protect(mcp(`${RUN}/${rel}`))), rel);
+  }
+  assert.ok(denied(protect(mcp(`${RUN}/evidence/`, 'mcp__dev-mcp__figma_fetch_screenshot'))));
+  assert.ok(denied(protect(mcp(`${RUN}/EVIDENCE/a.json`))));
+  assert.ok(denied(protect(mcp('$FACTORY_HOME/runs/r/run.json'))));
+});
+
+test('allows MCP save_to into agent-owned run folders and calls without save_to', () => {
+  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__jira_get_issue', tool_input: save_to ? { save_to } : {} });
+  for (const rel of ['figma/3544-5710.json', 'figma/meta.json', 'figma/3544-5710.png', 'remote/issue-DEV-1.json',
+    'remote/mr-app-main.json']) {
+    assert.ok(!denied(protect(mcp(`${RUN}/${rel}`))), rel);
+  }
+  assert.ok(!denied(protect(mcp())));
+  assert.ok(!denied(protect({ tool_name: 'mcp__x__y', tool_input: { save_to: 'C:/tmp/dev.mcp/a.json' } })));
+});

@@ -23,7 +23,7 @@ A phase ends only when `factory gate <run> <phase>` passes. Evidence is bound to
 ## Requirements
 
 - Python ≥ 3.10 (stdlib only), Node ≥ 20, git.
-- Claude Code with the `dev.mcp` MCP server.
+- Claude Code with the `dev.mcp` MCP server, a version with the `save_to` option on its read tools (see its README, "Saving payloads to disk").
 - `browser/`: `npm ci && npm run build` (Playwright browsers: `npx playwright install chromium`).
 
 ## Install into a Claude profile
@@ -41,7 +41,11 @@ The installer:
 - writes the delegation block into `CLAUDE.md` between `<!-- dev.factory:start -->` and `<!-- dev.factory:end -->`;
 - writes `bin/factory` and `bin/factory.cmd` shims and creates `FACTORY_HOME` (default `~/.factory`, or `--factory-home`).
 
+- adds the `save_to` settings to the `dev.mcp` entry of the Claude MCP config (`--mcp-config <file>`; default `~/.claude.json` for `~/.claude`, `<profile>/.claude.json` for other profiles when it exists): `DEV_MCP_SAVE_ROOTS=<FACTORY_HOME>/runs` plus `<tmp>/dev.mcp` (joined with the OS path delimiter), `DEV_MCP_SAVE_ALLOW_DOT=.factory`, `DEV_MCP_SPILL_KB=64`. Only missing keys are added, other keys are untouched, the file is backed up to `<profile>/backups/` first, and `--dry-run` prints the diff. Without a `dev.mcp` entry it prints a note; set the same variables in that server's `env` by hand. Restart Claude Code afterwards.
+
 Re-running it is safe. Add `<profile>/bin` to `PATH`.
+
+Why: the agent never pastes Jira, GitLab, or Figma payloads. When a gate lacks a remote file, the CLI prints the exact call, for example `figma_get_design_context fileKey=<k> nodeIds=3544:5710 save_to=C:/Users/x/.factory/runs/<id>/figma/3544-5710.json overwrite=true` (`--json` lists them as `fetch: [{tool, args}]`), and dev.mcp writes the file itself. `protect.js` also denies `save_to` aimed at run state, evidence, reviews, baseline, or the review report.
 
 `--remove-harness` backs up to `<profile>/backups/harness-<timestamp>/` and removes `dev-*` skills, agents, the harness guard, `dev-harness-delegation.md`, and the harness sections of `CLAUDE.md`. Linked skills (symlinks or junctions) are unlinked; their targets are never touched. If a profile folder is itself a link shared with other profiles, changes inside it need `--yes`.
 

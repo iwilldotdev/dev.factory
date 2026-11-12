@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from ..collectors.test import link_deps
-from ..core import (SCHEMA_VERSION, now, FactoryError, GateFailed, event, git, git_dirty,
+from ..core import (SCHEMA_VERSION, now, FactoryError, GateFailed, event, factory_home, git, git_dirty,
                     git_head, load_evidence, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save,
                     workspace_load, write_json)
@@ -217,6 +217,10 @@ def cmd_queue(args) -> int:
     me = args.me or ws.get("gitlab_user")
     queue, skipped = [], []
     for file in args.mrs_json:
+        if not Path(file).is_file():
+            from ..fetches import queue_fetches
+            raise FactoryError(f"missing file: {file} (save gitlab_list_merge_requests there)",
+                               fetch=queue_fetches(ws, Path(file).absolute(), args.repo))
         for item in mr_items(read_json(Path(file))):
             f = mr_facts(item)
             alias = repo_for(ws, f, args.repo)
@@ -285,14 +289,17 @@ def cmd_start(args) -> int:
     sources = [Path(s) for s in args.source or []]
     taken: set[str] = set()
     entries = []
+    missing_payloads: list[tuple[str, dict, Path]] = []
     for alias_in, iid, tk in specs:
         alias = repo_conf(ws, alias_in)["alias"]
         explicit = tk or (args.ticket.upper() if args.ticket else None)
         pre = [run_dir(f"{ws['name'].lower()}-{explicit.lower()}-review") / "remote"] if explicit else []
         item = _find_payload(alias, iid, [*sources, *pre])
         if item is None:
-            raise FactoryError(f"no saved payload for {alias}!{iid}: save the dev.mcp merge request response as "
-                               f"mr-{alias}-{iid}.json and pass its folder (or the queue file) with --from")
+            from ..fetches import start_payload_fetch
+            folder = next((s for s in sources if s.is_dir()), None) or (factory_home() / "runs" / "_inbox")
+            missing_payloads.append((f"{alias}!{iid}", start_payload_fetch(ws, alias, iid, folder), folder))
+            continue
         facts = mr_facts(item)
         missing = [k for k in ("source_branch", "target_branch", "head_sha") if not facts[k]]
         if missing:
@@ -304,6 +311,11 @@ def cmd_start(args) -> int:
               "head_sha": facts["head_sha"], "ticket": ticket, "title": facts["title"], "web_url": facts["web_url"],
               "author": facts["author"], "draft": facts["draft"]}
         entries.append((_review_child_id(ws, ticket, alias, iid, taken), mr, item))
+    if missing_payloads:
+        labels = ", ".join(m[0] for m in missing_payloads)
+        raise FactoryError(f"no saved payload for {labels}: save each dev.mcp merge request response as "
+                           f"mr-<alias>-<iid>.json and pass the folder (or the queue file) with --from {missing_payloads[0][2]}",
+                           fetch=[m[1] for m in missing_payloads])
     single = len(entries) == 1
     stamp = now()[2:16].replace("-", "").replace(":", "").replace("T", "-")
     parent_id = None if single else f"{ws['name'].lower()}-review-{stamp}"

@@ -19,7 +19,7 @@ Successor of dev.harness. Lessons that shaped it (see dev.harness `docs/audits/2
 | Mechanism | `factory` CLI (Python ≥3.10 stdlib only) + `browser/` (Node ≥20, Playwright, pixelmatch) | `factory/`, `browser/` |
 | Guard | PreToolUse hooks: worker role limits; nobody (main session included) writes evidence, reviews or run state by hand | `claude/hooks/` |
 
-The CLI never calls the network except: local env health checks, local API checks against the run's env, and `git` on local repos. dev.mcp is the agent's tool; when a gate needs remote facts (MR state, pipeline, Figma payload), the agent saves the raw dev.mcp response to a file and the CLI validates that file.
+The CLI never calls the network except: local env health checks, local API checks against the run's env, and `git` on local repos. dev.mcp is the agent's tool; when a gate needs remote facts (MR state, pipeline, Figma payload), the agent calls the dev.mcp read tool with `save_to=<absolute path>` (the tool writes the raw response; the model never relays it) and the CLI validates that file. A failing gate or command prints the exact call (`FETCH <tool> k=v ...`, `fetch: [{tool, args}]` with `--json`).
 
 ## 2. Files and layout
 

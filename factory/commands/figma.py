@@ -34,6 +34,8 @@ def _meta_entries(meta: Any) -> list[dict]:
         return []
     if "fileKey" in meta:
         return [meta]
+    if isinstance(meta.get("files"), dict):
+        return _meta_entries(meta["files"])
     out = []
     for key, val in meta.items():
         if isinstance(val, dict):
@@ -49,6 +51,27 @@ def _acs_nodes(run_id: str) -> list[str]:
         if n and n not in nodes:
             nodes.append(n)
     return nodes
+
+
+def meta_files(fdir: Path) -> list[Path]:
+    """figma/meta.json plus figma/meta-<fileKey>.json (one raw figma_get_file_meta save per file)."""
+    if not fdir.is_dir():
+        return []
+    return sorted(p for p in fdir.iterdir() if p.is_file() and re.fullmatch(r"meta(?:-.+)?\.json", p.name))
+
+
+def meta_revisions(fdir: Path) -> dict[str, dict]:
+    """fileKey -> entry for every meta file entry that names fileKey and lastModified/version."""
+    out: dict[str, dict] = {}
+    for mf in meta_files(fdir):
+        try:
+            data = json.loads(mf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for e in _meta_entries(data):
+            if e.get("fileKey") and (e.get("lastModified") or e.get("version")):
+                out[str(e["fileKey"])] = e
+    return out
 
 
 def check_pack(run_id: str) -> list[str]:
@@ -77,20 +100,23 @@ def check_pack(run_id: str) -> list[str]:
             errors.append(f"{node}: missing figma/{stem}.png")
         elif png_size(ppath) is None:
             errors.append(f"{node}: figma/{stem}.png is not a decodable PNG (bad header or zero size)")
-    mpath = fdir / "meta.json"
-    if not mpath.is_file():
+    mfiles = meta_files(fdir)
+    if not mfiles:
         errors.append("missing figma/meta.json (fileKey + lastModified/version)")
         return errors
-    try:
-        entries = [e for e in _meta_entries(json.loads(mpath.read_text(encoding="utf-8")))
-                   if e.get("fileKey") and (e.get("lastModified") or e.get("version"))]
-    except json.JSONDecodeError as err:
-        return errors + [f"figma/meta.json is not valid JSON ({err})"]
+    bad = []
+    for mf in mfiles:
+        try:
+            json.loads(mf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as err:
+            bad.append(f"figma/{mf.name} is not valid JSON ({err})")
+    if bad:
+        return errors + bad
+    entries = meta_revisions(fdir)
     if not entries:
         errors.append("figma/meta.json has no entry with fileKey and lastModified/version")
     else:
-        have = {str(e["fileKey"]) for e in entries}
-        for key in sorted(file_keys - have):
+        for key in sorted(file_keys - set(entries)):
             errors.append(f"figma/meta.json has no revision for fileKey {key}")
     return errors
 
@@ -243,7 +269,8 @@ def _cmd_check(args) -> int:
     run_load(args.run)
     errs = check_pack(args.run)
     if errs:
-        raise GateFailed(errs)
+        from ..fetches import figma_fetches
+        raise GateFailed(errs, fetch=figma_fetches(args.run))
     print("OK figma pack complete")
     return 0
 

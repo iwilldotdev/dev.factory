@@ -1,11 +1,16 @@
 #!/usr/bin/env python
 """Install the dev.factory Claude Code layer into a Claude profile. Stdlib only.
 
-    python install.py --profile ~/.claude [--factory-home DIR] [--remove-harness] [--yes] [--dry-run]
+    python install.py --profile ~/.claude [--factory-home DIR] [--mcp-config FILE] [--remove-harness] [--yes] [--dry-run]
 
 Installs: skills/factory, agents/factory-*.md (hook paths substituted), hooks/*.js,
 the protect.js PreToolUse entry in settings.json, the delegation snippet in CLAUDE.md
 (between markers), bin/factory(.cmd) shims, and the FACTORY_HOME directories.
+
+--mcp-config (default: ~/.claude.json for the profile ~/.claude, <profile>/.claude.json for any other
+profile when it exists) is the Claude MCP config. When it has a dev.mcp server entry, its `env` gets the
+save_to settings (DEV_MCP_SAVE_ROOTS, DEV_MCP_SAVE_ALLOW_DOT, DEV_MCP_SPILL_KB) unless already set; other
+keys are untouched, the file is backed up first, and --dry-run prints the diff.
 
 --remove-harness backs up and removes the dev.harness layer first: dev-* skills
 (links are unlinked, never followed), agents/dev-*.md, hooks/dev-worker-guard.js,
@@ -27,6 +32,8 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
+import difflib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -35,7 +42,8 @@ MARK_START = "<!-- dev.factory:start -->"
 MARK_END = "<!-- dev.factory:end -->"
 HARNESS_SECTIONS = ("## Delegation to workers", "## dev.harness flows")
 HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js")
-PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit"
+# regex: file/shell tools plus every MCP tool (protect.js checks `save_to` on mcp__* calls)
+PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
 FACTORY_DIRS = ("workspaces", "runs", "env", "secrets")
 
 
@@ -188,6 +196,7 @@ class Installer:
         self.merge_settings()
         self.write_snippet()
         self.write_shims()
+        self.merge_mcp_config()
         for sub in FACTORY_DIRS:
             d = self.factory_home / sub
             if not d.is_dir():
@@ -240,6 +249,51 @@ class Installer:
             self.note(f"settings.json already has the protect.js hook: {path}")
             return
         self.write_text(path, json.dumps(new, indent=2, ensure_ascii=False) + "\n", "settings.json (protect.js PreToolUse)")
+
+    def mcp_config_path(self) -> Path | None:
+        if self.args.mcp_config:
+            return Path(self.args.mcp_config).expanduser().resolve()
+        if self.profile == (Path.home() / ".claude").resolve():
+            return Path.home() / ".claude.json"
+        cand = self.profile / ".claude.json"
+        return cand if cand.is_file() else None
+
+    def mcp_env(self) -> dict[str, str]:
+        return {
+            "DEV_MCP_SAVE_ROOTS": fwd(self.factory_home / "runs") + os.pathsep + fwd(Path(tempfile.gettempdir()) / "dev.mcp"),
+            "DEV_MCP_SAVE_ALLOW_DOT": ".factory",
+            "DEV_MCP_SPILL_KB": "64",
+        }
+
+    def merge_mcp_config(self) -> None:
+        path = self.mcp_config_path()
+        if path is None:
+            self.note("no Claude MCP config found for this profile; pass --mcp-config <file> to set the dev.mcp save_to env")
+            return
+        if not path.is_file():
+            self.skip(f"--mcp-config {path} does not exist")
+            return
+        text = path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as err:
+            self.skip(f"{path} is not valid JSON ({err}); dev.mcp env not set")
+            return
+        new, added = merge_mcp_env(data, self.mcp_env())
+        if added is None:
+            self.note(f"no dev.mcp entry in mcpServers of {path}; set DEV_MCP_SAVE_ROOTS={self.mcp_env()['DEV_MCP_SAVE_ROOTS']} "
+                      "DEV_MCP_SAVE_ALLOW_DOT=.factory DEV_MCP_SPILL_KB=64 in its env by hand")
+            return
+        if not added:
+            self.note(f"dev.mcp env already has the save_to settings: {path}")
+            return
+        out = json.dumps(new, indent=2, ensure_ascii=False) + "\n"
+        diff = "".join(difflib.unified_diff(text.splitlines(keepends=True), out.splitlines(keepends=True),
+                                            fromfile=str(path), tofile=str(path) + " (new)", n=1))
+        print(f"MCP  dev.mcp env additions: {', '.join(added)}")
+        print(diff.rstrip("\n") if diff else "(no textual change)")
+        self.backup(path, path.name)
+        self.write_text(path, out, "MCP config dev.mcp env")
 
     def write_snippet(self) -> None:
         path = self.profile / "CLAUDE.md"
@@ -341,6 +395,39 @@ def merge_settings(data: dict, command: str, factory_home: str | None) -> dict:
     return new
 
 
+def is_dev_mcp_name(name: str) -> bool:
+    low = name.lower()
+    return "dev.mcp" in low or "dev_mcp" in low
+
+
+def merge_mcp_env(data: dict, env: dict[str, str]) -> tuple[dict, list[str] | None]:
+    """Add missing `env` keys to every dev.mcp server entry (top level and per project).
+
+    Returns (new data, names of added keys); added is None when there is no dev.mcp entry.
+    Existing values and all other keys stay untouched.
+    """
+    new = json.loads(json.dumps(data))
+    holders = [new] + [p for p in (new.get("projects") or {}).values() if isinstance(p, dict)] if isinstance(new, dict) else []
+    found, added = False, []
+    for holder in holders:
+        servers = holder.get("mcpServers")
+        if not isinstance(servers, dict):
+            continue
+        for name, conf in servers.items():
+            if not (is_dev_mcp_name(name) and isinstance(conf, dict)):
+                continue
+            found = True
+            target = conf.setdefault("env", {})
+            if not isinstance(target, dict):
+                continue
+            for key, val in env.items():
+                if key not in target:
+                    target[key] = val
+                    if key not in added:
+                        added.append(key)
+    return new, (added if found else None)
+
+
 def _is_protect_entry(entry) -> bool:
     if not isinstance(entry, dict):
         return False
@@ -352,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Install the dev.factory Claude Code layer into a profile.")
     p.add_argument("--profile", required=True, help="Claude profile dir, e.g. ~/.claude")
     p.add_argument("--factory-home", help="FACTORY_HOME (default: env FACTORY_HOME or ~/.factory)")
+    p.add_argument("--mcp-config", help="Claude MCP config to add the dev.mcp save_to env to "
+                   "(default: ~/.claude.json for ~/.claude, else <profile>/.claude.json when present)")
     p.add_argument("--remove-harness", action="store_true", help="back up and remove the dev.harness layer first")
     p.add_argument("--yes", action="store_true", help="allow changes inside shared (linked) profile folders")
     p.add_argument("--dry-run", action="store_true", help="print actions only")

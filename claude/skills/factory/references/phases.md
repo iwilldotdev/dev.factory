@@ -1,11 +1,11 @@
 # Phase checklists
 
-`R` = `FACTORY_HOME/runs/<run-id>`. Every phase ends with `factory gate <run> <phase>`. On FAIL the printed list is the to-do list.
+`R` = `FACTORY_HOME/runs/<run-id>`. Every phase ends with `factory gate <run> <phase>`. On FAIL the printed list is the to-do list; missing remote files come with ready `FETCH <tool> ... save_to=... overwrite=true` calls (`fetch[]` with `--json`). Run them as-is.
 
 ## intake
 
-- [ ] Author saves raw dev.mcp responses, unedited: `jira_get_issue` → `R/remote/issue-<KEY>.json` for every ticket (and the epic); `jira_get_remote_issue_links` → `R/remote/links-<KEY>.json`; children of an epic via `jira_search_jql` → `R/remote/epic-<KEY>-children.json`.
-- [ ] Figma links found in the issue: `figma_get_file_meta` → `R/figma/meta.json` (see figma-pack.md). Nodes are packed in plan.
+- [ ] Author calls the dev.mcp read tools with `save_to=<absolute path>` and `overwrite: true` (never Write, never paste); a failing `gate intake` prints the missing calls. Read saved files with targeted Grep/Read. `jira_get_issue` → `R/remote/issue-<KEY>.json` for every ticket (and the epic); `jira_get_remote_issue_links` → `R/remote/links-<KEY>.json`; children of an epic via `jira_search_jql` → `R/remote/epic-<KEY>-children.json`.
+- [ ] Figma links found in the issue: `figma_get_file_meta` with `save_to` → `R/figma/meta.json` (see figma-pack.md). Nodes are packed in plan.
 - [ ] Author summarises in `R/notes/intake.md`: tickets, type (feature/bug), repos touched, targets, dependencies (other tickets/MRs), Figma nodes, unknowns.
 - [ ] Record dependencies and choices: `factory run decide <run> "<text>"`.
 - [ ] Questions only the user can answer: `factory run block <run> question "<text>"` (one per question). Ask them together with the plan-time questions when possible.

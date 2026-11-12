@@ -4,7 +4,7 @@
 'use strict';
 const os = require('os');
 
-const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json']);
+const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md']);
 const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
 const CONFIG = { homeRaw: '' };
 
@@ -112,7 +112,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|review-report\.(?:json|md))$|(?:^|[\\/])(?:evidence|reviews|baseline)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -323,6 +323,6 @@ function bashWriteReason(command, ctxIn, depth = 0) {
 }
 
 module.exports = {
-  factoryHome, normPath, isProtected, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
+  factoryHome, normPath, wordProtected, isProtected, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
   tokenize, segments, bashWriteReason, isFactory, stripPrefix, baseName,
 };

@@ -6,15 +6,15 @@ Triggers: "revisar MR", "review my queue", an MR URL, "tickets em code review".
 
 ## 1. Queue
 
-1. Scout lists MRs with `gitlab_list_merge_requests` (reviewer = the user, state opened, per repo). Save each raw response to a file in a scratch folder.
+1. Scout lists MRs with `gitlab_list_merge_requests` (reviewer = the user, state opened, per repo). Call it with `save_to=<absolute file, e.g. FACTORY_HOME/runs/_inbox/queue.json>` and `overwrite: true`; do not paste the list. `factory review queue ... --mrs-json <missing file>` prints the call.
 2. `factory review queue <ws> --mrs-json <file>… --me <gitlab-username>` drops drafts, the user's own MRs and ones the user approved (when the payload has approvals), and maps each MR to its ticket key (workspace `ticket_regex`, else `[A-Z][A-Z0-9]*-\d+` in title, branch, description). Pass `--repo <alias>` if the payload does not identify its project.
 3. Show the queue to the user and let them pick. If the user already gave MRs (URL or `!iid`), skip the queue.
 
 ## 2. Start
 
-1. Per picked MR, scout saves raw payloads: the MR (`mr-<alias>-<iid>.json` in a scratch folder), the Jira issue (`issue-<KEY>.json`), the Figma nodes the ticket cites.
+1. Per picked MR, scout calls the tools with `save_to`: `gitlab_get_merge_request` -> `mr-<alias>-<iid>.json` in a scratch folder (default `FACTORY_HOME/runs/_inbox/`), `jira_get_issue` -> `issue-<KEY>.json`, the Figma nodes the ticket cites. `factory review start` prints the exact MR calls when a payload is missing.
 2. One MR: `factory review start <ws> --mr <alias>!<iid> --from <scratch-dir>`. Several: repeat `--mr`; the CLI creates a `review-batch` parent plus one child per MR (`--mr alias!iid=KEY` when the ticket cannot be mapped). Print `factory-run: <run-id>` once (the parent for a batch).
-3. Copy the saved issue and Figma files into each child's `remote/` and `figma/` (the Figma pack follows figma-pack.md). `factory gate <child> intake`; for a batch also `factory gate <parent> intake`.
+3. Put the issue and Figma files in each child's `remote/` and `figma/`: once the children exist, call the tools again with `save_to` straight into the child's run folder (the gate prints the calls), or copy the saved files with `cp` (the Figma pack follows figma-pack.md). `factory gate <child> intake`; for a batch also `factory gate <parent> intake`.
 4. `git -C <repo path> fetch origin <source_branch>`, then `factory run branch <child> <repo> --mr <iid>` (detached worktree at the MR head sha). If it says the sha is missing, fetch and retry.
 
 ## 3. Plan and prove

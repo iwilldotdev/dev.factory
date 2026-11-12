@@ -79,6 +79,13 @@ NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 
 
+def _meta_files(fdir: Path) -> list[Path]:
+    """figma/meta.json and figma/meta-<fileKey>.json."""
+    if not fdir.is_dir():
+        return []
+    return sorted(p for p in fdir.iterdir() if p.is_file() and re.fullmatch(r"meta(?:-.+)?\.json", p.name))
+
+
 def _norm_hex(value: str) -> str | None:
     h = value.strip().lstrip("#").lower()
     if len(h) in (3, 4):
@@ -281,17 +288,18 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
     for node in nodes:
         errors.extend(pack_errors(run_id, node))
     if nodes:
-        meta = run_dir(run_id) / "figma" / "meta.json"
-        if not meta.is_file():
+        mfiles = _meta_files(run_dir(run_id) / "figma")
+        if not mfiles:
             errors.append("figma/meta.json missing (file revision)")
         else:
-            try:
-                m = read_json(meta)
-                files = m.values() if m and all(isinstance(v, dict) for v in m.values()) else [m]
-                if not all(f.get("lastModified") or f.get("version") for f in files):
-                    errors.append("figma/meta.json names no lastModified/version")
-            except (FactoryError, AttributeError):
-                errors.append("figma/meta.json unreadable")
+            for meta in mfiles:
+                try:
+                    m = read_json(meta)
+                    files = m.values() if m and all(isinstance(v, dict) for v in m.values()) else [m]
+                    if not all(f.get("lastModified") or f.get("version") for f in files):
+                        errors.append(f"figma/{meta.name} names no lastModified/version")
+                except (FactoryError, AttributeError):
+                    errors.append(f"figma/{meta.name} unreadable")
     for chk in checks:
         if chk.get("type") != "style" or not chk.get("map") or not chk.get("node"):
             continue
@@ -577,6 +585,22 @@ def _epic_errors(run: dict, ws: dict, phase: str) -> list[str]:
     return epic.EVALUATORS[phase](run, ws)
 
 
+def fetches_for(phase: str, run: dict, ws: dict) -> list[dict]:
+    """dev.mcp calls that would supply the remote files a failing gate is missing."""
+    from .. import fetches
+    out: list[dict] = []
+    if phase == "intake":
+        out += fetches.review_intake_fetches(run, ws) if run.get("kind") == "review" else fetches.intake_fetches(run)
+    if phase == "plan":
+        out += fetches.figma_fetches(run["id"])
+    return fetches_dedupe(out)
+
+
+def fetches_dedupe(items: list[dict]) -> list[dict]:
+    from ..core import dedupe_fetch
+    return dedupe_fetch(items)
+
+
 def _set_phase(run: dict, new: str) -> None:
     event(run, "phase", **{"from": run["phase"], "to": new})
     run["phase"] = new
@@ -616,13 +640,13 @@ def cmd_gate(args) -> int:
                     _set_phase(run, "build")
                     errors = errors + [f"phase -> build (loop {run['loops']['build']}/{limit})"]
             run_save(run)
-            raise GateFailed(errors)
+            raise GateFailed(errors, fetch=fetches_for(phase, run, ws))
     else:
         errors = evals[phase](args.run, run, ws)
         if errors:
             event(run, "gate_fail", phase=phase, reasons=errors)
             run_save(run)
-            raise GateFailed(errors)
+            raise GateFailed(errors, fetch=fetches_for(phase, run, ws))
     if phase == "build":
         for alias in run.get("repos", {}):
             run["repos"][alias]["head"] = git_head(repo_path_for_run(run, ws, alias))

@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,15 +19,20 @@ SCHEMA_VERSION = 1
 
 
 class FactoryError(Exception):
-    """Usage or configuration error (exit 2)."""
+    """Usage or configuration error (exit 2). `fetch` lists dev.mcp calls that would fix it."""
+
+    def __init__(self, *args, fetch: list[dict] | None = None):
+        super().__init__(*args)
+        self.fetch = fetch or []
 
 
 class GateFailed(Exception):
     """A gate or check failed (exit 1). `reasons` lists what is missing."""
 
-    def __init__(self, reasons: list[str]):
+    def __init__(self, reasons: list[str], fetch: list[dict] | None = None):
         super().__init__("; ".join(reasons))
         self.reasons = reasons
+        self.fetch = fetch or []
 
 
 # ---------- paths ----------
@@ -45,6 +51,37 @@ def run_dir(run_id: str) -> Path:
 
 def secrets_path(ws: str) -> Path:
     return factory_home() / "secrets" / f"{ws}.env"
+
+
+def fwd(path: Any) -> str:
+    return str(path).replace("\\", "/")
+
+
+def abs_path(path: Path) -> str:
+    """Absolute path with forward slashes, for dev.mcp `save_to`."""
+    return fwd(Path(path).expanduser().absolute())
+
+
+def fetch_item(tool: str, **args: Any) -> dict:
+    """A ready-to-use dev.mcp call: {tool, args}. save_to is always absolute, forward slashes."""
+    return {"tool": tool, "args": args}
+
+
+def fetch_call(item: dict) -> str:
+    """`tool k=v k=v` line for chat/terminal."""
+    parts = [item["tool"]]
+    for key, val in item["args"].items():
+        text = str(val).lower() if isinstance(val, bool) else str(val)
+        parts.append(f'{key}="{text}"' if re.search(r"\s", text) else f"{key}={text}")
+    return " ".join(parts)
+
+
+def dedupe_fetch(items: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for it in items:
+        if it not in out:
+            out.append(it)
+    return out
 
 
 def node_file(node_id: str) -> str:

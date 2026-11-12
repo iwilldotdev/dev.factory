@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // PreToolUse hook for ALL sessions (main session and workers).
 // Denies hand-written changes to CLI-owned run files under FACTORY_HOME/runs/<id>/:
-// run.json, metrics.json, ship-plan.json, evidence/**, reviews/**, baseline/**.
+// run.json, metrics.json, ship-plan.json, review-report.json|md, evidence/**, reviews/**, baseline/**.
+// MCP tools (mcp__*) whose input has `save_to` are checked the same way.
 // `factory` / `python -m factory` commands are the legitimate writers and pass.
 // Usage: protect.js [--factory-home <dir>]   (env FACTORY_HOME wins when set)
 // Fails closed on unreadable input.
@@ -35,7 +36,15 @@ process.stdin.on('end', () => {
   const home = lib.factoryHome();
   const { tool_name: tool, tool_input: args = {}, cwd } = input;
   const ctx = { home, cwd: cwd || process.cwd() };
-  if (WRITE_TOOLS.includes(tool)) {
+  if (typeof tool === 'string' && tool.startsWith('mcp__')) {
+    const dest = args.save_to;
+    if (typeof dest === 'string' && dest.trim()) {
+      const p = lib.normPath(dest, ctx.cwd);
+      if (lib.isProtected(p, home) || lib.isProtectedOrAncestor(p, home) || lib.wordProtected(dest, ctx, true)) {
+        deny(`${tool} save_to ${dest}`);
+      }
+    }
+  } else if (WRITE_TOOLS.includes(tool)) {
     const target = String(args.file_path || args.notebook_path || '');
     if (!target) deny('write without a target path');
     if (lib.isProtected(lib.normPath(target, ctx.cwd), home)) deny(`write to ${target}`);

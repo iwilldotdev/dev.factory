@@ -3,7 +3,7 @@
 | Worker | Model | Use for | Writes |
 |---|---|---|---|
 | `factory-scout` | haiku | Targeted lookups: code search, git history, any dev.mcp read whose answer is a few facts | Only a report under `runs/<id>/notes/` when asked |
-| `factory-author` | sonnet (opus on high risk for diagnosis) | Intake pack (raw dev.mcp saves), `acs.json`, checks, style maps, Figma pack, bug diagnosis | `runs/<id>/{acs.json,checks,figma,remote,notes}`, docs, temp scratch |
+| `factory-author` | sonnet (opus on high risk for diagnosis) | Intake pack (dev.mcp reads with `save_to`), `acs.json`, checks, style maps, Figma pack, bug diagnosis | `runs/<id>/{acs.json,checks,figma,remote,notes}`, docs, temp scratch |
 | `factory-builder` | sonnet | Code in the run worktree, red tests, fixes from prove/review/feedback | Worktree + commits, `runs/<id>/checks` |
 | `factory-auditor` | sonnet; **opus on high risk** | `code` and `qa` reviews, recorded with `factory review record` | Temp scratch, `runs/<id>/notes` |
 
@@ -11,6 +11,7 @@
 - A worker that fails twice on sonnet: retry once with `model: opus`, then block.
 - Builders: one fresh builder per batch of ~5–7 tasks; one writer at a time on the same files. Parallel builders only on different repos/worktrees.
 - Auditors: always a new agent per review and per round. Never resume an auditor for another round. Never use the agent that wrote the code or the checks.
+- dev.mcp payloads reach disk only through the tool's `save_to` (absolute path under `FACTORY_HOME/runs`, `overwrite: true`). Workers never paste a payload into a reply, never re-create it with Write, and read saved packs with targeted Grep/Read. Put the CLI's `FETCH` lines in the request.
 - Hooks enforce the scopes above (`worker-guard.js`) and protect run files for everyone (`protect.js`). A denied tool call is a signal to re-plan, not to work around.
 
 ## Request format
@@ -22,6 +23,7 @@ run: <run-id>
 factory_home: <FACTORY_HOME>
 task: <one sentence>
 repo: <alias> @ <worktree path> (base <target>)    # builder/auditor
+fetch: [<FETCH lines from the CLI, run as-is with save_to>]               # author/scout
 inputs: [<paths: acs.json, checks, figma/<node>.json, notes/diagnosis.md, evidence/CHK-n.json>]
 commit: {header_regex: "<from workspace>", forbidden_trailers: [...]}   # builder
 rules: [<workspace rule ids + text>]                                   # builder/auditor

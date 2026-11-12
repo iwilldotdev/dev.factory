@@ -40,7 +40,8 @@ Each phase ends with `factory gate <run> <phase>`. On FAIL, fix what it lists (d
 |---|---|---|---|
 | intake | Fetch raw dev.mcp responses with `save_to`: issue, links, parent/epic, Figma file meta → `remote/`, `figma/`. Classify feature/bug. Record dependencies. | author (scout for lookups) | `gate intake` |
 | plan | `acs.json` + checks + Figma pack + style maps. Branches/worktrees (`run branch`). `env check`/`env up` early. `baseline`. One batched question round. `run decide` for choices. | author; you run CLI and ask | `gate plan` |
-| build | Implement in the run worktrees. Commits match `commit.header_regex`. Bugs: red test first. | builder (fresh per batch of ~5–7 tasks) | `gate build` |
+| reproduce | Bug runs only. Author writes failing repro checks + `diagnosis.md`; you run `factory prove <run> --repro` and `gate reproduce` before any builder touches code. | author; you run CLI | `gate reproduce` |
+| build | Implement in the run worktrees. Commits match `commit.header_regex`. Bugs: fix the cause named in `diagnosis.md`. | builder (fresh per batch of ~5–7 tasks) | `gate build` |
 | prove | `factory prove <run>`. Failures go back to a builder with the evidence paths. | you run CLI; builder fixes | `gate prove` |
 | review | Fresh auditors in parallel: `code` and `qa`, each records its review. | auditor ×2 | `gate review` (fail → back to build, loop counted) |
 | ship | `git fetch`, `ship plan`, execute `ship-plan.json` actions in order, readbacks with `save_to`, `ship verify`. | you | `gate ship` |
@@ -51,7 +52,7 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 ## Rules by work type
 
 - **UI ACs** need a `visual` check and a `style` check against a packed Figma node. Style expectations come from `factory figma expect`, never from the model. A generic Modal/Drawer or hug/fill stand-in does not close a fixed-size or absolute-position gap.
-- **Bugs**: reproduce first (author diagnosis with reproduction steps), and add a `red-green` check. The prove gate requires it to fail before the fix and pass after it. Never patch without a reproduction.
+- **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base, a `red-green` check (`cmd` or `of: CHK-n`), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
 - **Small, low-risk tickets** still go through prove and review: the gate is the point. They may skip review round 2.
 - **Runtime checks** (`browser`, `visual`, `style`, `api`) need the repo `env` block. Bring env up at plan time, not at prove time. A missing env goes in the question round as one consolidated list (the plan gate prints it).
 - **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice.

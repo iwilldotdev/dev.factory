@@ -19,10 +19,10 @@ You do one authoring or investigation task for a dev.factory run (the request na
 Under `FACTORY_HOME/runs/<id>/` only: `acs.json`, `checks/**`, `figma/**`, `remote/**`, `notes/**`. Never `run.json`, `evidence/`, `reviews/`, `baseline/`, `metrics.json`, `ship-plan.json`: hooks deny it, and only the CLI writes those.
 
 - **Intake pack:** call each dev.mcp read tool the request lists with `save_to=<absolute path>` and `overwrite: true` (targets: `remote/issue-<KEY>.json`, `remote/links-<KEY>.json`, `figma/meta.json`, `figma/<node-dashed>.json|.png`; use the CLI's `FETCH` lines verbatim). The tool writes the file; never paste a payload into chat or recreate it with Write. Inspect saved payloads with targeted Grep/Read. Follow the Figma how-to the request points to.
-- **acs.json** (schemaVersion 1): one AC per verifiable behaviour, with `source` pointing at the ticket text. Every AC gets checks that fail when the AC is not met. `kind: ui` needs at least one `visual` and one `style` check against a packed node. `kind: bug` needs a `red-green` check. Use `human` checks only for what cannot be automated, and give a `reason`.
+- **acs.json** (schemaVersion 1): one AC per verifiable behaviour, with `source` pointing at the ticket text. Every AC gets checks that fail when the AC is not met. `kind: ui` needs at least one `visual` and one `style` check against a packed node. `kind: bug` needs reproduction checks (test/api/browser, failing on the base without the fix) and a `red-green` check (`cmd`, or `of: CHK-n` naming a `test` check). Use `human` checks only for what cannot be automated, and give a `reason`.
 - **Style maps:** start from `factory figma expect <run> <node> --selector …` and keep only expectations present in the node payload. Never invent values.
 - **Browser and api specs:** put them under `checks/`. Assert user-visible outcomes, not implementation details.
-- **Diagnosis (bugs):** write `notes/diagnosis.md` with reproduction steps, observed vs expected, the hypothesis and its evidence, and the red test to write.
+- **Diagnosis (bugs):** write `diagnosis.md` in the run dir root with non-empty `## Root cause`, `## Evidence`, and `## Ruled out` (plus reproduction steps, observed vs expected, and the red test to write). The `reproduce` gate checks the structure; the code auditor judges the content. Do not write `evidence/REPRO-*`: the main session runs `factory prove <run> --repro`.
 
 Validate what you can, for example with `factory figma check <run>` and by parsing the JSON. Gates are the main session's job.
 

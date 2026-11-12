@@ -22,10 +22,16 @@
 - [ ] After answers: `factory run human`, `factory run unblock`, `factory run decide … --by user`.
 - [ ] `factory gate <run> plan`.
 
+## reproduce (bug runs only)
+
+- [ ] Author: failing repro checks in `acs.json` (test/api/browser, runnable on the base), a `red-green` check (`cmd` or `of: CHK-n` of a test check), and `R/diagnosis.md` with non-empty `## Root cause`, `## Evidence`, `## Ruled out`.
+- [ ] `factory prove <run> --repro` (api/browser: env up on the unmodified worktree, add `--assume-env`). Every check must print REPRODUCED; NOT-REPRODUCED means the check or the diagnosis is wrong: author fixes it, no builder.
+- [ ] `factory gate <run> reproduce` (also lists the consolidated env gaps for runtime repro checks).
+
 ## build
 
 - [ ] Builder per repo/batch with `acs.json`, check ids, commit convention, rules, worktree path.
-- [ ] Bugs: builder writes the red test, commits it, then the fix (the `red-green` check's `fix_commit`).
+- [ ] Bugs: builder reads `R/diagnosis.md`, writes the red test, commits it, then fixes the cause it names (the `red-green` check's `fix_commit`).
 - [ ] Worktrees clean and ahead of base; commit headers match the regex.
 - [ ] `factory gate <run> build`.
 

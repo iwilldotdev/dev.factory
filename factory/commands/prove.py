@@ -200,7 +200,98 @@ def quality_delta(run: dict, ws: dict, alias: str) -> dict:
     return record
 
 
+REPRO_MAP = {"fail": "reproduced", "pass": "not-reproduced", "error": "error"}
+LOCAL_TYPES = {"test"}  # run inside a temp worktree at the merge-base
+ENV_TYPES = {"api", "browser"}  # run against the already-running env (--assume-env)
+
+
+def repro_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
+    """Run one check against the merge-base; evidence/REPRO-<id>.json (only the CLI writes it)."""
+    alias = repo_conf(ws, check["repo"])["alias"]
+    wt = repo_path_for_run(run, ws, alias)
+    mb = gate.merge_base_for(run, ws, alias)
+    rid = gate.repro_id(check["id"])
+    conf = repo_conf(ws, alias)
+    main = Path(conf.get("path") or wt)
+    main = main if (main / ".git").exists() else wt
+    env = dict(conf.get("env") or {})
+    if not env.get("base_url"):
+        try:
+            from .env import base_url as env_base_url
+            env["base_url"] = env_base_url(ws, alias)
+        except (ImportError, FactoryError):
+            pass
+    started, t0 = now(), time.monotonic()
+    inner = dict(check, id=rid)
+    tmp = None
+    ctype = check.get("type")
+    try:
+        if ctype in LOCAL_TYPES:
+            tmp = temp_worktree(main, mb)
+            ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=tmp, env=env,
+                      out_dir=run_dir(run["id"]) / "evidence" / rid)
+            body = dispatch(inner, ctx)
+        elif ctype in ENV_TYPES:
+            if not assume_env:
+                body = {"status": "error", "summary": f"{ctype} check needs a running env serving the base; "
+                        "rerun with --assume-env once the env is up on the unmodified run worktree"}
+            elif git_head(wt) != mb or git_dirty(wt):
+                body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
+                        "(the running env would not serve the base code)"}
+            else:
+                ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
+                          out_dir=run_dir(run["id"]) / "evidence" / rid)
+                body = dispatch(inner, ctx)
+        else:
+            body = {"status": "error", "summary": f"{ctype} checks cannot be reproduced on base"}
+    except RuntimeError as err:
+        body = {"status": "error", "summary": str(err)}
+    finally:
+        if tmp is not None:
+            drop_worktree(main, tmp)
+    status = REPRO_MAP.get(body.get("status"), "error")
+    record = {
+        "schemaVersion": SCHEMA_VERSION, "check_id": rid, "of": check["id"], "type": ctype, "kind": "repro",
+        "status": status, "repo": alias, "git_sha": mb, "merge_base": mb, "dirty": False,
+        "collector": f"factory/repro {ctype}", "started": started,
+        "duration_s": round(time.monotonic() - t0, 2),
+        "summary": f"{status}: {body.get('summary', '')}",
+        "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
+    }
+    write_json(run_dir(run["id"]) / "evidence" / f"{rid}.json", record)
+    event(run, "evidence", check=rid, status=status, sha=mb)
+    return record
+
+
+def cmd_repro(args) -> int:
+    run = run_load(args.run)
+    ws = workspace_load(run["workspace"])
+    if not gate.is_bug_run(run):
+        raise FactoryError("--repro is for bug runs (run start --bug KEY)")
+    checks = gate.repro_checks(run["id"])
+    if args.check:
+        checks = [c for c in checks if c["id"] == args.check]
+    if not checks:
+        raise FactoryError("no reproducible checks (kind: bug ACs need a test/api/browser check)")
+    records = []
+    for chk in checks:
+        if not chk.get("repo"):
+            raise FactoryError(f"{chk['id']}: repo is required")
+        records.append(repro_one(run, ws, chk, args.assume_env))
+    run_save(run)
+    bad = [r for r in records if r["status"] != "reproduced"]
+    if getattr(args, "json", False):
+        print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha")} for r in records], indent=2))
+    else:
+        for r in records:
+            print(f"{r['status'].upper():14} {r['check_id']}  {r['summary']}")
+        print(f"{len(records) - len(bad)}/{len(records)} reproduced")
+    return 1 if bad else 0
+
+
 def cmd_prove(args) -> int:
+    if getattr(args, "repro", False):
+        return cmd_repro(args)
     run = run_load(args.run)
     ws = workspace_load(run["workspace"])
     acs = gate.load_acs(run["id"])
@@ -247,4 +338,6 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("--check")
     p.add_argument("--repo")
+    p.add_argument("--repro", action="store_true", help="bug runs: run bug-AC checks against the merge-base (must fail)")
+    p.add_argument("--assume-env", action="store_true", help="with --repro: api/browser checks use the running env (must serve the unmodified base)")
     p.set_defaults(func=cmd_prove)

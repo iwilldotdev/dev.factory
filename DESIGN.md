@@ -222,7 +222,8 @@ Phase exit criteria (`gate`):
 | Leaving | Requires |
 |---|---|
 | intake | ≥1 ticket; every ticket has `remote/issue-<KEY>.json`; open blockers of kind question are empty |
-| plan | `acs.json` valid per §2.3; `figma check` OK; branches/worktrees created for every touched repo; env capability for every runtime check |
+| plan | `acs.json` valid per §2.3; `figma check` OK; branches/worktrees created for every touched repo; env capability for every runtime check (bug runs then go to `reproduce`, not `build`; §8) |
+| reproduce | bug runs only (§8): every `kind: bug` AC has a `reproduced` REPRO evidence bound to the merge-base; `diagnosis.md` has non-empty `## Root cause`, `## Evidence`, `## Ruled out`; env capability for runtime repro checks |
 | build | every touched repo worktree clean and ahead of base; commits match `commit.header_regex`; no forbidden trailers |
 | prove | every check has evidence `pass`, not dirty, `git_sha` == current HEAD of its repo; quality delta vs baseline has no new failures; every rule check passes |
 | review | latest `code` and `qa` reviews `APPROVE`, bound to current SHAs, zero open blocker/major findings; else phase → build and `loops.build += 1` (stop at `autonomy.max_build_loops`) |
@@ -235,7 +236,7 @@ Phase exit criteria (`gate`):
 | type | Implementation |
 |---|---|
 | `test` | run `cmd` in repo worktree (shell, timeout), exit code, tail of output |
-| `red-green` | temp worktree at `fix_commit~1` with the test files from `fix_commit` → must fail; at `fix_commit` → must pass |
+| `red-green` | temp worktree at `fix_commit~1` with the test files from `fix_commit` → must fail; at `fix_commit` → must pass. `cmd`, or `of: <check-id>` to run another `test` check in those worktrees (§8) |
 | `api` | env must be up; urllib request to `base_url + path`; status + simple JSONPath (`$.a.b`, `exists`/literal) |
 | `browser` | `node browser/dist/cli.js run-spec --spec … --base-url … --storage-state … --out …` (Playwright test runner, JSON reporter) |
 | `visual` | `node browser/dist/cli.js capture …` then `compare --figma figma/<node>.png …` (pixelmatch; copy check; masks) |
@@ -288,6 +289,17 @@ Implementation notes: `review start` takes the saved payloads with `--from <fold
 
 Phases for `kind: review`: intake → plan → prove → review → report → done. No build, no ship. `gate <run> report` requires `review report` written. Remote actions after report (MR comment with the findings, approval, Jira comment) are listed in the report with `needs_user: true` and are never pre-authorised by `autonomy`.
 
-## 8. Non-goals (v0.1)
+## 8. Bugs
+
+A run is a bug run when a ticket is `type: bug` (`run start --bug KEY`). Phases: intake → plan → **reproduce** → build → prove → review → ship → feedback → done. The plan gate is unchanged except that it advances to `reproduce`; `gate build` in `reproduce` is refused (wrong phase). Feature runs have no `reproduce`.
+
+- **Author** writes, in plan: reproduction checks (`test`, `api` or `browser` checks that FAIL on the unfixed code, referenced by the `kind: bug` AC), a `red-green` check for the fix (`cmd`, or `of: CHK-n` pointing at the reproduction `test` check), and `diagnosis.md` (run dir root) with `## Root cause`, `## Evidence`, `## Ruled out`.
+- **`factory prove <run> --repro [--check CHK-n] [--assume-env]`** runs every non-`red-green`, non-`human` check referenced by a `kind: bug` AC against the base: the merge-base of the run branch with `origin/<base>` (falls back to the local base), in a temp detached worktree (the same helper as `baseline`). It writes `evidence/REPRO-<check-id>.json` (CLI only; `protect.js` already denies `evidence/**`) with `status`: `reproduced` (check FAILED on base), `not-reproduced` (it passed), `error` (could not run). `git_sha` and `merge_base` are the merge-base sha. Exit 0 only when all are `reproduced`.
+- Checks must be runnable on the base without the fix (an existing test, or a script that does not need branch changes). `test` checks run in the temp worktree. `api`/`browser` checks need a running env, which serves the run worktree, not the temp one: they run only with `--assume-env`, and only if the run worktree is clean and still at the merge-base (before any fix commit), otherwise status `error`. `visual`/`style` cannot be reproduced.
+- **Gate `reproduce`:** each bug AC has a check with REPRO status `reproduced` and `git_sha` equal to the current merge-base; `diagnosis.md` exists with the three sections non-empty (structure only; the code auditor judges the content); runtime repro checks need the repo env (the same consolidated env message as plan). No builder touches code before this gate passes.
+- **Build:** the builder fixes the cause named in `diagnosis.md`. The code auditor must state whether the fix addresses the root cause and files a finding if it only masks the symptom.
+- **`red-green` with `of`:** `of` references a `test` check of the same repo (validated at plan; `cmd` and `of` are exclusive). The collector runs the inner check in the `fix_commit~1` worktree (with the test files from `fix_commit`; must fail) and in the `fix_commit` worktree (must pass), through the `test` collector with `ctx.repo_path` set to the temp worktree. `browser`/`api` inner checks are not supported: the env would have to be started from the temp worktree, so plan rejects them. Use a `test` check for red-green (a `browser`/`api` check can still be the reproduction). Evidence details carry `of`.
+
+## 9. Non-goals (v0.1)
 
 Queue pulling from Jira boards, autonomy levels beyond `ask`/`draft-auto`, CI auto-fix without the orchestrator, non-Claude hosts.

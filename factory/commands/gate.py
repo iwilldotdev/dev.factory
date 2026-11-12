@@ -13,7 +13,9 @@ from ..core import (FactoryError, GateFailed, event, git, git_dirty, git_head,
                     workspace_load)
 
 PHASES = ["intake", "plan", "build", "prove", "review", "ship", "feedback", "done"]
+BUG_PHASES = ["intake", "plan", "reproduce", "build", "prove", "review", "ship", "feedback", "done"]
 NEXT = {p: PHASES[i + 1] for i, p in enumerate(PHASES[:-1])}
+DIAGNOSIS_SECTIONS = ("Root cause", "Evidence", "Ruled out")
 REVIEW_PHASES = ["intake", "plan", "prove", "review", "report", "done"]  # kind review: no build, no ship
 BATCH_PHASES = ["intake", "report", "done"]  # kind review-batch parent
 RUNTIME_TYPES = {"browser", "visual", "style", "api"}
@@ -37,6 +39,61 @@ def resolve_base(repo_path: Path, base: str) -> str:
     if git(repo_path, "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{base}", check=False):
         return f"origin/{base}"
     return base
+
+
+def is_bug_run(run: dict) -> bool:
+    return run.get("kind", "ticket") == "ticket" and any(t.get("type") == "bug" for t in run.get("tickets") or [])
+
+
+def repro_id(check_id: str) -> str:
+    return f"REPRO-{check_id}"
+
+
+def repro_checks(run_id: str) -> list[dict]:
+    """Checks referenced by `kind: bug` ACs that can be reproduced on base (red-green proves the fix later)."""
+    try:
+        data = load_acs(run_id)
+    except FactoryError:
+        return []
+    by_id = {c.get("id"): c for c in data.get("checks") or []}
+    out: dict[str, dict] = {}
+    for ac in data.get("acs") or []:
+        if ac.get("kind") != "bug":
+            continue
+        for cid in ac.get("checks") or []:
+            chk = by_id.get(cid)
+            if chk and chk.get("type") not in ("red-green", "human"):
+                out[cid] = chk
+    return list(out.values())
+
+
+def merge_base_for(run: dict, ws: dict, alias: str) -> str:
+    wt = repo_path_for_run(run, ws, alias)
+    base = resolve_base(wt, run["repos"][alias].get("base", "main"))
+    return git(wt, "merge-base", "HEAD", base)
+
+
+def diagnosis_errors(run_id: str) -> list[str]:
+    path = run_dir(run_id) / "diagnosis.md"
+    if not path.is_file():
+        return ["diagnosis.md missing in the run dir (author: ## Root cause, ## Evidence, ## Ruled out)"]
+    text = path.read_text(encoding="utf-8")
+    sections: dict[str, str] = {}
+    current = None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(.+?)\s*#*\s*$", line)
+        if m:
+            current = m.group(1).strip().lower()
+            sections.setdefault(current, "")
+        elif current is not None:
+            sections[current] += line + chr(10)
+    errors = []
+    for name in DIAGNOSIS_SECTIONS:
+        if name.lower() not in sections:
+            errors.append(f"diagnosis.md: section '## {name}' missing")
+        elif not sections[name.lower()].strip():
+            errors.append(f"diagnosis.md: section '## {name}' is empty")
+    return errors
 
 
 def rule_checks(workspace: dict, run: dict) -> list[dict]:
@@ -245,8 +302,21 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
                 errors.append(f"{cid}: repo {alias} not in workspace")
             if alias not in run.get("repos", {}):
                 errors.append(f"{cid}: repo {alias} has no branch/worktree in the run (factory run branch)")
-        if ctype in ("test", "red-green") and not chk.get("cmd"):
+        if ctype == "test" and not chk.get("cmd"):
             errors.append(f"{cid}: cmd is required")
+        if ctype == "red-green":
+            if chk.get("of"):
+                inner = next((c for c in checks if c.get("id") == chk["of"]), None)
+                if chk.get("cmd"):
+                    errors.append(f"{cid}: red-green takes either cmd or of, not both")
+                elif inner is None:
+                    errors.append(f"{cid}: of references unknown check {chk['of']}")
+                elif inner.get("type") != "test":
+                    errors.append(f"{cid}: of must reference a test check (browser/api inner checks are not supported); {chk['of']} is {inner.get('type')}")
+                elif inner.get("repo") != chk.get("repo"):
+                    errors.append(f"{cid}: of check {chk['of']} must be in the same repo")
+            elif not chk.get("cmd"):
+                errors.append(f"{cid}: cmd (or of) is required")
         if ctype == "api" and not chk.get("path"):
             errors.append(f"{cid}: path is required")
         if ctype == "browser" and not chk.get("spec"):
@@ -335,6 +405,19 @@ def _intake(run_id, run, ws) -> list[str]:
     return errors
 
 
+def env_errors(ws: dict, checks: list[dict]) -> list[str]:
+    """Consolidated env gaps for runtime checks (shared by plan and reproduce)."""
+    errors = []
+    runtime = sorted({c["repo"] for c in checks if c.get("type") in RUNTIME_TYPES and c.get("repo")})
+    for alias in runtime:
+        env = (repo_conf(ws, alias).get("env") if any(r.get("alias") == alias for r in ws.get("repos", [])) else None)
+        if not env:
+            errors.append(f"env: {alias} has no env block in workspace (user must provide start/health/base_url)")
+            continue
+        errors.extend(f"env {alias}: {e}" for e in _call_external("factory.commands.env", "capability", ws, alias))
+    return errors
+
+
 def _plan(run_id, run, ws) -> list[str]:
     errors = validate_acs(run_id, run, ws)
     path = run_dir(run_id) / "acs.json"
@@ -352,14 +435,55 @@ def _plan(run_id, run, ws) -> list[str]:
             errors.append(f"{alias}: no branch/worktree (factory run branch)")
         elif not Path(rec.get("worktree", "")).is_dir():
             errors.append(f"{alias}: worktree missing on disk: {rec.get('worktree')}")
-    runtime = sorted({c["repo"] for c in checks if c.get("type") in RUNTIME_TYPES and c.get("repo")})
-    for alias in runtime:
-        env = (repo_conf(ws, alias).get("env") if any(r.get("alias") == alias for r in ws.get("repos", [])) else None)
-        if not env:
-            errors.append(f"env: {alias} has no env block in workspace (user must provide start/health/base_url)")
-            continue
-        errors.extend(f"env {alias}: {e}" for e in _call_external("factory.commands.env", "capability", ws, alias))
+    errors.extend(env_errors(ws, checks))
     return list(dict.fromkeys(errors))
+
+
+def _reproduce(run_id, run, ws) -> list[str]:
+    errors = []
+    try:
+        data = load_acs(run_id)
+    except FactoryError as err:
+        return [str(err)]
+    by_id = {c.get("id"): c for c in data.get("checks") or []}
+    bug_acs = [ac for ac in data.get("acs") or [] if ac.get("kind") == "bug"]
+    if not bug_acs:
+        errors.append("no kind: bug AC in acs.json (a bug run needs at least one)")
+    for ac in bug_acs:
+        aid = ac.get("id", "?")
+        cands = [by_id[c] for c in ac.get("checks") or []
+                 if c in by_id and by_id[c].get("type") not in ("red-green", "human")]
+        if not cands:
+            errors.append(f"{aid}: bug AC has no reproducible check (test/browser/api/...) besides red-green")
+            continue
+        good = False
+        for chk in cands:
+            alias = chk.get("repo")
+            rec = load_evidence_file(run_id, repro_id(chk["id"]))
+            if rec is None:
+                errors.append(f"{aid}: {chk['id']}: no REPRO evidence (factory prove {run_id} --repro)")
+                continue
+            if rec.get("status") != "reproduced":
+                errors.append(f"{aid}: {chk['id']}: REPRO status {rec.get('status')} ({rec.get('summary')})")
+                continue
+            try:
+                mb = merge_base_for(run, ws, alias)
+            except (FactoryError, KeyError):
+                errors.append(f"{aid}: {chk['id']}: cannot compute merge-base for {alias}")
+                continue
+            if rec.get("git_sha") != mb:
+                errors.append(f"{aid}: {chk['id']}: REPRO evidence not bound to merge-base {mb[:8]} (sha {str(rec.get('git_sha'))[:8]})")
+                continue
+            good = True
+        if not good and not any(e.startswith(f"{aid}:") for e in errors):
+            errors.append(f"{aid}: no reproduced check")
+    errors.extend(diagnosis_errors(run_id))
+    errors.extend(env_errors(ws, repro_checks(run_id)))
+    return list(dict.fromkeys(errors))
+
+
+def load_evidence_file(run_id: str, name: str) -> dict | None:
+    return load_evidence(run_id, name)
 
 
 def commits_errors(path: Path, base_ref: str, ws: dict, alias: str) -> list[str]:
@@ -546,7 +670,7 @@ def _batch_intake(run_id, run, ws) -> list[str]:
             if b.get("kind") == "question" and not b.get("resolved")]
 
 
-EVALUATORS = {"intake": _intake, "plan": _plan, "build": _build, "prove": _prove,
+EVALUATORS = {"intake": _intake, "plan": _plan, "reproduce": _reproduce, "build": _build, "prove": _prove,
               "review": _review, "ship": _ship, "feedback": _feedback, "report": _report}
 TICKET_EVALUATORS = {k: v for k, v in EVALUATORS.items() if k != "report"}
 REVIEW_EVALUATORS = {"intake": _review_intake, "plan": _review_plan, "prove": _review_prove,
@@ -561,7 +685,7 @@ def machine(run: dict) -> tuple[list[str], dict]:
         return REVIEW_PHASES, REVIEW_EVALUATORS
     if kind == "review-batch":
         return BATCH_PHASES, BATCH_EVALUATORS
-    return PHASES, TICKET_EVALUATORS
+    return (BUG_PHASES if is_bug_run(run) else PHASES), TICKET_EVALUATORS
 
 
 def evaluate(run_id: str, phase: str) -> list[str]:

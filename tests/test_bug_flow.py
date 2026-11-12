@@ -8,7 +8,7 @@ import unittest
 from real_support import RealCase, cli, commit_file, core, sh
 
 PY = f'"{sys.executable}"'
-CHECK = "import sys, mod\nsys.exit(0 if mod.v == 2 else 1)\n"
+CHECK = "import sys, mod\nif mod.v != 2:\n    print('ASSERT v == 2')\n    sys.exit(1)\n"
 DIAGNOSIS = "## Root cause\nmod.v is 1.\n\n## Evidence\ncheck.py exits 1 on base.\n\n## Ruled out\nCaching.\n"
 
 
@@ -31,7 +31,7 @@ class BugCase(RealCase):
 
     def write_acs(self, checks=None, acs=None):
         checks = checks or [
-            {"id": "CHK-1", "type": "test", "repo": "React", "cmd": f"{PY} check.py"},
+            {"id": "CHK-1", "type": "test", "repo": "React", "cmd": f"{PY} check.py", "expect_fail_pattern": "ASSERT v"},
             {"id": "CHK-2", "type": "red-green", "repo": "React", "of": "CHK-1", "test_files": ["check.py"]}]
         acs = acs or [{"id": "AC-1", "ticket": "BUG-1", "text": "v is 2", "kind": "bug", "checks": ["CHK-1", "CHK-2"]}]
         core.write_json(core.run_dir(self.rid) / "acs.json", {"schemaVersion": 1, "acs": acs, "checks": checks})
@@ -124,11 +124,11 @@ class GateReproduceTests(BugCase):
         core.write_json(path, dict(ev, git_sha="0" * 40))
         rc, out = cli("gate", self.rid, "reproduce")
         self.assertEqual(rc, 1)
-        self.assertIn("not bound to merge-base", out)
+        self.assertIn("does not match the digest", out)  # hand-edited evidence (tests/test_integrity_digest.py)
         core.write_json(path, dict(ev, status="not-reproduced"))
         rc, out = cli("gate", self.rid, "reproduce")
         self.assertEqual(rc, 1)
-        self.assertIn("REPRO status not-reproduced", out)
+        self.assertIn("does not match the digest", out)
 
 
 class RedGreenOfTests(BugCase):

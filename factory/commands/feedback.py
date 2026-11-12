@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from ..core import fetch_call, event, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
+from ..core import fetch_call, event, file_sha256, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
 from ..fetches import feedback_fetches
 
 
@@ -132,7 +132,7 @@ def ingest(run_id: str) -> tuple[int, Path | None]:
     run["phase"] = "build"
     run.setdefault("loops", {"build": 0, "review": 0})
     run["loops"]["review"] = run["loops"].get("review", 0) + 1
-    event(run, "review", review_kind="feedback", round=rnd, findings=len(findings))
+    event(run, "review", review_kind="feedback", round=rnd, findings=len(findings), digest=file_sha256(path))
     event(run, "phase", to="build", reason="feedback")
     run_save(run)
     return len(findings), path

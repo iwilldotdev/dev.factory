@@ -63,7 +63,7 @@ class RealCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="factory-real-")).resolve()
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home")})
+        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home"), "FACTORY_ROLE": "auditor"})
         patcher.start()
         self.addCleanup(patcher.stop)
         rc, out = cli("workspace", "init", "ws")
@@ -87,3 +87,11 @@ class RealCase(unittest.TestCase):
         rc, out = cli(*argv)
         self.assertEqual(rc, 0, out)
         return out
+
+    def lock_and_prove(self, run_id: str) -> str:
+        """Lock the plan files as the plan gate would, then run the real `factory prove`."""
+        from factory import integrity
+        run = core.run_load(run_id)
+        integrity.lock_plan(run, "test fixture")
+        core.run_save(run)
+        return self.ok("prove", run_id)

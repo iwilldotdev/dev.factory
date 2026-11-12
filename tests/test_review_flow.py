@@ -135,7 +135,7 @@ class TestReviewGates(ReviewCase):
     def test_changes_verdict_does_not_loop_to_build(self):
         rid = self.prepare([PASS])
         self.ok("run", "branch", rid, "React", "--mr", "669")
-        self.ok("prove", rid)
+        self.lock_and_prove(rid)
         run = core.run_load(rid)
         run["phase"] = "review"
         core.run_save(run)

@@ -8,7 +8,8 @@ import subprocess
 from pathlib import Path
 
 from . import test as test_collector
-from .test import DEFAULT_TIMEOUT_S, TAIL, drop_worktree, run_shell, temp_worktree
+from .test import (DEFAULT_TIMEOUT_S, TAIL, drop_worktree, fail_pattern_error, run_shell, setup_command,
+                   temp_worktree)
 
 TEST_RE = re.compile(r"(^|[/\\._-])(tests?|specs?|__tests__)([/\\._-]|$)|tests?\.", re.IGNORECASE)
 
@@ -51,6 +52,13 @@ def collect(check: dict, ctx) -> dict:
             return {"status": "error", "summary": inner}
     if repo is None or not (check.get("cmd") or inner):
         return {"status": "error", "summary": "red-green needs repo and cmd (or of)"}
+    pattern = check.get("expect_fail_pattern") or (inner or {}).get("expect_fail_pattern")
+    if not pattern:
+        return {"status": "error", "summary": "red-green needs expect_fail_pattern (on the check, or on its `of` "
+                "test check): a red side that fails for another reason is not a reproduction"}
+    if inner:
+        inner = dict(inner, expect_fail_pattern=pattern)
+    setup = setup_command(ctx.workspace, check.get("repo"))
     spec = (check.get("fix_commit") or "HEAD") + "^{commit}"
     code, fix = _git(repo, "rev-parse", "--verify", spec)
     if code:
@@ -69,13 +77,13 @@ def collect(check: dict, ctx) -> dict:
     details: dict = {"of": check.get("of"), "fix_commit": fix, "parent": parent, "test_files": files}
     red_wt = green_wt = None
     try:
-        red_wt = temp_worktree(repo, parent)
+        red_wt = temp_worktree(repo, parent, setup, env_vars)
         code, out = _git(red_wt, "checkout", fix, "--", *files)
         if code:
             return {"status": "error", "summary": f"cannot bring tests into red worktree: {out}", "details": details}
         if inner:
             red_st, red_code, red_out = _run_inner(inner, ctx, red_wt)
-            green_wt = temp_worktree(repo, fix)
+            green_wt = temp_worktree(repo, fix, setup, env_vars)
             green_st, green_code, green_out = _run_inner(inner, ctx, green_wt)
             if "error" in (red_st, green_st):
                 return {"status": "error", "details": details,
@@ -84,7 +92,11 @@ def collect(check: dict, ctx) -> dict:
             green_code = 0 if green_st == "pass" else 1
         else:
             red_code, red_out = run_shell(check["cmd"], red_wt / (check.get("cwd") or "."), timeout, env_vars)
-            green_wt = temp_worktree(repo, fix)
+            setup_fail = fail_pattern_error({"expect_fail_pattern": pattern}, red_code, red_out)
+            if setup_fail:
+                details.update(red_exit=red_code, red_tail=red_out[-TAIL:])
+                return {"status": "error", "summary": f"red side: {setup_fail}", "details": details}
+            green_wt = temp_worktree(repo, fix, setup, env_vars)
             green_code, green_out = run_shell(check["cmd"], green_wt / (check.get("cwd") or "."), timeout, env_vars)
     except RuntimeError as err:
         return {"status": "error", "summary": str(err), "details": details}

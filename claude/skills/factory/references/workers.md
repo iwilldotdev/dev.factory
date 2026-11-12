@@ -5,7 +5,7 @@
 | `factory-scout` | haiku | Targeted lookups: code search, git history, any dev.mcp read whose answer is a few facts | Only a report under `runs/<id>/notes/` when asked |
 | `factory-author` | sonnet (opus on high risk for diagnosis) | Intake pack (dev.mcp reads with `save_to`), `acs.json`, checks, style maps, Figma pack, bug diagnosis | `runs/<id>/{acs.json,checks,figma,remote,notes}`, docs, temp scratch |
 | `factory-builder` | sonnet | Code in the run worktree, red tests, fixes from prove/review/feedback | Worktree + commits, `runs/<id>/checks` |
-| `factory-auditor` | sonnet; **opus on high risk** | `code` and `qa` reviews, recorded with `factory review record` | Temp scratch, `runs/<id>/notes` |
+| `factory-auditor` | sonnet; **opus on high risk** | `code` and `qa` reviews, recorded with `FACTORY_ROLE=auditor factory review record` (only this role may set it) | Temp scratch, `runs/<id>/notes` |
 
 - Use `factory-scout` instead of the built-in Explore.
 - A worker that fails twice on sonnet: retry once with `model: opus`, then block.

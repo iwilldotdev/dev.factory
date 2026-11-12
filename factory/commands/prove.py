@@ -9,8 +9,8 @@ import time
 import traceback
 from pathlib import Path
 
-from ..collectors.test import DEFAULT_TIMEOUT_S, drop_worktree, run_shell, temp_worktree
-from ..core import (SCHEMA_VERSION, Ctx, FactoryError, event, evidence_id, git,
+from ..collectors.test import DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree
+from ..core import (SCHEMA_VERSION, Ctx, FactoryError, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save, run_targets,
                     target_worktree, workspace_load, write_evidence, write_json)
@@ -88,6 +88,8 @@ def parse_failures(output: str, exit_code: int, root: Path, name: str = "cmd") -
 def run_quality(root: Path, quality: dict, env_vars: dict | None) -> dict:
     out = {}
     for name, cmd in quality.items():
+        if name == "setup":  # worktree preparation, not a quality command
+            continue
         code, text = run_shell(cmd, root, DEFAULT_TIMEOUT_S, env_vars)
         out[name] = {"cmd": cmd, "exit": code, "failures": parse_failures(text, code, root, name)}
     return out
@@ -105,9 +107,13 @@ def compute_baseline(run: dict, ws: dict, alias: str, force: bool = False) -> di
     base = gate.resolve_base(wt, run["repos"][alias].get("base", "main"))
     merge_base = git(wt, "merge-base", "HEAD", base)
     main = Path(conf.get("path") or wt)
-    tmp = temp_worktree(main if (main / ".git").exists() else wt, merge_base)
+    env_vars = (conf.get("env") or {}).get("env_vars")
     try:
-        results = run_quality(tmp, quality, (conf.get("env") or {}).get("env_vars"))
+        tmp = temp_worktree(main if (main / ".git").exists() else wt, merge_base, quality.get("setup"), env_vars)
+    except RuntimeError as err:
+        raise FactoryError(f"{alias}: baseline worktree: {err}") from err
+    try:
+        results = run_quality(tmp, quality, env_vars)
     finally:
         drop_worktree(main if (main / ".git").exists() else wt, tmp)
     data = {"schemaVersion": SCHEMA_VERSION, "repo": alias, "merge_base": merge_base,
@@ -174,10 +180,25 @@ def collect_one(run: dict, ws: dict, check: dict, target: str | None = None) -> 
             pass
     ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path, env=env, out_dir=out_dir)
     started, t0 = now(), time.monotonic()
-    body = dispatch(check, ctx)
+    bound = None
+    if check.get("type") in gate.RUNTIME_TYPES and alias and repo_path:
+        bound = env_binding(ws, alias, repo_path, git_head(repo_path))
+    body = {"status": "error", "summary": bound} if bound else dispatch(check, ctx)
     record = write_evidence(run["id"], check, body, repo_path, started, time.monotonic() - t0)
-    event(run, "evidence", check=check["id"], status=record["status"], sha=record["git_sha"])
+    evidence_event(run, record)
     return record
+
+
+def env_binding(ws: dict, alias: str, worktree: Path, head: str | None) -> str | None:
+    """Runtime evidence must come from the env `factory env up` started from this worktree at this HEAD."""
+    try:
+        from .env import binding_error
+    except ImportError as err:
+        return f"env binding cannot be checked: {err}"
+    try:
+        return binding_error(ws, alias, worktree, head)
+    except FactoryError as err:
+        return str(err)
 
 
 def quality_delta(run: dict, ws: dict, alias: str) -> dict:
@@ -198,7 +219,7 @@ def quality_delta(run: dict, ws: dict, alias: str) -> dict:
                         "current": {k: {"exit": v["exit"], "failures": len(v["failures"])} for k, v in current.items()}}}
     check = {"id": gate.quality_id(alias), "type": "quality", "repo": alias}
     record = write_evidence(run["id"], check, body, wt, started, time.monotonic() - t0)
-    event(run, "evidence", check=check["id"], status=record["status"], sha=record["git_sha"])
+    evidence_event(run, record)
     return record
 
 
@@ -228,8 +249,11 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
     tmp = None
     ctype = check.get("type")
     try:
-        if ctype in LOCAL_TYPES:
-            tmp = temp_worktree(main, mb)
+        if ctype in LOCAL_TYPES and not check.get("expect_fail_pattern"):
+            body = {"status": "error", "summary": "test check has no expect_fail_pattern: a failure on base "
+                    "cannot be told from a setup failure"}
+        elif ctype in LOCAL_TYPES:
+            tmp = temp_worktree(main, mb, setup_command(ws, alias), env.get("env_vars"))
             ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=tmp, env=env,
                       out_dir=run_dir(run["id"]) / "evidence" / rid)
             body = dispatch(inner, ctx)
@@ -240,10 +264,15 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
             elif git_head(wt) != mb or git_dirty(wt):
                 body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
                         "(the running env would not serve the base code)"}
+            elif (bound := env_binding(ws, alias, wt, mb)):
+                body = {"status": "error", "summary": bound}
             else:
                 ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
                           out_dir=run_dir(run["id"]) / "evidence" / rid)
                 body = dispatch(inner, ctx)
+                why = runtime_failure_error(ctype, check, body)
+                if why:
+                    body = dict(body, status="error", summary=f"could not reproduce: {why}")
         else:
             body = {"status": "error", "summary": f"{ctype} checks cannot be reproduced on base"}
     except RuntimeError as err:
@@ -261,8 +290,37 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
         "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
     }
     write_json(run_dir(run["id"]) / "evidence" / f"{rid}.json", record)
-    event(run, "evidence", check=rid, status=status, sha=mb)
+    evidence_event(run, record)
     return record
+
+
+ASSERTION_RE = re.compile(r"expect\(|AssertionError|\bto(?:Be|Equal|Have|Contain|Match)\w*")
+
+
+def runtime_failure_error(ctype: str, check: dict, body: dict) -> str | None:
+    """A `fail` on base counts as a reproduction only when it is a real assertion or response mismatch."""
+    if body.get("status") != "fail":
+        return None
+    details = body.get("details") or {}
+    pattern = check.get("expect_fail_pattern")
+    if ctype == "api":
+        if details.get("http_status") is None or not details.get("problems"):
+            return "api check failed without a response to compare (env error)"
+        text = " ".join(map(str, details["problems"])) + " " + str(details.get("body_tail", ""))
+        if pattern and not re.search(pattern, text, re.MULTILINE):
+            return f"api response mismatch does not show expect_fail_pattern {pattern!r}"
+        return None
+    if ctype == "browser":
+        failed = [t for t in details.get("tests") or [] if isinstance(t, dict) and not t.get("ok")]
+        if not failed:
+            return "browser spec reported fail without a failed test"
+        text = "\n".join(f"{t.get('title', '')}: {t.get('error') or ''}" for t in failed)
+        if pattern:
+            if not re.search(pattern, text, re.MULTILINE):
+                return f"failed test output does not show expect_fail_pattern {pattern!r}"
+        elif not ASSERTION_RE.search(text):
+            return "browser spec failed without an assertion failure (navigation or env error)"
+    return None
 
 
 def cmd_repro(args) -> int:

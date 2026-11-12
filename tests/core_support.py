@@ -86,13 +86,14 @@ class FactoryCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="factory-test-")).resolve()
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home")})
+        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home"), "FACTORY_ROLE": "auditor"})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.ext_errors = {"check_pack": [], "capability": [], "verify": []}
         mods = {
             "factory.commands.figma": fake_module("factory.commands.figma", check_pack=lambda rid: list(self.ext_errors["check_pack"])),
-            "factory.commands.env": fake_module("factory.commands.env", capability=lambda ws, alias: list(self.ext_errors["capability"])),
+            "factory.commands.env": fake_module("factory.commands.env", capability=lambda ws, alias: list(self.ext_errors["capability"]),
+                                                binding_error=lambda ws, alias, wt, head: None),
             "factory.commands.ship": fake_module("factory.commands.ship", verify=lambda rid: list(self.ext_errors["verify"])),
         }
         mp = mock.patch.dict(sys.modules, mods)
@@ -132,8 +133,12 @@ class FactoryCase(unittest.TestCase):
         return self.run_id
 
     def set_phase(self, phase: str) -> None:
+        """Jump to a phase; past plan, lock the plan files as the plan gate would (when not locked yet)."""
+        from factory import integrity
         run = core.run_load(self.run_id)
         run["phase"] = phase
+        if phase not in ("intake", "plan") and "plan_lock" not in run:
+            integrity.lock_plan(run, "test fixture")
         core.run_save(run)
 
     def write_acs(self, acs: list, checks: list) -> None:

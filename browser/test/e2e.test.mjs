@@ -41,15 +41,16 @@ test.before(async () => {
 test.after(() => server?.close());
 
 // async spawn: the in-process static server must keep serving while the CLI runs
-const run = (...a) =>
+const runEnv = (env, ...a) =>
   new Promise((resolve) => {
-    const c = spawn(process.execPath, [cli, ...a]);
+    const c = spawn(process.execPath, [cli, ...a], { env: { ...process.env, ...env } });
     let stdout = "";
     let stderr = "";
     c.stdout.on("data", (d) => (stdout += d));
     c.stderr.on("data", (d) => (stderr += d));
     c.on("close", (status) => resolve({ status, stdout, stderr }));
   });
+const run = (...a) => runEnv({}, ...a);
 const result = async (dir) => JSON.parse(await readFile(path.join(dir, "result.json"), "utf8"));
 const tmp = () => mkdtemp(path.join(os.tmpdir(), "fb-"));
 
@@ -118,8 +119,12 @@ test("login saves storage state without leaking credentials", async (t) => {
   const cfg = path.join(dir, "login.json");
   await writeFile(cfg, JSON.stringify({ url: "/login", user_field: "#u", pass_field: "#p", submit: "button[type=submit]", success_url_contains: "/app" }));
   const out = path.join(dir, "storage.json");
-  const p = await run("login", "--base-url", base, "--login-json", cfg, "--user", "someuser", "--pass", "s3cretpw", "--out", out);
+  const p = await runEnv({ FACTORY_LOGIN_USER: "someuser", FACTORY_LOGIN_PASS: "s3cretpw" },
+    "login", "--base-url", base, "--login-json", cfg, "--out", out);
   assert.equal(p.status, 0, p.stderr);
   assert.ok(!(p.stdout + p.stderr).includes("s3cretpw"));
   assert.ok(JSON.parse(await readFile(out, "utf8")).cookies);
+  const noEnv = await runEnv({ FACTORY_LOGIN_USER: "", FACTORY_LOGIN_PASS: "" },
+    "login", "--base-url", base, "--login-json", cfg, "--user", "someuser", "--pass", "s3cretpw", "--out", out);
+  assert.equal(noEnv.status, 1, "argv credentials are not accepted");
 });

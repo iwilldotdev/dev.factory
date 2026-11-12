@@ -81,5 +81,6 @@ def collect(check: dict, ctx) -> dict:
         "status": "fail" if problems else "pass",
         "summary": "; ".join(problems) if problems else f"{method} {check.get('path')} -> {status}",
         "artifacts": artifacts,
-        "details": {"url": url, "method": method, "http_status": status, "body_tail": text[-2000:]},
+        "details": {"url": url, "method": method, "http_status": status, "problems": problems,
+                    "body_tail": text[-2000:]},
     }

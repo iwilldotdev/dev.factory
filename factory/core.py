@@ -6,6 +6,7 @@ Every command module and collector imports from here; keep this API stable.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 import os
 import re
@@ -196,8 +197,39 @@ def git_head(repo: Path) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+def _is_link(path: Path) -> bool:
+    """Symlink or Windows junction (reparse point)."""
+    try:
+        if path.is_symlink():
+            return True
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return bool(getattr(st, "st_file_attributes", 0) & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+
+
 def git_dirty(repo: Path) -> bool:
-    return bool(git(repo, "status", "--porcelain", "--untracked-files=no"))
+    """Uncommitted changes, untracked files included (.gitignore respected).
+
+    The `node_modules` link that `link_deps` puts in a worktree is not a change.
+    """
+    out = git(repo, "status", "--porcelain", "--untracked-files=normal")
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("??"):
+            name = line[2:].strip().strip('"').rstrip("/")
+            if name == "node_modules" and _is_link(Path(repo) / "node_modules"):
+                continue
+        return True
+    return False
+
+
+def file_sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 # ---------- evidence / reviews ----------
@@ -235,6 +267,17 @@ def write_evidence(run_id: str, check: dict, body: dict, repo_path: Path | None,
         record["status"] = "error"
     write_json(run_dir(run_id) / "evidence" / f"{check['id']}.json", record)
     return record
+
+
+def evidence_file(run_id: str, check_id: str) -> Path:
+    return run_dir(run_id) / "evidence" / f"{check_id}.json"
+
+
+def evidence_event(run: dict, record: dict) -> None:
+    """`evidence` event with the sha256 of the written file; gates compare it with the file (DESIGN §2.4)."""
+    cid = record["check_id"]
+    event(run, "evidence", check=cid, status=record.get("status"), sha=record.get("git_sha"),
+          digest=file_sha256(evidence_file(run["id"], cid)))
 
 
 def load_evidence(run_id: str, check_id: str) -> dict | None:

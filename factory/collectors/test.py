@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -61,8 +62,28 @@ def unlink_deps(dst: Path) -> None:
             pass
 
 
-def temp_worktree(repo: Path, ref: str) -> Path:
-    """Detached worktree of `repo` at `ref` in a fresh temp dir."""
+def setup_command(workspace: dict | None, alias: str | None) -> str | None:
+    """`quality.setup` of the repo: the restore command every worktree gets before checks run."""
+    for repo in (workspace or {}).get("repos", []):
+        if alias and alias in (repo.get("alias"), repo.get("name")):
+            return (repo.get("quality") or {}).get("setup") or None
+    return None
+
+
+def prepare_worktree(src: Path, dst: Path, setup: str | None = None, env_vars: dict | None = None) -> None:
+    """Identical preparation for every worktree (run, temp base, red, green): `setup` when the repo
+    declares one (no node_modules link then: a restore through a junction would rewrite the main repo),
+    else link src/node_modules. Raises RuntimeError when setup fails."""
+    if setup:
+        code, out = run_shell(setup, Path(dst), DEFAULT_TIMEOUT_S, env_vars)
+        if code != 0:
+            raise RuntimeError(f"setup `{setup}` failed (exit {code}): {out.strip()[-500:]}")
+        return
+    link_deps(src, dst)
+
+
+def temp_worktree(repo: Path, ref: str, setup: str | None = None, env_vars: dict | None = None) -> Path:
+    """Detached worktree of `repo` at `ref` in a fresh temp dir, prepared like the run worktree."""
     base = Path(tempfile.mkdtemp(prefix="factory-wt-"))
     target = base / "wt"
     proc = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(target), ref],
@@ -70,7 +91,11 @@ def temp_worktree(repo: Path, ref: str) -> Path:
     if proc.returncode != 0:
         shutil.rmtree(base, ignore_errors=True)
         raise RuntimeError(f"git worktree add failed: {proc.stderr.strip()}")
-    link_deps(repo, target)
+    try:
+        prepare_worktree(repo, target, setup, env_vars)
+    except RuntimeError:
+        drop_worktree(repo, target)
+        raise
     return target
 
 
@@ -105,9 +130,28 @@ def collect(check: dict, ctx) -> dict:
         ctx.out_dir.mkdir(parents=True, exist_ok=True)
         (ctx.out_dir / "output.log").write_text(output, encoding="utf-8")
         artifacts.append(f"evidence/{check['id']}/output.log")
+    details = {"cmd": cmd, "exit_code": code, "output_tail": output[-TAIL:]}
+    failure = fail_pattern_error(check, code, output)
+    if failure:
+        return {"status": "error", "summary": failure, "artifacts": artifacts, "details": details}
     return {
         "status": "pass" if ok else "fail",
         "summary": f"exit {code} (expected {expect})",
         "artifacts": artifacts,
-        "details": {"cmd": cmd, "exit_code": code, "output_tail": output[-TAIL:]},
+        "details": details,
     }
+
+
+def fail_pattern_error(check: dict, code: int, output: str) -> str | None:
+    """A failing exit must show `expect_fail_pattern` (the test name or assertion); otherwise it is a
+    setup failure (missing deps, compile error, wrong cwd), not a reproduction."""
+    pattern = check.get("expect_fail_pattern")
+    if not pattern or code == 0:
+        return None
+    try:
+        found = re.search(pattern, output, re.MULTILINE)
+    except re.error as err:
+        return f"invalid expect_fail_pattern {pattern!r}: {err}"
+    if found:
+        return None
+    return f"could not reproduce: setup failure (exit {code} without expect_fail_pattern {pattern!r} in the output)"

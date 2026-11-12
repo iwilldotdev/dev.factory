@@ -50,7 +50,7 @@ class UpDownTests(FactoryCase):
         ok, lines = envmod.up(ws, "Web")
         self.addCleanup(envmod.down, ws, "Web")
         self.assertTrue(ok, lines)
-        pid = int(envmod.pid_path("ws", "Web").read_text())
+        pid = envmod.read_record("ws", "Web")["pid"]
         self.assertTrue(envmod.pid_alive(pid))
         self.assertTrue(envmod.health_ok(f"http://127.0.0.1:{port}/"))
         ok2, lines2 = envmod.up(ws, "Web")

@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 from ops_helpers import FactoryCase, git, make_repo
 
@@ -16,7 +17,20 @@ ACS = {
 }
 
 
+HEAD = "f" * 40
+
+
 class ShipBase(FactoryCase):
+    """Plan/verify formatting. The integrity layer (plan lock, proof at HEAD, branch heads) is covered by
+    tests/test_integrity_*.py and stubbed here."""
+
+    def setUp(self):
+        super().setUp()
+        for name, value in (("integrity_errors", []), ("branch_head", HEAD)):
+            patcher = mock.patch.object(ship, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def setup_ws(self, autonomy="ask", draft=True, targets=("pack",), tickets=None, jira_transition="Code Review"):
         self.react = make_repo(self.tmp / "react")
         self.api = make_repo(self.tmp / "api")
@@ -122,7 +136,8 @@ class PlanTests(ShipBase):
 class VerifyTests(ShipBase):
     def readback(self, alias, **over):
         data = {"source_branch": "feature/" + ("x" if alias == "React" else "y"), "target_branch": "pack",
-                "title": "Draft: [Obras | PACK] - Do thing", "draft": True, "web_url": "http://x/1", "iid": 1}
+                "title": "Draft: [Obras | PACK] - Do thing", "draft": True, "web_url": "http://x/1", "iid": 1,
+                "sha": HEAD}
         data.update(over)
         self.write(f"runs/ws-dev-1/remote/mr-{alias}-pack.json", data)
 

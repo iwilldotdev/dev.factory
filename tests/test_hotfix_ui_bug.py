@@ -27,8 +27,12 @@ class UiBugCase(RealCase):
             "checks": [{"id": "CHK-1", "type": "browser", "repo": "React", "spec": "checks/browser/ac-1.spec.ts"}]})
 
     def write_evidence(self, name, status, sha):
-        core.write_json(core.run_dir(self.rid) / "evidence" / f"{name}.json", {
-            "check_id": name, "status": status, "git_sha": sha, "dirty": False, "summary": "s"})
+        """As `factory prove` does: the file plus an `evidence` event carrying its digest."""
+        rec = {"check_id": name, "status": status, "git_sha": sha, "dirty": False, "summary": "s"}
+        core.write_json(core.run_dir(self.rid) / "evidence" / f"{name}.json", rec)
+        run = core.run_load(self.rid)
+        core.evidence_event(run, rec)
+        core.run_save(run)
 
     def test_plan_accepts_runtime_check_for_bug_ac(self):
         from factory.commands import gate
@@ -48,16 +52,19 @@ class UiBugCase(RealCase):
         mb = sh("git", "merge-base", "HEAD", "origin/main", cwd=self.wt)
         commit_file(self.wt, "mod.py", "v = 2\n", "[Area] - fix")
         head = sh("git", "rev-parse", "HEAD", cwd=self.wt)
-        self.write_evidence("CHK-1", "pass", head)
+        from factory import integrity
         run = core.run_load(self.rid)
+        integrity.lock_plan(run, "test fixture")
+        core.run_save(run)
+        self.write_evidence("CHK-1", "pass", head)
         from factory.commands import gate
-        errs = gate._prove(self.rid, run, core.workspace_load("ws"))
+        errs = gate._prove(self.rid, core.run_load(self.rid), core.workspace_load("ws"))
         self.assertTrue(any("REPRO" in e for e in errs), errs)
         self.write_evidence("REPRO-CHK-1", "not-reproduced", mb)
-        errs = gate._prove(self.rid, run, core.workspace_load("ws"))
+        errs = gate._prove(self.rid, core.run_load(self.rid), core.workspace_load("ws"))
         self.assertTrue(any("not-reproduced" in e for e in errs), errs)
         self.write_evidence("REPRO-CHK-1", "reproduced", mb)
-        self.assertEqual(gate._prove(self.rid, run, core.workspace_load("ws")), [])
+        self.assertEqual(gate._prove(self.rid, core.run_load(self.rid), core.workspace_load("ws")), [])
 
     def test_repro_browser_runs_with_assume_env_path(self):
         rc, out = cli("--json", "prove", self.rid, "--repro")

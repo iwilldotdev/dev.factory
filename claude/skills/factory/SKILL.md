@@ -19,6 +19,7 @@ You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to t
 6. **Author ≠ auditor.** Auditors start fresh, never re-judge after being resumed, and never review their own work.
 7. **Git safety:** no hard reset, stash, destructive checkout, or force-push. Push only at ship, per the ship plan.
 8. **Loops are capped** by the workspace `autonomy` (`max_build_loops`, `max_review_rounds`). The CLI blocks the run when they are exceeded; then ask the user.
+9. **The proof is locked.** `gate plan` locks `acs.json`, `checks/`, `figma/`; changing them later needs `factory run replan <run> "<reason>"`. A commit after prove invalidates review and ship: `factory run rewind <run> prove "<reason>"`. Gates refuse evidence or reviews whose digest does not match what the CLI recorded.
 
 ## Remote payloads (dev.mcp `save_to`)
 
@@ -52,7 +53,7 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 ## Rules by work type
 
 - **UI ACs** need a `visual` check and a `style` check against a packed Figma node. Style expectations come from `factory figma expect`, never from the model. A generic Modal/Drawer or hug/fill stand-in does not close a fixed-size or absolute-position gap.
-- **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base, a `red-green` check (`cmd` or `of: CHK-n`), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. UI bugs (no unit-testable cause): the author writes a `browser` spec instead of `red-green`; you bring the env up from the clean run worktree before any build and run `prove --repro --assume-env`; `gate prove` then requires that check `reproduced` on base and passing at HEAD. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
+- **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base (`test` checks carry `expect_fail_pattern`: a failure without it is a setup error, not a reproduction), a `red-green` check (`cmd` or `of: CHK-n`; `fix_commit` = the commit with the fix), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. UI bugs (no unit-testable cause): the author writes a `browser` spec instead of `red-green`; you bring the env up from the clean run worktree before any build and run `prove --repro --assume-env`; `gate prove` then requires that check `reproduced` on base and passing at HEAD. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
 - **Small, low-risk tickets** still go through prove and review: the gate is the point. They may skip review round 2.
 - **Runtime checks** (`browser`, `visual`, `style`, `api`) need the repo `env` block. Bring env up at plan time, not at prove time. A missing env goes in the question round as one consolidated list (the plan gate prints it).
 - **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice.

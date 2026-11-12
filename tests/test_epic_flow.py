@@ -1,10 +1,12 @@
 import json
+import sys
 from pathlib import Path
 
 from factory import core
 from tests.real_support import RealCase, cli, commit_file
 
 EPIC = "ws-ep-1"
+PASS = f'"{sys.executable}" -c "pass"'
 
 
 def write_epic(tickets):
@@ -135,7 +137,8 @@ class TestEpicShip(EpicBase):
             commit_file(wt, f"{cid}.txt", cid)
             core.write_json(core.run_dir(cid) / "acs.json", {"schemaVersion": 1, "acs": [
                 {"id": "AC-1", "text": "works", "kind": "logic", "checks": ["C1"]}],
-                "checks": [{"id": "C1", "type": "test", "repo": alias, "cmd": "true"}]})
+                "checks": [{"id": "C1", "type": "test", "repo": alias, "cmd": PASS}]})
+            self.lock_and_prove(cid)
             self.set_phase(cid, "ship")
 
     def test_aggregated_order_and_depends_on(self):
@@ -166,7 +169,7 @@ class TestEpicShip(EpicBase):
         for m in plan["mrs"]:
             core.write_json(core.run_dir(m["child"]) / m["readback"], {
                 "source_branch": m["source_branch"], "target_branch": m["target_branch"],
-                "title": m["title"], "draft": True, "web_url": "u", "iid": 1})
+                "title": m["title"], "draft": True, "web_url": "u", "iid": 1, "sha": m["head_sha"]})
         self.ok("epic", "ship", "verify", EPIC)
 
 

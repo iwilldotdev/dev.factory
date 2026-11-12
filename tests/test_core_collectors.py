@@ -78,7 +78,8 @@ class RedGreenTests(FactoryCase):
     def build(self, with_fix=True):
         self.make_run(bug=True)
         commit_file(self.wt, "mod.py", "v = 1\n")
-        script = ("import sys\nsys.path.insert(0, '.')\nimport mod\nsys.exit(0 if mod.v == 2 else 1)\n")
+        script = ("import sys\nsys.path.insert(0, '.')\nimport mod\n"
+                  "if mod.v != 2:\n    print('ASSERT mod.v == 2 failed')\n    sys.exit(1)\n")
         # fix commit: changes code and adds the test
         (self.wt / "tests").mkdir(exist_ok=True)
         (self.wt / "tests" / "check_mod.py").write_text(script, encoding="utf-8")
@@ -86,7 +87,8 @@ class RedGreenTests(FactoryCase):
         sh("git", "add", "-A", cwd=self.wt)
         sh("git", "commit", "-q", "-m", "[A] - fix", cwd=self.wt)
         self.check = {"id": "CHK-6", "type": "red-green", "repo": "React",
-                      "cmd": f"{PY} tests/check_mod.py", "fix_commit": "HEAD"}
+                      "cmd": f"{PY} tests/check_mod.py", "fix_commit": "HEAD",
+                      "expect_fail_pattern": "ASSERT mod.v"}
 
     def ctx(self):
         return core.Ctx(run={}, workspace={}, run_dir=self.tmp, repo_path=self.wt, out_dir=self.tmp / "o")

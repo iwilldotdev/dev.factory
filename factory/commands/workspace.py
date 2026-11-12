@@ -20,6 +20,7 @@ def _skeleton(name: str) -> dict:
         "ship": {"targets": [], "draft_default": True},
         "commit": {"header_regex": None, "forbidden_trailers": []},
         "autonomy": dict(DEFAULT_AUTONOMY),
+        "limits": {"max_diff_ratio": 0.03, "max_tolerance_px": 2},
         "rules": [],
         "epics": [],
     }

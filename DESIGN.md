@@ -17,7 +17,7 @@ Successor of dev.harness. Lessons that shaped it (see dev.harness `docs/audits/2
 | Orchestrator | Main Claude session: decides, talks to the user, runs `factory` CLI, does every dev.mcp **write** and every `git push` | `claude/skills/factory/` |
 | Workers | `factory-scout` (haiku, read-only lookups), `factory-author` (sonnet, plans/ACs/checks/diagnosis), `factory-builder` (sonnet, code), `factory-auditor` (sonnet/opus, review, never the author) | `claude/agents/` |
 | Mechanism | `factory` CLI (Python ≥3.10 stdlib only) + `browser/` (Node ≥20, Playwright, pixelmatch) | `factory/`, `browser/` |
-| Guard | PreToolUse hooks: worker role limits; nobody (main session included) writes evidence, reviews or run state by hand | `claude/hooks/` |
+| Guard | PreToolUse hooks: worker role limits; nobody (main session included) writes evidence, reviews or run state by hand; only the auditor role may set `FACTORY_ROLE=auditor` (needed by `review record`) | `claude/hooks/` |
 
 The CLI never calls the network except: local env health checks, local API checks against the run's env, and `git` on local repos. dev.mcp is the agent's tool; when a gate needs remote facts (MR state, pipeline, Figma payload), the agent calls the dev.mcp read tool with `save_to=<absolute path>` (the tool writes the raw response; the model never relays it) and the CLI validates that file. A failing gate or command prints the exact call (`FETCH <tool> k=v ...`, `fetch: [{tool, args}]` with `--json`).
 
@@ -41,7 +41,7 @@ FACTORY_HOME/
     remote/                          # raw dev.mcp responses saved by the agent (mr-*.json, pipeline-*.json, issue-*.json)
     ship-plan.json                   # CLI-generated
     metrics.json                     # CLI-generated
-  env/<ws>/<repo>.pid|.log           # processes started by `factory env up`
+  env/<ws>/<repo>.pid|.log           # processes started by `factory env up`; .pid = {pid, cwd, head, started, create_time}
   secrets/<ws>.env                   # test credentials (never in chat, never in repos)
 ```
 
@@ -61,6 +61,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
       "path": "C:/Users/me/Code/construcodereact",
       "target_paths": {"homolog": "C:/Users/me/Code/construcodereact-homolog"},
       "quality": {
+        "setup": "npm ci",
         "typecheck": "npx tsc --noEmit",
         "lint": "npx eslint . --format json",
         "test": "npx vitest run --reporter=json"
@@ -95,6 +96,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
     "max_build_loops": 3,
     "max_review_rounds": 2
   },
+  "limits": {"max_diff_ratio": 0.03, "max_tolerance_px": 2},
   "rules": [
     {"id": "i18n", "text": "User-facing strings go through the i18n layer", "check": {"type": "test", "repo": "React", "cmd": "npm run lint:i18n"}}
   ],
@@ -105,6 +107,10 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
 `autonomy.ship`: `"ask"` (Gate S in chat for every remote write) or `"draft-auto"` (push + create/update **draft** MRs without asking; un-draft, Jira comment and transition still ask). `factory workspace import --from <repo>/.dev/project.json` converts a dev.harness profile; missing `path`/`quality`/`env` are left for the user.
 
 `rules[]` are repo conventions with an executable check; every rule check runs in `prove` for each touched repo.
+
+`quality.setup` (optional) is not a quality command: it is the restore command every worktree gets before checks run, identically for the run worktree (`run branch`/`run mirror`/`--mr`), the baseline and REPRO temp worktrees, and both red-green worktrees. Without it, worktrees get a link to the main repo's `node_modules` (with it, no link: a restore through a junction would rewrite the main repo). A failing setup is an `error`, never a reproduction.
+
+`limits` caps check thresholds (§2.3): a plan cannot loosen a visual or style check past them.
 
 ### 2.2 run.json (CLI-written only)
 
@@ -118,10 +124,12 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
   "targets": ["pack", "homolog"],
   "phase": "intake|plan|build|prove|review|ship|feedback|done|blocked",
   "risk": "normal|high",
-  "loops": {"build": 0, "review": 0},
+  "loops": {"build": 0, "review": 0, "replan": 0},
+  "plan_lock": {"at": "…", "seq": 12, "digest": "<sha256>", "files": {"acs.json": "<sha256>", "checks/…": "<sha256>"}},
+  "proved": {"React": {"HEAD": "<sha>"}},
   "decisions": [{"at": "…", "phase": "plan", "text": "…", "by": "agent|user"}],
   "blockers": [{"at": "…", "kind": "env|access|question|dependency|conflict", "text": "…", "resolved": false}],
-  "events": [{"at": "…", "kind": "phase|gate_fail|gate_pass|evidence|review|ship|human|loop", "data": {}}],
+  "events": [{"at": "…", "kind": "phase|gate_fail|gate_pass|evidence|review|ship|human|loop|plan_lock|replan|rewind", "data": {}}],
   "sessions": ["<claude session id or transcript path>"],
   "created": "…", "updated": "…"
 }
@@ -148,7 +156,9 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
 }
 ```
 
-Optional UI check keys: `wait_for` (selector awaited before capture/probe; visual and style), `settle_ms` (extra wait after load; visual), `fit` (visual: scale the capture to the Figma image size before comparing instead of failing on a size mismatch).
+Optional UI check keys: `wait_for` (selector awaited before capture/probe; visual and style), `settle_ms` (extra wait after load; visual), `fit` (visual: pad both images to the larger width and height, no scaling, before comparing instead of failing on a size mismatch; the padded area counts as mismatched pixels).
+
+`expect_fail_pattern` (regex): the output a check shows when it fails for the right reason (the test name or the assertion text). Required on every `test` check of a `kind: bug` AC and on every `red-green` check (on the check itself, or on its `of` test check). A non-zero exit whose output lacks the pattern is status `error` ("could not reproduce: setup failure"), never `fail`/`reproduced`. Optional on `browser`/`api` checks (matched against the failed test errors / response mismatch).
 
 Plan-gate rules (`factory gate <run> plan`):
 
@@ -157,7 +167,10 @@ Plan-gate rules (`factory gate <run> plan`):
 - `kind: bug` ACs need a `red-green` check, **or** a runtime check (`browser`/`api`/`visual`/`style`) that has REPRO evidence `reproduced` at the merge-base and passes at HEAD (enforced at `gate prove`; §8).
 - `browser`/`visual`/`style`/`api` checks need the repo's `env` block and `factory env check` capability (start command + health); missing env → gate fails with one consolidated list of what the user must provide.
 - `human` checks are allowed but counted; the ship briefing lists them; they never satisfy a `ui` or `bug` AC on their own.
-- Style maps: every expected value must appear in the node's pack JSON (as number or hex), so expectations come from Figma, not from the model.
+- Style maps: every expected value must match a value of the **same property family** in the node's pack JSON, so expectations come from Figma, not from the model: `fontSize` ↔ `fontSize` (also `style.fontSize`); `lineHeight` ↔ `lineHeightPx`/`lineHeight`; `fontWeight`, `letterSpacing`, `opacity`, `fontFamily` ↔ the same key; `borderWidth` ↔ `strokeWeight`; `text` ↔ `characters`; sizes (`width`, `height`, `padding*`, `gap`, `borderRadius`) ↔ `absoluteBoundingBox.width/height`, `width`, `height`, `padding*`, `itemSpacing`, `cornerRadius`; colors (`color`, `backgroundColor`, `borderColor`) ↔ paints under `fills`/`strokes`/`background`. A key with no family is rejected.
+- Threshold ceilings (workspace `limits`, defaults `{"max_diff_ratio": 0.03, "max_tolerance_px": 2}`): a visual `max_diff_ratio` or a style `tolerance_px` (map entry or check) above them is rejected.
+- Bug ACs: every `test` check needs `expect_fail_pattern`; every `red-green` check needs one (own or of its `of` check).
+- On pass the gate writes the **plan lock** (§2.6).
 
 ### 2.4 Evidence record (collector-written only)
 
@@ -172,7 +185,9 @@ Plan-gate rules (`factory gate <run> plan`):
 }
 ```
 
-Collected with a dirty worktree → `status` may be pass but the prove gate rejects it.
+Collected with a dirty worktree → `status` may be pass but the prove gate rejects it. Dirty means `git status --porcelain --untracked-files=normal`: untracked files count (`.gitignore` is respected; the `node_modules` link `run branch` creates does not count).
+
+Runtime checks (`browser`, `visual`, `style`, `api`) are bound to their env: `prove` writes status `error` unless the repo's env was started by `factory env up` from the check's worktree (`env.cwd` under it) at the current HEAD (REPRO: at the merge-base) and that process is still the one recorded (pid + create time).
 
 Evidence ids: one record per check id; the quality-delta record of a repo is `QUALITY-<alias>` (type `quality`), and each workspace rule check is `RULE-<rule-id>-<alias>` for every touched repo it applies to. The prove gate requires all of them to be `pass`.
 
@@ -184,7 +199,15 @@ Evidence ids: one record per check id; the quality-delta record of a repo is `QU
  "completeness": {"done": 0, "gap": 0, "not_checked": 0}}
 ```
 
-QA review must state, for every AC, whether its checks actually exercise the AC (a check that cannot fail is a finding). The record carries `"ac_coverage": [{"ac": "AC-1", "exercises": true, "note": "…"}]` with one entry per AC in `acs.json`; `review record --kind qa` rejects a missing entry, and `exercises: false` cannot be combined with `APPROVE`. The CLI adds `recorded` (ISO time) to every stored review; `metrics` uses it to count findings that appear after the prove gate (escaped). The `review` event in run.json is `{review_kind, round, verdict, findings}`; `gate_pass`/`gate_fail` events carry `phase`.
+QA review must state, for every AC, whether its checks actually exercise the AC (a check that cannot fail is a finding). The record carries `"ac_coverage": [{"ac": "AC-1", "exercises": true, "note": "…"}]` with one entry per AC in `acs.json`; `review record --kind qa` rejects a missing entry, and `exercises: false` cannot be combined with `APPROVE`.
+
+`review record` runs only with `FACTORY_ROLE=auditor` in its environment (the factory-auditor agent sets it in the command; the guard hook lets only that role set it). `completeness` (integers `done`, `gap`, `not_checked`) is required; `APPROVE` is invalid with `gap > 0`, `not_checked > 0`, or any `blocker`/`major` finding. A `resolved` flag on a finding is ignored by `record`, the review gate and the review report: a finding is resolved only by a later round that no longer lists it. `human` checks are not the auditor's `not_checked`: they are listed in the ship briefing. The CLI adds `recorded` (ISO time) to every stored review; `metrics` uses it to count findings that appear after the prove gate (escaped). The `review` event in run.json is `{review_kind, round, verdict, findings, digest}`; `gate_pass`/`gate_fail` events carry `phase`.
+
+### 2.6 Proof integrity
+
+- **Plan lock.** When `gate plan` passes, run.json gets `plan_lock = {at, seq, digest, files: {<path>: sha256}}` over `acs.json`, every file under `checks/` and `figma/`, and `diagnosis.md` when present. `gate reproduce` refuses changes except `diagnosis.md` (written in reproduce) and then re-locks with it. `gate prove`, `gate review`, `ship plan`, `ship verify` and `gate ship` re-hash and fail listing the changed files. The one legit way to change them: `factory run replan <run> "<reason>"` (phase → plan, lock cleared, `replan` event, `loops.replan += 1`); the plan gate must pass again (re-running every acs.json validation), and evidence written before the new lock (`seq` = event index) no longer counts.
+- **Proof at HEAD.** The review gate, `ship plan`, `ship verify` and `gate ship` re-run the prove-gate criteria (evidence pass, not dirty, `git_sha` == current HEAD, quality/rules, plan lock) without collecting anything: a commit after prove fails them. `gate prove` records `proved = {alias: {target|"HEAD": sha}}`. `ship plan` records each MR's `head_sha` (tip of its source branch); `ship verify` requires the branch still there and the readback `sha` (or `diff_refs.head_sha`) equal to it. After a rebase/merge or late fix: `factory run rewind <run> build|prove "<reason>"` (`rewind` event, `loops.build += 1`).
+- **Digests.** Every evidence file `prove` writes gets an `evidence` event `{check, status, sha, digest}` (sha256 of the file); every review file `review record` (and `feedback ingest`) writes gets a `review` event with `digest`. Gates and the review report refuse an evidence/review file whose bytes do not match its latest event, or that has no event (hand-written even when `protect.js` is bypassed).
 
 ## 3. CLI contract
 
@@ -200,15 +223,17 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | `run branch <run> <repo> --base <ref> --for-target <target> [--name …]` | `commands/run.py` | for a repo already branched: create a second branch (default `<branch>-<target>`) from `<ref>` and record it in `repos[alias].branches[target]`; `ship plan` uses it as that target's MR source |
 | `run decide <run> "<text>" [--by user]` / `run block <run> <kind> "<text>"` / `run unblock <run> <n>` | `commands/run.py` | append decision/blocker |
 | `run human <run> "<note>"` | `commands/run.py` | record a human intervention (orchestrator calls it for every user message that steers the run) |
+| `run replan <run> "<reason>"` | `commands/run.py` | back to plan to change acs.json/checks/figma/diagnosis: clears the plan lock, `replan` event, `loops.replan += 1` (§2.6) |
+| `run rewind <run> build|prove "<reason>"` | `commands/run.py` | back to an earlier phase after the worktree moved past the proof (rebase/merge, late fix): `rewind` event, `loops.build += 1` |
 | `gate <run> <phase>` | `commands/gate.py` | check exit criteria of phase; on pass, advance phase; records gate_pass/gate_fail |
-| `env up|down|check|logs <ws> <repo> [--run <run>]` | `commands/env.py` | start/stop processes from workspace env (worktree of the run when `--run`), health wait, port-owner diagnosis, pid tracking, tree-kill on Windows |
-| `env login <ws> <repo>` | `commands/env.py` → browser | produce Playwright storage state from `secrets/<ws>.env` |
+| `env up|down|check|logs <ws> <repo> [--run <run>]` | `commands/env.py` | start/stop processes from workspace env (worktree of the run when `--run`), health wait, port-owner diagnosis, pid tracking, tree-kill on Windows. `up` refuses when the env is already up for another cwd or HEAD (down first) and, without `ports`, when the health URL already answers before anything was started ("unknown server"). The pid record stores the process create time; `down` never kills a pid whose create time differs (reused pid) |
+| `env login <ws> <repo>` | `commands/env.py` → browser | produce Playwright storage state from `secrets/<ws>.env`; credentials reach the Node CLI as `FACTORY_LOGIN_USER`/`FACTORY_LOGIN_PASS` env vars, never argv |
 | `figma check <run>` / `figma expect <run> <node> [--selector …]` | `commands/figma.py` | pack completeness; extract expected style values from a node payload into a style-map skeleton |
 | `baseline <run> [--repo R]` | `commands/prove.py` | run quality commands on merge-base once; store failures |
 | `prove <run> [--check CHK-n] [--repo R]` | `commands/prove.py` | run collectors for checks + quality delta vs baseline + `rules[]`; write evidence |
-| `review record <run> --kind code|qa --file <review.json>` | `commands/review.py` | validate and store review bound to current SHAs |
+| `review record <run> --kind code|qa --file <review.json>` | `commands/review.py` | validate and store review bound to current SHAs (only with `FACTORY_ROLE=auditor`; §2.5) |
 | `ship plan <run>` | `commands/ship.py` | freshness (behind-count vs origin/<target>, needs prior `git fetch`), dependency MR states from `remote/`, then ship-plan.json: per repo×target branch, title, draft, description (ACs × evidence table, Depends on !N, human checks), Jira ADF comment, ordered remote actions |
-| `ship verify <run>` | `commands/ship.py` | compare `remote/mr-<repo>-<target>.json` readbacks with the plan (draft, target, source, title); record ship event |
+| `ship verify <run>` | `commands/ship.py` | compare `remote/mr-<repo>-<target>.json` readbacks with the plan (draft, target, source, title, head sha == proven HEAD); plan lock and proof at HEAD (§2.6); record ship event |
 | `feedback ingest <run>` | `commands/feedback.py` | read `remote/mr-*-discussions.json` and `remote/pipeline-*.json`; unresolved human threads and failed jobs become findings; moves phase back to build |
 | `metrics <run>` / `metrics report [--since DATE]` | `commands/metrics.py` | from run.json + Claude transcripts (session ids in run.json, or transcripts mentioning `factory-run: <id>`): wall time, human messages, subagents by type/model, tokens, loops, gate failures, escaped findings (review/feedback findings after a prove pass) |
 
@@ -223,12 +248,13 @@ Phase exit criteria (`gate`):
 | Leaving | Requires |
 |---|---|
 | intake | ≥1 ticket; every ticket has `remote/issue-<KEY>.json`; open blockers of kind question are empty |
-| plan | `acs.json` valid per §2.3; `figma check` OK; branches/worktrees created for every touched repo; env capability for every runtime check (bug runs then go to `reproduce`, not `build`; §8) |
-| reproduce | bug runs only (§8): every `kind: bug` AC has a `reproduced` REPRO evidence bound to the merge-base; `diagnosis.md` has non-empty `## Root cause`, `## Evidence`, `## Ruled out`; env capability for runtime repro checks |
+| plan | `acs.json` valid per §2.3; `figma check` OK; branches/worktrees created for every touched repo; env capability for every runtime check (bug runs then go to `reproduce`, not `build`; §8); writes the plan lock |
+| reproduce | bug runs only (§8): every `kind: bug` AC has a `reproduced` REPRO evidence bound to the merge-base; `diagnosis.md` has non-empty `## Root cause`, `## Evidence`, `## Ruled out`; env capability for runtime repro checks; plan files unchanged except `diagnosis.md` (re-locked) |
 | build | every touched repo worktree clean and ahead of base; commits match `commit.header_regex`; no forbidden trailers |
-| prove | every check has evidence `pass`, not dirty, `git_sha` == current HEAD of its repo; quality delta vs baseline has no new failures; every rule check passes |
-| review | latest `code` and `qa` reviews `APPROVE`, bound to current SHAs, zero open blocker/major findings; else phase → build and `loops.build += 1` (stop at `autonomy.max_build_loops`) |
-| ship | `ship verify` OK |
+| prove | plan lock intact; every check has evidence `pass`, not dirty, `git_sha` == current HEAD of its repo, digest matching its event, written after the plan lock; quality delta vs baseline has no new failures; every rule check passes |
+| review | the prove criteria still hold at the current HEADs (else rewind to prove); latest `code` and `qa` reviews `APPROVE`, digests matching, bound to current SHAs, zero blocker/major findings (`resolved` ignored); else phase → build and `loops.build += 1`. Blocked (question blocker; `run unblock` resumes at **build**) when `loops.build > autonomy.max_build_loops` or the review round count reaches `autonomy.max_review_rounds` with CHANGES |
+| ship | the prove criteria still hold; `ship verify` OK |
+| feedback | no open blocker; for every MR of `ship-plan.json`: `remote/mr-<repo>-<target>-discussions.json` with zero unresolved human threads, and `remote/pipeline-<repo>-<target>.json` = the latest pipeline, status `success`, `sha` == the MR head (or a user decision in phase feedback naming the pipeline: `run decide <run> "pipeline: <why>" --by user`) |
 
 ## 4. Collectors
 
@@ -295,11 +321,12 @@ Phases for `kind: review`: intake → plan → prove → review → report → d
 A run is a bug run when a ticket is `type: bug` (`run start --bug KEY`). Phases: intake → plan → **reproduce** → build → prove → review → ship → feedback → done. The plan gate is unchanged except that it advances to `reproduce`; `gate build` in `reproduce` is refused (wrong phase). Feature runs have no `reproduce`.
 
 - **Author** writes, in plan: reproduction checks (`test`, `api` or `browser` checks that FAIL on the unfixed code, referenced by the `kind: bug` AC), a `red-green` check for the fix (`cmd`, or `of: CHK-n` pointing at the reproduction `test` check), and `diagnosis.md` (run dir root) with `## Root cause`, `## Evidence`, `## Ruled out`.
-- **`factory prove <run> --repro [--check CHK-n] [--assume-env]`** runs every non-`red-green`, non-`human` check referenced by a `kind: bug` AC against the base: the merge-base of the run branch with `origin/<base>` (falls back to the local base), in a temp detached worktree (the same helper as `baseline`). It writes `evidence/REPRO-<check-id>.json` (CLI only; `protect.js` already denies `evidence/**`) with `status`: `reproduced` (check FAILED on base), `not-reproduced` (it passed), `error` (could not run). `git_sha` and `merge_base` are the merge-base sha. Exit 0 only when all are `reproduced`.
+- **`factory prove <run> --repro [--check CHK-n] [--assume-env]`** runs every non-`red-green`, non-`human` check referenced by a `kind: bug` AC against the base: the merge-base of the run branch with `origin/<base>` (falls back to the local base), in a temp detached worktree (the same helper as `baseline`, prepared with `quality.setup` like every worktree). It writes `evidence/REPRO-<check-id>.json` (CLI only; `protect.js` already denies `evidence/**`) with `status`: `reproduced` (check FAILED on base **on its assertion**: `test` output matches `expect_fail_pattern`; a `browser` spec has a failed test whose error is an assertion (`expect(`…) or matches the pattern; an `api` check got a response that mismatches), `not-reproduced` (it passed), `error` (could not run, or failed for another reason: "could not reproduce: setup failure"). `git_sha` and `merge_base` are the merge-base sha. Exit 0 only when all are `reproduced`.
 - Checks must be runnable on the base without the fix (an existing test, or a script that does not need branch changes). `test` checks run in the temp worktree. `api`/`browser` checks need a running env, which serves the run worktree, not the temp one: they run only with `--assume-env`, and only if the run worktree is clean and still at the merge-base (before any fix commit), otherwise status `error`. `visual`/`style` cannot be reproduced.
 - **Gate `reproduce`:** each bug AC has a check with REPRO status `reproduced` and `git_sha` equal to the current merge-base; `diagnosis.md` exists with the three sections non-empty (structure only; the code auditor judges the content); runtime repro checks need the repo env (the same consolidated env message as plan). No builder touches code before this gate passes.
 - **Build:** the builder fixes the cause named in `diagnosis.md`. The code auditor must state whether the fix addresses the root cause and files a finding if it only masks the symptom.
 - **UI bugs (no red-green):** a `kind: bug` AC may use a runtime check instead of `red-green` (`of` only supports `test`). The author writes a `browser` spec (or `api` check) that fails on the unfixed code. Order matters: the orchestrator brings the env up from the clean run worktree **before any build** (`factory env up --run`) and runs `factory prove <run> --repro --assume-env` (`reproduced`), then the builder fixes; `prove` later must pass the same check at HEAD. `gate prove` enforces for bug ACs without `red-green`: ≥1 runtime check with `REPRO-<id>` `reproduced` and bound to the merge-base, plus the normal passing evidence at HEAD. `visual`/`style` cannot be reproduced on base, so they cannot satisfy this alone.
+- **`red-green`:** `fix_commit` (default `HEAD`) is the commit that contains the fix. The test may be in the same commit (its test files are found in that commit's diff) or in an earlier commit (then set `test_files`; the red worktree at `fix_commit~1` already has it). Both worktrees get the same preparation (`quality.setup` or the `node_modules` link). The red side must fail with `expect_fail_pattern` in its output, else `error`. `red-green` is optional for a bug AC that uses the repro + runtime path above.
 - **`red-green` with `of`:** `of` references a `test` check of the same repo (validated at plan; `cmd` and `of` are exclusive). The collector runs the inner check in the `fix_commit~1` worktree (with the test files from `fix_commit`; must fail) and in the `fix_commit` worktree (must pass), through the `test` collector with `ctx.repo_path` set to the temp worktree. `browser`/`api` inner checks are not supported: the env would have to be started from the temp worktree, so plan rejects them. Use a `test` check for red-green (a `browser`/`api` check can still be the reproduction). Evidence details carry `of`.
 
 ## 9. Hotfix

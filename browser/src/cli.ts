@@ -166,8 +166,10 @@ async function doLogin(): Promise<void> {
   const cfg = JSON.parse(await readFile(required("--login-json"), "utf8")) as {
     url: string; user_field: string; pass_field: string; submit: string; success_url_contains: string;
   };
-  const user = required("--user");
-  const pass = required("--pass");
+  // credentials come from the environment, never argv (process listings show argv)
+  const user = process.env.FACTORY_LOGIN_USER ?? "";
+  const pass = process.env.FACTORY_LOGIN_PASS ?? "";
+  if (!user || !pass) throw new Error("login needs FACTORY_LOGIN_USER and FACTORY_LOGIN_PASS in the environment");
   secrets.push(user, pass);
   const base = required("--base-url");
   const target = required("--out");

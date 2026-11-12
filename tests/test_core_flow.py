@@ -141,13 +141,14 @@ class PlanGateTests(FactoryCase):
                        self.ui_checks())
         rc, out = self.plan()
         self.assertEqual(rc, 1)
-        self.assertIn("title.fontSize=99 number not in Figma pack", out)
-        self.assertIn("title.color='#ABCDEF' color not in Figma pack", out)
+        self.assertIn("title.fontSize=99 number not in the node's fontSize", out)
+        self.assertIn("title.color='#ABCDEF' color not in the node's fills/strokes", out)
 
     def test_style_color_matches_hex_case_insensitive_and_rgba_floats(self):
         self.make_run()
         self.write_pack(self.NODE, {"fontSize": 12, "stroke": "#aBcDeF", "fill": {"r": 1, "g": 0, "b": 0, "a": 1}})
-        self.write_style_map(self.NODE, {"fontSize": 12, "a": "#ABCDEF", "b": "#ff0000", "c": "rgb(255, 0, 0)"})
+        self.write_style_map(self.NODE, {"fontSize": 12, "color": "#ABCDEF", "backgroundColor": "#ff0000",
+                                         "borderColor": "rgb(255, 0, 0)"})
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}],
                        self.ui_checks())
         rc, out = self.plan()
@@ -364,8 +365,11 @@ class ReviewGateTests(FactoryCase):
         super().setUp()
         self.make_run()
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "logic", "checks": ["CHK-1"]}],
-                       [{"id": "CHK-1", "type": "test", "repo": "React", "cmd": "x"}])
+                       [{"id": "CHK-1", "type": "test", "repo": "React", "cmd": f'{PY} -c "pass"'}])
         self.head = commit_file(self.wt, "a.txt", "a")
+        self.set_phase("prove")
+        rc, out = cli("prove", self.run_id)
+        assert rc == 0, out
         self.set_phase("review")
 
     def test_record_binds_sha_and_rounds(self):
@@ -413,6 +417,9 @@ class ReviewGateTests(FactoryCase):
         self.assertIn("stale", out)
 
     def test_changes_loops_back_then_blocks_at_max(self):
+        ws = core.workspace_load("ws")
+        ws["autonomy"]["max_review_rounds"] = 9  # this test is about max_build_loops
+        core.write_json(core.workspace_path("ws"), ws)
         for expected in (1, 2):
             self.review(verdict="CHANGES", findings=[{"id": "F1", "severity": "blocker", "text": "bad", "file": "a.txt:1"}])
             self.review(kind="qa")
@@ -430,12 +437,17 @@ class ReviewGateTests(FactoryCase):
         self.assertEqual(run["phase"], "blocked")
         self.assertEqual(run["loops"]["build"], 3)
         self.assertEqual(cli("run", "unblock", self.run_id, str(len(run["blockers"]) - 1))[0], 0)
-        self.assertEqual(core.run_load(self.run_id)["phase"], "review")
+        self.assertEqual(core.run_load(self.run_id)["phase"], "build")  # the loop resumes at build, not review
 
 
 class ShipGateTests(FactoryCase):
     def test_ship_uses_ship_verify(self):
         self.make_run()
+        self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "logic", "checks": ["CHK-1"]}],
+                       [{"id": "CHK-1", "type": "test", "repo": "React", "cmd": f'{PY} -c "pass"'}])
+        commit_file(self.wt, "a.txt", "a")
+        self.set_phase("prove")
+        self.assertEqual(cli("prove", self.run_id)[0], 0)
         self.set_phase("ship")
         self.ext_errors["verify"] = ["draft mismatch"]
         rc, out = cli("gate", self.run_id, "ship")

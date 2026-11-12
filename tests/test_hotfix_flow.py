@@ -9,7 +9,7 @@ from real_support import RealCase, cli, commit_file, core, sh
 
 PY = f'"{sys.executable}"'
 DIAGNOSIS = "## Root cause\nx\n\n## Evidence\ny\n\n## Ruled out\nz\n"
-CHECK = "import sys, mod\nsys.exit(0 if mod.v == 2 else 1)\n"
+CHECK = "import sys, mod\nif mod.v != 2:\n    print('ASSERT v == 2')\n    sys.exit(1)\n"
 
 
 class HotfixCase(RealCase):
@@ -43,7 +43,7 @@ class HotfixCase(RealCase):
     def acs(self):
         core.write_json(core.run_dir(self.rid) / "acs.json", {"schemaVersion": 1, "acs": [
             {"id": "AC-1", "ticket": "BUG-1", "text": "v is 2", "kind": "bug", "checks": ["CHK-1", "CHK-2"]}], "checks": [
-            {"id": "CHK-1", "type": "test", "repo": "React", "cmd": f"{PY} check.py"},
+            {"id": "CHK-1", "type": "test", "repo": "React", "cmd": f"{PY} check.py", "expect_fail_pattern": "ASSERT v"},
             {"id": "CHK-2", "type": "red-green", "repo": "React", "of": "CHK-1", "test_files": ["check.py"]}]})
 
     def through_build(self):

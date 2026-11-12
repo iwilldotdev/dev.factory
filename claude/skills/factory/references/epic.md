@@ -29,6 +29,6 @@ An epic is a **parent run** (`<ws>-<epic-key>`, `kind: epic`) that coordinates *
 
 ## Feedback and finish
 
-- Feedback runs per child (feedback.md). A child sent back to build does not reopen the others unless they depend on it **and** its fix changes their base branch. In that case, rebase the dependents through a builder and re-prove them.
+- Feedback runs per child (feedback.md). A child sent back to build does not reopen the others unless they depend on it **and** its fix changes their base branch. In that case, rebase the dependents through a builder, `factory run rewind <child> prove "rebased"`, and re-prove them.
 - Progress to the user is the `factory epic status <parent>` matrix, condensed to a few lines (children per phase, blocked children and why, MRs shipped). Do not narrate per worker.
 - Finish: `factory metrics <parent>` (and per child when asked), plus a short epic report.

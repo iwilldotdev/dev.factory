@@ -25,6 +25,16 @@ def tiny_png() -> bytes:
             + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
 
 
+def fake_env_up(alias: str, worktree: Path) -> None:
+    """A pid record as `factory env up --run` writes it, pointing at this (live) test process."""
+    path = env_mod.pid_path("ws", alias)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head = core.git_head(worktree)
+    path.write_text(json.dumps({"pid": os.getpid(), "cwd": str(Path(worktree).resolve()), "head": head,
+                                "started": core.now(), "create_time": env_mod.process_create_time(os.getpid())}),
+                    encoding="utf-8")
+
+
 class TestIntegrationFlow(RealCase):
     repos = ("React",)
 
@@ -66,6 +76,7 @@ class TestIntegrationFlow(RealCase):
         state = env_mod.storage_state_path("ws", "React")
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text("{}", encoding="utf-8")
+        fake_env_up("React", wt)
         self.ok("prove", rid)
         argv = json.loads((rd / "evidence" / "CHK-2" / "argv-style-probe.json").read_text())
         self.assertEqual(argv[argv.index("--url") + 1], "http://127.0.0.1:1/x")
@@ -87,7 +98,7 @@ class TestIntegrationFlow(RealCase):
         for mr in plan["mrs"]:
             core.write_json(rd / mr["readback"], {
                 "source_branch": mr["source_branch"], "target_branch": mr["target_branch"],
-                "title": mr["title"], "draft": True, "web_url": "http://x/mr/1", "iid": 1})
+                "title": mr["title"], "draft": True, "web_url": "http://x/mr/1", "iid": 1, "sha": mr["head_sha"]})
         self.ok("ship", "verify", rid)
         self.ok("gate", rid, "ship")
         self.assertEqual(core.run_load(rid)["phase"], "feedback")
@@ -124,7 +135,8 @@ class TestIntegrationFlow(RealCase):
         self.ok("run", "branch", rid, "React", "--base", "homolog", "--for-target", "homolog", "--name", "feature/DEV-3-h")
         core.write_json(core.run_dir(rid) / "acs.json", {"schemaVersion": 1, "acs": [
             {"id": "AC-1", "text": "t", "kind": "logic", "checks": ["C1"]}],
-            "checks": [{"id": "C1", "type": "test", "repo": "React", "cmd": "true"}]})
+            "checks": [{"id": "C1", "type": "test", "repo": "React", "cmd": f'"{sys.executable}" -c "pass"'}]})
+        self.lock_and_prove(rid)
         plan = json.loads(self.ok("--json", "ship", "plan", rid))
         by_target = {m["target"]: m["source_branch"] for m in plan["mrs"]}
         self.assertEqual(by_target["homolog"], "feature/DEV-3-h")

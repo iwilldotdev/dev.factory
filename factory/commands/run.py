@@ -1,4 +1,4 @@
-"""`factory run start|status|list|branch|decide|block|unblock|human` (DESIGN §2.2, §3)."""
+"""`factory run start|status|list|branch|decide|block|unblock|human|replan|rewind` (DESIGN §2.2, §3)."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..collectors.test import link_deps
+from ..collectors.test import prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, event, factory_home,
                     git, git_dirty, git_head, now, repo_conf, run_dir, run_load,
                     run_save, workspace_load, write_json)
+from .. import integrity
 from . import gate
 
 BLOCKER_KINDS = ("env", "access", "question", "dependency", "conflict")
@@ -216,15 +217,25 @@ def cmd_branch(args) -> int:
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
-    link_deps(main, worktree)
     run["repos"][alias] = {"branch": branch, "base": args.base, "worktree": str(worktree),
                            "head": git_head(worktree), "base_ref": base}
     if base_branch:
         run["repos"][alias]["base_branch"] = base_branch
         run["repos"][alias]["base_run"] = args.from_run
     run_save(run)
-    _emit(args, run["repos"][alias], f"{alias}: branch {branch} from {base} at {worktree}")
-    return 0
+    warn = _prepare(ws, conf, main, worktree)
+    _emit(args, dict(run["repos"][alias], **({"setup_error": warn} if warn else {})),
+          f"{alias}: branch {branch} from {base} at {worktree}" + (f"\nWARNING: {warn}" if warn else ""))
+    return 1 if warn else 0
+
+
+def _prepare(ws: dict, conf: dict, main: Path, worktree: Path) -> str | None:
+    """Same preparation as the temp worktrees of baseline/repro/red-green (quality.setup or node_modules link)."""
+    try:
+        prepare_worktree(main, worktree, setup_command(ws, conf["alias"]), (conf.get("env") or {}).get("env_vars"))
+    except RuntimeError as err:
+        return f"{err}; fix it and rerun the setup command in {worktree}"
+    return None
 
 
 def cmd_mirror(args) -> int:
@@ -269,7 +280,9 @@ def cmd_mirror(args) -> int:
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
-    link_deps(main, worktree)
+    warn = _prepare(ws, conf, main, worktree)
+    if warn:
+        print(f"WARNING: {warn}")
     rec.setdefault("branches", {})[target] = name
     rec.setdefault("worktrees", {})[target] = str(worktree)
     pick = subprocess.run(["git", "-C", str(worktree), "cherry-pick", *shas],
@@ -316,12 +329,56 @@ def cmd_unblock(args) -> int:
     run["blockers"][args.n]["resolved"] = True
     run["blockers"][args.n]["resolved_at"] = now()
     if run["phase"] == "blocked" and not any(not b.get("resolved") for b in run["blockers"]):
-        prev = next((e["data"].get("from") for e in reversed(run["events"])
+        prev = next((e["data"].get("resume") or e["data"].get("from") for e in reversed(run["events"])
                      if e["kind"] == "phase" and e["data"].get("to") == "blocked"), None) or "build"
         event(run, "phase", **{"from": "blocked", "to": prev})
         run["phase"] = prev
     run_save(run)
     _emit(args, {"phase": run["phase"]}, f"blocker #{args.n} resolved; phase {run['phase']}")
+    return 0
+
+
+def cmd_replan(args) -> int:
+    """The one legit way to change acs.json/checks/figma/diagnosis after the plan gate: back to plan, lock cleared."""
+    run = run_load(args.run)
+    if run.get("kind") not in ("ticket", "review", None):
+        raise FactoryError(f"run replan is for ticket and review runs, not {run.get('kind')}")
+    if run["phase"] in ("intake", "plan", "done"):
+        raise FactoryError(f"run {run['id']} is in phase {run['phase']}; nothing to replan")
+    loops = run.setdefault("loops", {"build": 0, "review": 0})
+    loops["replan"] = loops.get("replan", 0) + 1
+    changed = integrity.changed_files(run) if isinstance(run.get("plan_lock"), dict) else []
+    event(run, "replan", reason=args.reason, **{"from": run["phase"]}, changed=changed, loop=loops["replan"])
+    event(run, "loop", replan=loops["replan"])
+    run.pop("plan_lock", None)
+    gate._set_phase(run, "plan")
+    run_save(run)
+    _emit(args, {"phase": "plan", "replan": loops["replan"]},
+          f"phase plan (replan {loops['replan']}); change the plan files, then `factory gate {run['id']} plan`")
+    return 0
+
+
+REWIND_TO = ("build", "prove")
+
+
+def cmd_rewind(args) -> int:
+    """Back to build or prove after the worktree moved (rebase/merge, fixes) past the proof."""
+    run = run_load(args.run)
+    phases, _ = gate.machine(run)
+    if run.get("kind") == "epic" or args.phase not in phases:
+        raise FactoryError(f"{run.get('kind')} runs cannot rewind to {args.phase}")
+    current = run["phase"]
+    if current == "blocked":
+        raise FactoryError("run is blocked: resolve the blockers first (factory run unblock)")
+    if current not in phases or phases.index(current) <= phases.index(args.phase):
+        raise FactoryError(f"run {run['id']} is in phase {current}; rewind goes back to an earlier phase")
+    loops = run.setdefault("loops", {"build": 0, "review": 0})
+    loops["build"] = loops.get("build", 0) + 1
+    event(run, "rewind", reason=args.reason, **{"from": current, "to": args.phase}, loop=loops["build"])
+    event(run, "loop", build=loops["build"])
+    gate._set_phase(run, args.phase)
+    run_save(run)
+    _emit(args, {"phase": args.phase, "loops": loops}, f"phase {current} -> {args.phase} (build loop {loops['build']})")
     return 0
 
 
@@ -383,3 +440,12 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("note")
     p.set_defaults(func=cmd_human)
+    p = rs.add_parser("replan", help="back to plan to change acs.json/checks/figma/diagnosis (clears the plan lock)")
+    p.add_argument("run")
+    p.add_argument("reason")
+    p.set_defaults(func=cmd_replan)
+    p = rs.add_parser("rewind", help="back to build or prove after the worktree moved past the proof")
+    p.add_argument("run")
+    p.add_argument("phase", choices=REWIND_TO)
+    p.add_argument("reason")
+    p.set_defaults(func=cmd_rewind)

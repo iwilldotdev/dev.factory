@@ -76,6 +76,25 @@ def _unwrap_mr(data):
     return data
 
 
+def integrity_errors(run_id: str, run: dict, workspace: dict) -> list[str]:
+    """Plan lock + the prove-gate criteria against the current HEADs (a commit after prove fails here)."""
+    from . import gate
+    return gate.proof_errors(run_id, run, workspace)
+
+
+def branch_head(run: dict, workspace: dict, alias: str, target: str, branch: str) -> str | None:
+    """Local tip of the MR source branch (refs are shared by the run's worktrees)."""
+    wt = target_worktree(run, workspace, alias, target)
+    if wt is None or not Path(wt).is_dir():
+        return None
+    return git(wt, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}", check=False) or None
+
+
+def _readback_sha(data: dict) -> str | None:
+    refs = data.get("diff_refs") if isinstance(data.get("diff_refs"), dict) else {}
+    return data.get("sha") or refs.get("head_sha")
+
+
 def _merged_mrs(run_id: str) -> list[dict]:
     out = []
     for p in sorted((run_dir(run_id) / "remote").glob("mr-*.json")):
@@ -213,7 +232,7 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
     if not targets or not repos:
         raise FactoryError("run has no repos or targets to ship")
 
-    errors = check_dependencies(run, internal_deps)
+    errors = integrity_errors(run_id, run, workspace) + check_dependencies(run, internal_deps)
     for alias in repos:
         for target in targets:
             wt = target_worktree(run, workspace, alias, target)
@@ -226,7 +245,9 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
                 errors.append(str(err))
                 continue
             if n > 0 and not allow_behind:
-                errors.append(f"{alias}: HEAD is {n} commit(s) behind origin/{target}; rebase/merge or pass --allow-behind")
+                errors.append(f"{alias}: HEAD is {n} commit(s) behind origin/{target}; rebase/merge via a builder, then "
+                              f"`factory run rewind {run_id} prove \"rebased on {target}\"` (prove + review again), "
+                              "or --allow-behind with the user's explicit yes")
     if errors:
         raise GateFailed(errors)
 
@@ -244,10 +265,12 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
         deps = [] if hotfix else [(a, t) for (a, t) in seq if (a != alias and t == target and repos.index(a) < repos.index(alias))
                 or (a == alias and targets.index(t) < targets.index(target))]
         base_title = _title(fmt, run, alias, target)
+        src = source_branch(run, alias, target, targets)
         mrs.append({
             "repo": alias,
             "target": target,
-            "source_branch": source_branch(run, alias, target, targets),
+            "source_branch": src,
+            "head_sha": branch_head(run, workspace, alias, target, src),
             "target_branch": target,
             "title": (DRAFT_PREFIX + base_title) if draft else base_title,
             "draft": draft,
@@ -299,7 +322,9 @@ def verify(run_id: str) -> list[str]:
     if not plan_path.is_file():
         return ["ship-plan.json missing; run `factory ship plan` first"]
     plan = read_json(plan_path)
-    errors = []
+    run = run_load(run_id)
+    workspace = workspace_load(run["workspace"])
+    errors = list(integrity_errors(run_id, run, workspace))
     verified = []
     for mr in plan.get("mrs", []):
         label = f"{mr['repo']}/{mr['target']}"
@@ -323,12 +348,22 @@ def verify(run_id: str) -> list[str]:
             errors.append(f"{label}: draft is {is_draft}, planned {mr['draft']}")
         if _strip_draft(title) != _strip_draft(mr["title"]):
             errors.append(f"{label}: title {title!r} != planned {mr['title']!r}")
+        current = branch_head(run, workspace, mr["repo"], mr["target"], mr["source_branch"])
+        remote_sha = _readback_sha(data)
+        if not mr.get("head_sha"):
+            errors.append(f"{label}: ship plan recorded no head for {mr['source_branch']}; re-run factory ship plan")
+        elif current != mr["head_sha"]:
+            errors.append(f"{label}: {mr['source_branch']} is at {str(current)[:8]}, ship plan recorded "
+                          f"{mr['head_sha'][:8]}; rewind to prove (factory run rewind {run_id} prove \"<reason>\")")
+        elif remote_sha != mr["head_sha"]:
+            errors.append(f"{label}: MR head sha {str(remote_sha)[:8]} != proven HEAD {mr['head_sha'][:8]} "
+                          "(push the proven commit; never push unproven commits)")
         verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid")})
     if not errors:
         run = run_load(run_id)
         event(run, "ship", verified=verified)
         run_save(run)
-    return errors
+    return list(dict.fromkeys(errors))
 
 
 # ---------- CLI ----------

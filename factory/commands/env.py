@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 from ..core import (
     FactoryError,
     factory_home,
+    git,
+    now,
     read_json,
     repo_conf,
     repo_path_for_run,
@@ -80,10 +82,45 @@ def storage_state_path(ws: str, alias: str) -> Path:
     return _env_dir(ws) / f"{alias}.storage.json"
 
 
-def _read_pid(ws: str, alias: str) -> int | None:
+def read_record(ws: str, alias: str) -> dict | None:
+    """Pid record {pid, cwd, head, started, create_time}; a legacy bare pid becomes {pid}."""
     try:
-        return int(pid_path(ws, alias).read_text().strip())
-    except (OSError, ValueError):
+        text = pid_path(ws, alias).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, int) and not isinstance(data, bool):
+        return {"pid": data}
+    if isinstance(data, dict) and isinstance(data.get("pid"), int):
+        return data
+    return None
+
+
+def _read_pid(ws: str, alias: str) -> int | None:
+    rec = read_record(ws, alias)
+    return rec["pid"] if rec else None
+
+
+def _drop_record(ws: str, alias: str) -> None:
+    try:
+        pid_path(ws, alias).unlink()
+    except OSError:
+        pass
+
+
+def _same_path(a, b) -> bool:
+    if not a or not b:
+        return False
+    return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+
+
+def _head_of(path: Path) -> str | None:
+    try:
+        return git(path, "rev-parse", "HEAD")
+    except FactoryError:
         return None
 
 
@@ -116,6 +153,48 @@ def pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def process_create_time(pid: int) -> str | None:
+    """Opaque process start stamp, to tell our process from a later one that reused its pid."""
+    if IS_WIN:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.OpenProcess.restype = wintypes.HANDLE
+            k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+            k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return None
+            try:
+                times = [wintypes.FILETIME() for _ in range(4)]
+                if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                    return None
+                return str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+            finally:
+                k32.CloseHandle(handle)
+        except (OSError, AttributeError, ValueError):
+            return None
+    stat = Path(f"/proc/{pid}/stat")
+    if stat.is_file():
+        try:
+            return stat.read_text().rsplit(")", 1)[1].split()[19]  # field 22: starttime (ticks since boot)
+        except (OSError, IndexError):
+            return None
+    out = _run(["ps", "-o", "lstart=", "-p", str(pid)]).strip()
+    return out or None
+
+
+def record_alive(rec: dict | None) -> bool:
+    """The recorded process still runs and is the same process (create time matches)."""
+    if not rec or not pid_alive(rec["pid"]):
+        return False
+    if rec.get("create_time") is None:
+        return True  # legacy record: no stamp to compare
+    return process_create_time(rec["pid"]) == rec["create_time"]
 
 
 def process_name(pid: int) -> str:
@@ -220,12 +299,25 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
             return False
 
     health = _health_url(workspace, alias)
-    pid = _read_pid(ws, alias)
-    if pid and pid_alive(pid):
+    cwd = _cwd_for(workspace, run, alias)
+    head = _head_of(cwd) if cwd.is_dir() else None
+    rec = read_record(ws, alias)
+    if rec and record_alive(rec):
+        if not _same_path(rec.get("cwd"), cwd) or (rec.get("head") or None) != head:
+            out.append(
+                f"{alias}: already up (pid {rec['pid']}) for {rec.get('cwd') or '?'} at "
+                f"{str(rec.get('head') or '?')[:8]}, but this request is {cwd} at {str(head or '?')[:8]}. "
+                f"Run `factory env down {ws} {alias}` first, then up again.")
+            return False
         if health_ok(health):
-            out.append(f"{alias}: already up (pid {pid})")
+            out.append(f"{alias}: already up (pid {rec['pid']})")
             return True
-        kill_tree(pid)  # stale: alive but unhealthy; restart below
+        kill_tree(rec["pid"])  # stale: ours, alive but unhealthy; restart below
+        _drop_record(ws, alias)
+    elif rec:
+        if pid_alive(rec["pid"]):
+            out.append(f"{alias}: pid {rec['pid']} now belongs to another process (create time differs); not touched")
+        _drop_record(ws, alias)  # our process is gone
     for port in env.get("ports") or []:
         if port_in_use(int(port)):
             owner = port_owner(int(port))
@@ -235,8 +327,11 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
                 f"Ask the user to stop it (e.g. {'taskkill /F /PID ' + str(owner[0]) if owner and IS_WIN else 'kill ' + str(owner[0]) if owner else 'free the port'}) and retry."
             )
             return False
+    if not env.get("ports") and health_ok(health):
+        out.append(f"{alias}: unknown server already answering at {health}, not started by factory. "
+                   "Ask the user to stop it (or declare env.ports to see its owner) and retry.")
+        return False
 
-    cwd = _cwd_for(workspace, run, alias)
     if not cwd.is_dir():
         raise FactoryError(f"{alias}: cwd {cwd} does not exist")
     start = env["start"]
@@ -260,7 +355,9 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
             cmd, cwd=str(cwd), env=proc_env, stdin=subprocess.DEVNULL,
             stdout=logf, stderr=subprocess.STDOUT, shell=shell, **kwargs,
         )
-    pid_path(ws, alias).write_text(str(proc.pid))
+    pid_path(ws, alias).write_text(json.dumps({
+        "pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
+        "create_time": process_create_time(proc.pid)}), encoding="utf-8")
 
     deadline = time.time() + float(env.get("startup_timeout_s") or 120)
     while time.time() < deadline:
@@ -286,16 +383,38 @@ def up(workspace: dict, alias: str, run: dict | None = None) -> tuple[bool, list
 def down(workspace: dict, alias: str) -> str:
     repo = repo_conf(workspace, alias)
     ws, alias = workspace["name"], repo["alias"]
-    pid = _read_pid(ws, alias)
-    if not pid:
+    rec = read_record(ws, alias)
+    if not rec:
         return f"{alias}: no pid file (nothing started by factory)"
-    if pid_alive(pid):
+    pid = rec["pid"]
+    if record_alive(rec):
         kill_tree(pid)
-    try:
-        pid_path(ws, alias).unlink()
-    except OSError:
-        pass
+    elif pid_alive(pid):
+        _drop_record(ws, alias)
+        return (f"{alias}: pid {pid} now belongs to another process (create time differs); "
+                "not killed; pid record removed")
+    _drop_record(ws, alias)
     return f"{alias}: stopped (pid {pid})"
+
+
+def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None) -> str | None:
+    """None when the env of `alias` was started by `factory env up` from `worktree` at `head` and still runs."""
+    repo = repo_conf(workspace, alias)
+    ws, alias = workspace["name"], repo["alias"]
+    rec = read_record(ws, alias)
+    if not rec:
+        return (f"env {alias}: not started by `factory env up {ws} {alias} --run <run>` (no pid record); "
+                "evidence cannot be bound to the worktree")
+    if not record_alive(rec):
+        return f"env {alias}: recorded process {rec['pid']} is not running (or its pid was reused); env up again"
+    want = (Path(worktree) / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
+    if not _same_path(rec.get("cwd"), want):
+        return (f"env {alias}: running env serves {rec.get('cwd') or '?'}, not {want}; "
+                f"`factory env down {ws} {alias}` then `env up --run`")
+    if head and rec.get("head") != head:
+        return (f"env {alias}: started at {str(rec.get('head') or '?')[:8]}, worktree HEAD is {head[:8]}; "
+                f"`factory env down {ws} {alias}` then `env up --run`")
+    return None
 
 
 # ---------- login ----------
@@ -343,11 +462,12 @@ def login(workspace: dict, alias: str) -> tuple[bool, str]:
         raise FactoryError("node not found on PATH")
     out = storage_state_path(workspace["name"], alias)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        node, str(cli), "login", "--base-url", base_url(workspace, alias),
-        "--login-json", json.dumps(env["login"]), "--user", user, "--pass", pw, "--out", str(out),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180)
+    cfg = out.with_name(f"{alias}.login.json")  # the CLI reads --login-json as a file
+    cfg.write_text(json.dumps(env["login"]), encoding="utf-8")
+    cmd = [node, str(cli), "login", "--base-url", base_url(workspace, alias), "--login-json", str(cfg), "--out", str(out)]
+    # credentials go through the environment, never argv (process listings show argv)
+    proc_env = {**os.environ, "FACTORY_LOGIN_USER": user, "FACTORY_LOGIN_PASS": pw}
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180, env=proc_env)
     text = (proc.stdout + proc.stderr).replace(pw, "***").replace(user, "***")
     return proc.returncode == 0, text.strip()[-2000:]
 

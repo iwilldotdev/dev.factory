@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
-from ..collectors.test import link_deps
-from ..core import (SCHEMA_VERSION, now, FactoryError, GateFailed, event, factory_home, git, git_dirty,
+from .. import integrity
+from ..collectors.test import prepare_worktree, setup_command
+from ..core import (SCHEMA_VERSION, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
                     git_head, load_evidence, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save,
                     workspace_load, write_json)
@@ -39,11 +41,17 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
         if not f.get("text"):
             errors.append(f"finding {fid}: text is required")
     comp = rec.get("completeness")
-    if not isinstance(comp, dict) or not all(isinstance(comp.get(k), int) for k in ("done", "gap", "not_checked")):
+    if not isinstance(comp, dict) or not all(isinstance(comp.get(k), int) and not isinstance(comp.get(k), bool)
+                                             for k in ("done", "gap", "not_checked")):
         errors.append("completeness needs integer done, gap, not_checked")
-    if rec.get("verdict") == "APPROVE" and any(f.get("severity") in ("blocker", "major") and not f.get("resolved")
-                                               for f in findings):
-        errors.append("APPROVE with open blocker/major findings")
+        comp = None
+    if rec.get("verdict") == "APPROVE":
+        if any(f.get("severity") in ("blocker", "major") for f in findings):
+            errors.append("APPROVE with open blocker/major findings (a `resolved` flag does not count: "
+                          "resolution is shown by a later round)")
+        if comp and (comp["gap"] > 0 or comp["not_checked"] > 0):
+            errors.append(f"APPROVE with completeness gap {comp['gap']} / not_checked {comp['not_checked']}: "
+                          "what was not verified cannot be approved")
     if kind == "qa" and acs:
         cover = {c.get("ac"): c for c in rec.get("ac_coverage") or []}
         for ac in acs:
@@ -54,7 +62,13 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
     return errors
 
 
+AUDITOR_ROLE = "auditor"
+
+
 def cmd_record(args) -> int:
+    if os.environ.get("FACTORY_ROLE") != AUDITOR_ROLE:
+        raise FactoryError("review record is for the auditor: run it as `FACTORY_ROLE=auditor factory review record ...` "
+                           "from the factory-auditor agent (the guard lets only that role set it)")
     run = run_load(args.run)
     ws = workspace_load(run["workspace"])
     rec = read_json(Path(args.file))
@@ -81,7 +95,8 @@ def cmd_record(args) -> int:
     rnd = max(existing, default=0) + 1
     out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now())
     write_json(rdir / f"{args.kind}-{rnd}.json", out)
-    event(run, "review", review_kind=args.kind, round=rnd, verdict=out["verdict"], findings=len(out["findings"]))
+    event(run, "review", review_kind=args.kind, round=rnd, verdict=out["verdict"], findings=len(out["findings"]),
+          digest=file_sha256(rdir / f"{args.kind}-{rnd}.json"))
     run_save(run)
     if getattr(args, "json", False):
         print(json.dumps({"kind": args.kind, "round": rnd, "verdict": out["verdict"]}))
@@ -370,7 +385,10 @@ def branch_for_mr(args, run: dict, ws: dict, conf: dict, main: Path) -> int:
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
-    link_deps(main, worktree)
+    try:
+        prepare_worktree(main, worktree, setup_command(ws, alias), (conf.get("env") or {}).get("env_vars"))
+    except RuntimeError as err:
+        print(f"WARNING: {err}; fix it and rerun the setup command in {worktree}")
     run["repos"][alias] = {"branch": mr["source_branch"], "base": mr["target_branch"], "worktree": str(worktree),
                            "head": git_head(worktree), "base_ref": gate.resolve_base(main, mr["target_branch"]),
                            "mr": args.mr, "detached": True}
@@ -409,6 +427,9 @@ def _mr_report(run: dict, ws: dict, mr: dict) -> dict:
         ev = load_evidence(rid, cid)
         if ev is None:
             return "missing", "no evidence"
+        bad = integrity.evidence_error(run, cid)
+        if bad:
+            return "error", bad
         if ev.get("status") == "fail":
             return "fail", ev.get("summary", "")
         if ev.get("status") != "pass":
@@ -460,9 +481,13 @@ def _mr_report(run: dict, ws: dict, mr: dict) -> dict:
             (failures if status == "fail" else gaps).append(f"{cid}: {status} {summary}".strip())
     findings, rounds = [], {}
     for kind in ("code", "qa"):
-        rec = gate.latest_review(rid, kind)
+        rec, rpath = gate.latest_review_file(rid, kind)
         if rec is None:
             gaps.append(f"no {kind} review recorded")
+            continue
+        bad = integrity.review_error(run, rpath, kind, rec.get("round"))
+        if bad:
+            gaps.append(bad)
             continue
         rounds[kind] = {"round": rec.get("round"), "verdict": rec.get("verdict")}
         if (rec.get("repos") or {}).get(alias) != head:
@@ -472,7 +497,7 @@ def _mr_report(run: dict, ws: dict, mr: dict) -> dict:
         for f in rec.get("findings") or []:
             findings.append({"review": kind, "id": f.get("id"), "severity": f.get("severity"), "file": f.get("file"),
                              "ac": f.get("ac"), "text": f.get("text"), "resolved": bool(f.get("resolved"))})
-            if f.get("severity") in ("blocker", "major") and not f.get("resolved"):
+            if f.get("severity") in ("blocker", "major"):
                 failures.append(f"{kind} {f.get('id')} [{f['severity']}] {f.get('file', '')} {f.get('text', '')}".strip())
     behind, note = None, None
     if wt:
@@ -509,7 +534,7 @@ def _md(report: dict) -> str:
     lines = [f"# Review report: {report['run']}", "", f"Generated {report['generated']}. Verdict: **{report['verdict']}**", "",
              "| MR | Ticket | Verdict | Open blocker/major | ACs proven | Behind target |", "|---|---|---|---|---|---|"]
     for m in report["mrs"]:
-        open_bm = sum(1 for f in m["findings"] if f["severity"] in ("blocker", "major") and not f["resolved"])
+        open_bm = sum(1 for f in m["findings"] if f["severity"] in ("blocker", "major"))
         proven = sum(1 for a in m["acs"] if a["status"] == "pass")
         behind = m["freshness"]["behind"]
         lines.append(f"| {m['repo']}!{m['iid']} | {m['ticket']} | {m['verdict']} | {open_bm} | {proven}/{len(m['acs'])} | "

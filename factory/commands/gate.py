@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 
+from .. import integrity
 from ..core import (FactoryError, GateFailed, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
@@ -23,6 +24,7 @@ CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human"}
 AC_KINDS = {"ui", "api", "logic", "data", "bug"}
 LOCAL_REPRO_TYPES = {"test"}  # reproducible in a temp worktree; the only types required on mirror targets
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+DEFAULT_LIMITS = {"max_diff_ratio": 0.03, "max_tolerance_px": 2}
 
 
 # ---------- shared helpers ----------
@@ -141,6 +143,26 @@ def _call_external(module: str, func: str, *args) -> list[str]:
 NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 
+# expected key (style map, CSS names) -> payload keys (Figma names) whose values may back it
+SIZE_KEYS = frozenset({"width", "height", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "padding",
+                       "itemSpacing", "counterAxisSpacing", "cornerRadius", "rectangleCornerRadii", "gap",
+                       "minWidth", "maxWidth", "minHeight", "maxHeight"})
+FAMILIES = {
+    "fontSize": frozenset({"fontSize"}),
+    "lineHeight": frozenset({"lineHeightPx", "lineHeight"}),
+    "fontWeight": frozenset({"fontWeight"}),
+    "letterSpacing": frozenset({"letterSpacing"}),
+    "opacity": frozenset({"opacity"}),
+    "borderWidth": frozenset({"strokeWeight", "borderWidth"}),
+    "fontFamily": frozenset({"fontFamily"}),
+    "text": frozenset({"characters", "text"}),
+}
+for _k in ("width", "height", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "gap",
+           "borderRadius", "minWidth", "maxWidth", "minHeight", "maxHeight"):
+    FAMILIES[_k] = SIZE_KEYS
+COLOR_KEYS = frozenset({"color", "backgroundColor", "borderColor"})
+PAINT_KEYS = frozenset({"fills", "strokes", "background", "backgrounds", "backgroundColor", "color", "fill", "stroke"})
+
 
 def _meta_files(fdir: Path) -> list[Path]:
     """figma/meta.json and figma/meta-<fileKey>.json."""
@@ -172,9 +194,50 @@ def _walk_colors(node, out: set) -> None:
     elif isinstance(node, list):
         for v in node:
             _walk_colors(v, out)
+    elif isinstance(node, str):
+        for h in HEX_RE.findall(node):
+            c = _norm_hex(h)
+            if c:
+                out.add(c)
+        c = _expected_color(node)
+        if c:
+            out.add(c)
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def payload_facts(payload) -> tuple[dict[str, set], set[str]]:
+    """({payload key: {numbers and strings found under that key}}, {paint colors under fills/strokes/...})."""
+    by_key: dict[str, set] = {}
+    colors: set[str] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in PAINT_KEYS:
+                    _walk_colors(v, colors)
+                if _is_num(v):
+                    by_key.setdefault(k, set()).add(float(v))
+                elif isinstance(v, str):
+                    by_key.setdefault(k, set()).add(v)
+                    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)(?:px)?\s*", v)
+                    if m:
+                        by_key[k].add(float(m.group(1)))
+                elif isinstance(v, list) and v and all(_is_num(x) for x in v):
+                    by_key.setdefault(k, set()).update(float(x) for x in v)
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(payload)
+    return by_key, colors
 
 
 def pack_facts(text: str) -> tuple[list[float], set[str]]:
+    """Every number and color in a pack text (diagnostics; the style-map check uses payload_facts)."""
     numbers = [float(n) for n in NUM_RE.findall(text)]
     colors = {c for c in (_norm_hex(h) for h in HEX_RE.findall(text)) if c}
     try:
@@ -207,10 +270,14 @@ def _flatten(prefix: str, value):
         yield prefix, value
 
 
-def style_map_errors(map_data: dict, pack_text: str, label: str) -> list[str]:
+def style_map_errors(map_data: dict, pack_text: str, label: str, max_tolerance_px: float | None = None) -> list[str]:
+    """Every expected value must match a value of the SAME property family in the node payload."""
     errors = []
-    numbers, colors = pack_facts(pack_text)
-    lowered = pack_text.lower()
+    try:
+        payload = json.loads(pack_text)
+    except json.JSONDecodeError:
+        return [f"{label}: Figma pack JSON is not valid"]
+    by_key, colors = payload_facts(payload)
     entries = map_data.get("entries")
     if not isinstance(entries, list) or not entries:
         return [f"{label}: style map has no entries"]
@@ -218,31 +285,46 @@ def style_map_errors(map_data: dict, pack_text: str, label: str) -> list[str]:
         eid = entry.get("id", "?")
         if not entry.get("selector"):
             errors.append(f"{label}: entry {eid} has no selector")
+        tol = entry.get("tolerance_px")
+        if tol is not None and (not _is_num(tol) or tol < 0):
+            errors.append(f"{label}: entry {eid} tolerance_px must be a number >= 0")
+        elif max_tolerance_px is not None and tol is not None and tol > max_tolerance_px:
+            errors.append(f"{label}: entry {eid} tolerance_px {tol} exceeds limits.max_tolerance_px {max_tolerance_px}")
         expect = entry.get("expect")
         if not isinstance(expect, dict) or not expect:
             errors.append(f"{label}: entry {eid} has no expect")
             continue
         for path, value in _flatten("expect", expect):
-            name = f"{label}: {eid}.{path[len('expect.'):]}={value!r}"
+            prop = path[len("expect."):]
+            key = re.split(r"[.\[]", prop, 1)[0]
+            name = f"{label}: {eid}.{prop}={value!r}"
             if isinstance(value, bool) or value is None:
                 continue
             color = _expected_color(value)
-            if color is not None:
-                if color not in colors:
-                    errors.append(f"{name} color not in Figma pack")
+            if key in COLOR_KEYS or color is not None:
+                if color is None:
+                    errors.append(f"{name} is not a color")
+                elif key not in COLOR_KEYS:
+                    errors.append(f"{name}: a color for a non-color property")
+                elif color not in colors:
+                    errors.append(f"{name} color not in the node's fills/strokes")
                 continue
+            family = FAMILIES.get(key)
+            if family is None:
+                errors.append(f"{name}: no Figma property family for {key!r} (cannot be backed by the pack)")
+                continue
+            found = set().union(*(by_key.get(k, set()) for k in family))
             if isinstance(value, str):
-                m = re.fullmatch(r"(-?\d+(?:\.\d+)?)(px)?", value.strip())
+                m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)(?:px)?\s*", value)
                 if m:
                     value = float(m.group(1))
-                elif value.strip().lower() not in lowered:
-                    errors.append(f"{name} not in Figma pack")
+                elif value.strip().lower() not in {str(f).strip().lower() for f in found if isinstance(f, str)}:
+                    errors.append(f"{name} not in the node's {'/'.join(sorted(family))}")
                     continue
                 else:
                     continue
-            if isinstance(value, (int, float)):
-                if not any(abs(n - value) < 1e-6 for n in numbers):
-                    errors.append(f"{name} number not in Figma pack")
+            if _is_num(value) and not any(_is_num(n) and abs(n - value) < 1e-6 for n in found):
+                errors.append(f"{name} number not in the node's {'/'.join(sorted(family))}")
     return errors
 
 
@@ -276,6 +358,7 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
     except FactoryError as err:
         return [str(err)]
     errors: list[str] = []
+    limits = workspace_limits(workspace)
     if data.get("schemaVersion") != 1:
         errors.append("acs.json: schemaVersion must be 1")
     acs, checks = data.get("acs") or [], data.get("checks") or []
@@ -331,6 +414,25 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             errors.append(f"{cid}: node is required")
         if ctype == "style" and not chk.get("map"):
             errors.append(f"{cid}: map is required")
+        if ctype == "visual" and chk.get("max_diff_ratio") is not None:
+            ratio = chk["max_diff_ratio"]
+            if not _is_num(ratio) or ratio < 0:
+                errors.append(f"{cid}: max_diff_ratio must be a number >= 0")
+            elif ratio > limits["max_diff_ratio"]:
+                errors.append(f"{cid}: max_diff_ratio {ratio} exceeds limits.max_diff_ratio {limits['max_diff_ratio']}")
+        if chk.get("tolerance_px") is not None:
+            tol = chk["tolerance_px"]
+            if not _is_num(tol) or tol < 0 or tol > limits["max_tolerance_px"]:
+                errors.append(f"{cid}: tolerance_px {tol!r} must be a number in [0, limits.max_tolerance_px {limits['max_tolerance_px']}]")
+        if chk.get("expect_fail_pattern") is not None:
+            try:
+                re.compile(str(chk["expect_fail_pattern"]))
+            except re.error as err:
+                errors.append(f"{cid}: expect_fail_pattern is not a valid regex: {err}")
+        if ctype == "red-green" and not (chk.get("expect_fail_pattern") or (
+                next((c for c in checks if c.get("id") == chk.get("of")), None) or {}).get("expect_fail_pattern")):
+            errors.append(f"{cid}: red-green needs expect_fail_pattern (on the check or its `of` test check): the red side "
+                          "must fail on the assertion, not on setup")
     referenced: set[str] = set()
     ac_seen: set[str] = set()
     for ac in acs:
@@ -357,6 +459,12 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
         if ac.get("kind") == "bug" and "red-green" not in types and not types & RUNTIME_TYPES:
             errors.append(f"{aid}: bug AC needs a red-green check, or a runtime check "
                           "(browser/api/visual/style) reproduced on base and passing at HEAD")
+        if ac.get("kind") == "bug":
+            for cid in refs:
+                chk = check_ids.get(cid) or {}
+                if chk.get("type") == "test" and not chk.get("expect_fail_pattern"):
+                    errors.append(f"{aid}: {cid} needs expect_fail_pattern (regex of the failing test name or assertion): "
+                                  "a failure without it is a setup error, not a reproduction")
     for cid in check_ids:
         if cid not in referenced:
             errors.append(f"{cid}: not referenced by any AC")
@@ -393,8 +501,18 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             errors.append(f"{chk['id']}: style map node {mdata.get('node')!r} != check node {chk['node']!r}")
         jpath = run_dir(run_id) / "figma" / f"{node_file(chk['node'])}.json"
         if jpath.is_file():
-            errors.extend(style_map_errors(mdata, jpath.read_text(encoding="utf-8"), f"{chk['id']} ({chk['map']})"))
+            errors.extend(style_map_errors(mdata, jpath.read_text(encoding="utf-8"), f"{chk['id']} ({chk['map']})",
+                                           limits["max_tolerance_px"]))
     return errors
+
+
+def workspace_limits(workspace: dict) -> dict:
+    """Ceilings for check thresholds (workspace `limits`); a plan cannot loosen a check past them."""
+    out = dict(DEFAULT_LIMITS)
+    for k, v in ((workspace or {}).get("limits") or {}).items():
+        if k in out and _is_num(v):
+            out[k] = v
+    return out
 
 
 # ---------- phase evaluators ----------
@@ -471,6 +589,7 @@ def _reproduce(run_id, run, ws) -> list[str]:
             errors.extend(_repro_target_errors(run_id, run, ws, aid, tcands, target))
     errors.extend(diagnosis_errors(run_id))
     errors.extend(env_errors(ws, repro_checks(run_id)))
+    errors.extend(integrity.lock_errors(run, ignore=("diagnosis.md",)))
     return list(dict.fromkeys(errors))
 
 
@@ -483,6 +602,10 @@ def _repro_target_errors(run_id, run, ws, aid, cands, target) -> list[str]:
         rec = load_evidence_file(run_id, repro_id(evidence_id(run, chk["id"], target)))
         if rec is None:
             errors.append(f"{aid}: {name}: no REPRO evidence (factory prove {run_id} --repro)")
+            continue
+        bad = integrity.evidence_error(run, repro_id(evidence_id(run, chk["id"], target)))
+        if bad:
+            errors.append(f"{aid}: {bad}")
             continue
         if rec.get("status") != "reproduced":
             errors.append(f"{aid}: {name}: REPRO status {rec.get('status')} ({rec.get('summary')})")
@@ -548,6 +671,9 @@ def _evidence_errors(run_id, run, ws, check: dict, target: str | None = None) ->
     ev = load_evidence(run_id, cid)
     if ev is None:
         return [f"{cid}: no evidence (factory prove)"]
+    bad = integrity.evidence_error(run, cid)
+    if bad:
+        return [bad]
     errors = []
     if ev.get("status") != "pass":
         errors.append(f"{cid}: evidence status {ev.get('status')} ({ev.get('summary')})")
@@ -589,11 +715,13 @@ def _bug_runtime_errors(run_id, run, ws) -> list[str]:
 
 
 def _prove(run_id, run, ws) -> list[str]:
-    errors = []
+    """Also re-run by the review gate, ship plan/verify and the ship gate: a commit, a dirty
+    worktree or a changed plan file after prove invalidates the proof (rewind to prove)."""
+    errors = integrity.lock_errors(run)
     try:
         checks = load_acs(run_id).get("checks") or []
     except FactoryError as err:
-        return [str(err)]
+        return errors + [str(err)]
     for alias in touched_repos(run):
         for target in run_targets(run):
             path = target_worktree(run, ws, alias, target)
@@ -616,25 +744,40 @@ def _prove(run_id, run, ws) -> list[str]:
     return errors
 
 
-def latest_review(run_id: str, kind: str) -> dict | None:
-    best, best_round = None, -1
+def latest_review_file(run_id: str, kind: str) -> tuple[dict | None, Path | None]:
+    best, best_path, best_round = None, None, -1
     for p in (run_dir(run_id) / "reviews").glob(f"{kind}-*.json"):
         try:
             rec = read_json(p)
         except FactoryError:
             continue
-        if rec.get("round", 0) > best_round:
-            best, best_round = rec, rec.get("round", 0)
-    return best
+        rnd = rec.get("round", 0) if isinstance(rec.get("round", 0), int) else 0
+        if rnd > best_round:
+            best, best_path, best_round = rec, p, rnd
+    return best, best_path
+
+
+def latest_review(run_id: str, kind: str) -> dict | None:
+    return latest_review_file(run_id, kind)[0]
+
+
+def review_rounds(run_id: str) -> int:
+    return max((latest_review(run_id, k) or {}).get("round", 0) or 0 for k in ("code", "qa"))
 
 
 def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
-    """Returns (plain_errors, change_errors). change_errors send the run back to build."""
+    """Returns (plain_errors, change_errors). change_errors send the run back to build.
+
+    A blocker/major finding always counts: `resolved` flags are ignored (resolution = a later round)."""
     plain, changes = [], []
     for kind in ("code", "qa"):
-        rec = latest_review(run_id, kind)
+        rec, path = latest_review_file(run_id, kind)
         if rec is None:
             plain.append(f"no {kind} review recorded (factory review record)")
+            continue
+        bad = integrity.review_error(run, path, kind, rec.get("round"))
+        if bad:
+            plain.append(bad)
             continue
         for alias in touched_repos(run):
             try:
@@ -646,22 +789,97 @@ def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
         if rec.get("verdict") != "APPROVE":
             changes.append(f"{kind} review round {rec.get('round')} verdict {rec.get('verdict')}")
         for f in rec.get("findings") or []:
-            if f.get("severity") in ("blocker", "major") and not f.get("resolved"):
+            if f.get("severity") in ("blocker", "major"):
                 changes.append(f"{kind} {f.get('id')} [{f['severity']}] {f.get('file', '')} {f.get('text', '')}".strip())
     return plain, changes
 
 
+def proof_errors(run_id, run, ws) -> list[str]:
+    """The prove-gate criteria re-checked against the current HEADs (nothing is re-collected)."""
+    errors = (_review_prove if run.get("kind") == "review" else _prove)(run_id, run, ws)
+    if errors:
+        errors = errors + [f"the proof no longer matches the worktrees (commit, dirty file or plan change after prove): "
+                           f"`factory run rewind {run_id} prove \"<reason>\"`, then prove again"]
+    return errors
+
+
 def _review(run_id, run, ws) -> list[str]:
     plain, changes = review_status(run_id, run, ws)
-    return plain + changes
+    return proof_errors(run_id, run, ws) + plain + changes
 
 
 def _ship(run_id, run, ws) -> list[str]:
-    return _call_external("factory.commands.ship", "verify", run_id)
+    errors = proof_errors(run_id, run, ws) + _call_external("factory.commands.ship", "verify", run_id)
+    return list(dict.fromkeys(errors))
 
 
 def _feedback(run_id, run, ws) -> list[str]:
-    return [f"open blocker #{i}: {b.get('text')}" for i, b in enumerate(run.get("blockers", [])) if not b.get("resolved")]
+    """Every shipped MR: latest pipeline `success` for its head sha (or a user decision naming the pipeline)
+    and zero unresolved human threads; no open blockers."""
+    from . import feedback
+    errors = [f"open blocker #{i}: {b.get('text')}" for i, b in enumerate(run.get("blockers", [])) if not b.get("resolved")]
+    rd = run_dir(run_id)
+    plan_path = rd / "ship-plan.json"
+    if not plan_path.is_file():
+        return errors + ["ship-plan.json missing: nothing shipped to take feedback from"]
+    try:
+        plan = read_json(plan_path)
+    except FactoryError as err:
+        return errors + [str(err)]
+    waived = any(d.get("by") == "user" and d.get("phase") == "feedback" and "pipeline" in str(d.get("text", "")).lower()
+                 for d in run.get("decisions") or [])
+    for mr in plan.get("mrs") or []:
+        tag = f"{mr['repo']}-{mr['target']}"
+        label = f"{mr['repo']}/{mr['target']}"
+        head = mr.get("head_sha")
+        rb = rd / mr.get("readback", f"remote/mr-{tag}.json")
+        if rb.is_file():
+            try:
+                data = read_json(rb)
+                data = data.get("merge_request", data) if isinstance(data, dict) else {}
+                head = data.get("sha") or (data.get("diff_refs") or {}).get("head_sha") or head
+            except FactoryError:
+                pass
+        disc = rd / "remote" / f"mr-{tag}-discussions.json"
+        pipes: list = []
+        if not disc.is_file():
+            errors.append(f"{label}: remote/mr-{tag}-discussions.json missing (factory feedback ingest prints the fetch)")
+        else:
+            try:
+                ddata = read_json(disc)
+            except FactoryError as err:
+                errors.append(str(err))
+                ddata = {}
+            open_threads = feedback.discussion_findings(ddata, mr["repo"])
+            if open_threads:
+                errors.append(f"{label}: {len(open_threads)} unresolved review thread(s); feedback ingest, fix, ship again")
+            if isinstance(ddata, dict) and isinstance(ddata.get("pipelines"), list):
+                pipes = [x for x in ddata["pipelines"] if isinstance(x, dict) and x.get("id") is not None]
+        if waived:
+            continue
+        ppath = rd / "remote" / f"pipeline-{tag}.json"
+        if not ppath.is_file():
+            errors.append(f"{label}: remote/pipeline-{tag}.json missing (or record `factory run decide {run_id} "
+                          "\"pipeline: <why>\" --by user`)")
+            continue
+        try:
+            pdata = read_json(ppath)
+        except FactoryError as err:
+            errors.append(str(err))
+            continue
+        pipe = pdata.get("pipeline", pdata) if isinstance(pdata, dict) else {}
+        if pipes:
+            latest = max(pipes, key=lambda x: x["id"] if isinstance(x["id"], int) else -1)
+            if pipe.get("id") != latest.get("id"):
+                errors.append(f"{label}: pipeline file is #{pipe.get('id')}, latest pipeline is #{latest.get('id')}")
+                continue
+        if pipe.get("status") != "success":
+            errors.append(f"{label}: pipeline #{pipe.get('id')} status {pipe.get('status')!r}, not success")
+        elif head and pipe.get("sha") != head:
+            errors.append(f"{label}: pipeline #{pipe.get('id')} ran on {str(pipe.get('sha'))[:8]}, MR head is {head[:8]}")
+        elif not head:
+            errors.append(f"{label}: MR head sha unknown (readback missing)")
+    return errors
 
 
 # ---------- review runs (DESIGN §7) ----------
@@ -701,7 +919,7 @@ def _review_prove(run_id, run, ws) -> list[str]:
 
 def _review_review(run_id, run, ws) -> list[str]:
     """Both reviews recorded and bound to the MR head. A CHANGES verdict is a result for the report, not a gate failure."""
-    return review_status(run_id, run, ws)[0]
+    return proof_errors(run_id, run, ws) + review_status(run_id, run, ws)[0]
 
 
 def _report(run_id, run, ws) -> list[str]:
@@ -767,6 +985,8 @@ def fetches_for(phase: str, run: dict, ws: dict) -> list[dict]:
         out += fetches.review_intake_fetches(run, ws) if run.get("kind") == "review" else fetches.intake_fetches(run)
     if phase == "plan":
         out += fetches.figma_fetches(run["id"])
+    if phase == "feedback":
+        out += fetches.feedback_fetches(run["id"], ws)
     return fetches_dedupe(out)
 
 
@@ -775,9 +995,15 @@ def fetches_dedupe(items: list[dict]) -> list[dict]:
     return dedupe_fetch(items)
 
 
-def _set_phase(run: dict, new: str) -> None:
-    event(run, "phase", **{"from": run["phase"], "to": new})
+def _set_phase(run: dict, new: str, **extra) -> None:
+    event(run, "phase", **{"from": run["phase"], "to": new}, **extra)
     run["phase"] = new
+
+
+def block(run: dict, text: str, resume: str) -> None:
+    """Phase -> blocked with a question blocker; `run unblock` resumes at `resume`."""
+    _set_phase(run, "blocked", resume=resume)
+    run.setdefault("blockers", []).append({"at": now(), "kind": "question", "text": text, "resolved": False})
 
 
 def cmd_gate(args) -> int:
@@ -795,19 +1021,22 @@ def cmd_gate(args) -> int:
         raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
     if phase == "review" and evals is TICKET_EVALUATORS:
         plain, changes = review_status(args.run, run, ws)
-        errors = plain + changes
+        errors = proof_errors(args.run, run, ws) + plain + changes
         if errors:
             event(run, "gate_fail", phase=phase, reasons=errors)
             if changes:
                 run.setdefault("loops", {"build": 0, "review": 0})
                 run["loops"]["build"] = run["loops"].get("build", 0) + 1
                 run["loops"]["review"] = run["loops"].get("review", 0) + 1
-                limit = (ws.get("autonomy") or {}).get("max_build_loops", 3)
-                if run["loops"]["build"] > limit:
-                    _set_phase(run, "blocked")
-                    run.setdefault("blockers", []).append({
-                        "at": now(), "kind": "question",
-                        "text": f"max_build_loops ({limit}) exceeded; user decision needed", "resolved": False})
+                autonomy = ws.get("autonomy") or {}
+                limit = autonomy.get("max_build_loops", 3)
+                max_rounds = autonomy.get("max_review_rounds", 2)
+                rounds = review_rounds(args.run)
+                if rounds >= max_rounds:
+                    block(run, f"max_review_rounds ({max_rounds}) reached with CHANGES; user decision needed", "build")
+                    errors = errors + [f"review round {rounds} >= max_review_rounds {max_rounds}: run blocked"]
+                elif run["loops"]["build"] > limit:
+                    block(run, f"max_build_loops ({limit}) exceeded; user decision needed", "build")
                     errors = errors + [f"loops.build {run['loops']['build']} > max_build_loops {limit}: run blocked"]
                 else:
                     event(run, "loop", build=run["loops"]["build"])
@@ -824,6 +1053,12 @@ def cmd_gate(args) -> int:
     if phase == "build":
         for alias in run.get("repos", {}):
             run["repos"][alias]["head"] = git_head(repo_path_for_run(run, ws, alias))
+    if phase == "plan":
+        integrity.lock_plan(run, "plan gate")
+    elif phase == "reproduce":
+        integrity.lock_plan(run, "reproduce gate (diagnosis.md)", keep_seq=True)
+    elif phase == "prove":
+        run["proved"] = proved_heads(run, ws)
     event(run, "gate_pass", phase=phase)
     new = phases[phases.index(phase) + 1]
     _set_phase(run, new)
@@ -833,6 +1068,17 @@ def cmd_gate(args) -> int:
     else:
         print(f"PASS {phase} -> {new}")
     return 0
+
+
+def proved_heads(run: dict, ws: dict) -> dict:
+    """{alias: {target or "HEAD": sha}} at the prove gate."""
+    out: dict = {}
+    for alias in touched_repos(run):
+        for target in run_targets(run):
+            wt = target_worktree(run, ws, alias, target)
+            if wt is not None and wt.is_dir():
+                out.setdefault(alias, {})[target or "HEAD"] = git_head(wt)
+    return out
 
 
 def _gate_epic(args, run: dict, ws: dict, phase: str) -> int:

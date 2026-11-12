@@ -75,11 +75,16 @@ class FetchHintTests(FactoryCase):
         self.assertIn(f"FETCH gitlab_get_merge_request projectId=grp/react mergeRequestIid=<iid> save_to={self.rd}/remote/mr-React-pack.json overwrite=true", out)
 
     def test_ship_verify_accepts_wrapped_readback(self):
+        from unittest import mock
+        from factory.commands import ship
+        sha = "a" * 40
         self.write("runs/ws-dev-1/ship-plan.json", {"mrs": [{"repo": "React", "target": "pack", "source_branch": "b", "target_branch": "pack",
-                                                            "title": "t", "draft": False, "readback": "remote/mr-React-pack.json"}]})
+                                                            "title": "t", "draft": False, "readback": "remote/mr-React-pack.json",
+                                                            "head_sha": sha}]})
         self.write("runs/ws-dev-1/remote/mr-React-pack.json", {"merge_request": {
-            "iid": 4, "source_branch": "b", "target_branch": "pack", "title": "t", "web_url": "u"}})
-        rc, out, _ = cli("ship", "verify", "ws-dev-1")
+            "iid": 4, "source_branch": "b", "target_branch": "pack", "title": "t", "web_url": "u", "sha": sha}})
+        with mock.patch.object(ship, "integrity_errors", return_value=[]),                 mock.patch.object(ship, "branch_head", return_value=sha):  # integrity: tests/test_integrity_*.py
+            rc, out, _ = cli("ship", "verify", "ws-dev-1")
         self.assertEqual((rc, out.strip()), (0, "OK ship verified"))
 
     def test_feedback_ingest_lists_missing(self):

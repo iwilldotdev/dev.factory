@@ -1,0 +1,342 @@
+"""`factory ship plan|verify`: MR/Jira ship plan from evidence, and readback verification."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from ..core import (
+    FactoryError,
+    GateFailed,
+    event,
+    load_evidence,
+    read_json,
+    repo_conf,
+    repo_path_for_run,
+    run_dir,
+    run_load,
+    run_save,
+    git,
+    workspace_load,
+    write_json,
+)
+
+DRAFT_PREFIX = "Draft: "
+
+
+def _ordered_targets(run: dict, workspace: dict) -> list[str]:
+    ship_targets = (workspace.get("ship") or {}).get("targets") or []
+    run_targets = run.get("targets") or []
+    if ship_targets and run_targets:
+        return [t for t in ship_targets if t in run_targets]
+    return list(run_targets or ship_targets)
+
+
+def _ordered_repos(run: dict, workspace: dict) -> list[str]:
+    aliases = []
+    for key in run.get("repos", {}):
+        try:
+            aliases.append(repo_conf(workspace, key))
+        except FactoryError:
+            aliases.append({"alias": key, "order": 999})
+    aliases.sort(key=lambda r: (r.get("order", 999), r["alias"]))
+    return [r["alias"] for r in aliases]
+
+
+def source_branch(run: dict, alias: str, target: str, targets: list[str]) -> str:
+    rec = run["repos"][alias]
+    per_target = rec.get("branches") or {}
+    if target in per_target:
+        return per_target[target]
+    if target == rec.get("base") or len(targets) <= 1:
+        return rec["branch"]
+    return f"{rec['branch']}-{target}"
+
+
+def _title(fmt: str, run: dict, alias: str, target: str) -> str:
+    tickets = run.get("tickets") or [{}]
+    first = tickets[0]
+    key = first.get("key", run["id"])
+    return fmt.format(
+        key=key,
+        summary=first.get("summary") or key,
+        target=target,
+        target_upper=target.upper(),
+        area=first.get("area") or key,
+    )
+
+
+def _merged_mrs(run_id: str) -> list[dict]:
+    out = []
+    for p in sorted((run_dir(run_id) / "remote").glob("mr-*.json")):
+        if p.name.endswith("-discussions.json"):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            data["_file"] = p.name
+            out.append(data)
+    return out
+
+
+def check_dependencies(run: dict) -> list[str]:
+    errors = []
+    in_run = {t["key"] for t in run.get("tickets", [])}
+    mrs = _merged_mrs(run["id"])
+    for t in run.get("tickets", []):
+        for dep in t.get("depends_on") or []:
+            if dep in in_run:
+                continue
+            needle = dep.lower()
+            merged = any(
+                m.get("state") == "merged" and needle in json.dumps(m, ensure_ascii=False).lower()
+                for m in mrs
+            )
+            if not merged:
+                errors.append(f"{t['key']} depends on {dep}: no remote/mr-*.json showing state merged for it")
+    return errors
+
+
+def behind_count(repo: Path, target: str) -> int:
+    ref = f"origin/{target}"
+    if git(repo, "rev-parse", "--verify", "--quiet", ref, check=False) == "":
+        raise FactoryError(f"{repo}: {ref} not found; run `git fetch origin` there first")
+    return int(git(repo, "rev-list", "--count", f"HEAD..{ref}"))
+
+
+def _rel(run_id: str, artifact: str) -> str:
+    return artifact.replace("\\", "/")
+
+
+def _ac_table(run_id: str, alias: str, acs: dict) -> tuple[str, list[dict]]:
+    checks = {c["id"]: c for c in acs.get("checks", [])}
+    rows = ["| AC | Checks | Evidence | Artifacts |", "|---|---|---|---|"]
+    humans: list[dict] = []
+    for ac in acs.get("acs", []):
+        ids = [c for c in ac.get("checks", []) if checks.get(c, {}).get("repo") in (alias, None)]
+        if not ids:
+            continue
+        ev_parts, arts = [], []
+        for cid in ids:
+            chk = checks[cid]
+            if chk.get("type") == "human":
+                ev_parts.append(f"{cid}: human (not automated)")
+                if chk not in humans:
+                    humans.append(chk)
+                continue
+            ev = load_evidence(run_id, cid)
+            ev_parts.append(f"{cid}: {ev['status'] if ev else 'missing'}")
+            for a in (ev or {}).get("artifacts", []):
+                arts.append(f"[{Path(a).name}]({_rel(run_id, a)})")
+        text = ac.get("text", "").replace("|", "\\|").replace("\n", " ")
+        rows.append(f"| {ac['id']}: {text} | {', '.join(ids)} | {'; '.join(ev_parts)} | {' '.join(arts) or '-'} |")
+    return "\n".join(rows), humans
+
+
+def _baseline_summary(run_id: str, alias: str) -> str:
+    p = run_dir(run_id) / "baseline" / f"{alias}.json"
+    if not p.is_file():
+        return "Baseline: not recorded."
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "Baseline: unreadable."
+    counts = {}
+    if isinstance(data, dict):
+        src = data.get("failures") if isinstance(data.get("failures"), dict) else data
+        for k, v in src.items():
+            if isinstance(v, list):
+                counts[k] = len(v)
+    detail = ", ".join(f"{k}: {n}" for k, n in counts.items()) or "recorded"
+    return f"Baseline (merge-base) pre-existing quality failures: {detail}. This MR adds none (prove gate)."
+
+
+def _description(run: dict, workspace: dict, alias: str, target: str, deps: list[tuple[str, str]], acs: dict) -> str:
+    lines = ["## Tickets", ""]
+    for t in run.get("tickets", []):
+        lines.append(f"- {t['key']}" + (f" - {t['summary']}" if t.get("summary") else ""))
+    table, humans = _ac_table(run["id"], alias, acs)
+    lines += ["", "## Acceptance criteria and evidence", "", table]
+    lines += ["", "## Human checks", ""]
+    if humans:
+        for h in humans:
+            lines.append(f"- {h['id']}: {h.get('text', '')}" + (f" ({h['reason']})" if h.get("reason") else ""))
+    else:
+        lines.append("None.")
+    lines += ["", "## Baseline", "", _baseline_summary(run["id"], alias)]
+    if deps:
+        lines += ["", "## Dependencies", ""]
+        lines += [f"Depends on {{mr_url:{a}:{t}}}" for a, t in deps]
+    return "\n".join(lines) + "\n"
+
+
+def _adf_comment(mrs: list[dict]) -> dict:
+    content = []
+    for mr in mrs:
+        content.append({"type": "paragraph", "content": [
+            {"type": "text", "text": f"{mr['repo']} ({mr['target']}): "},
+            {"type": "inlineCard", "attrs": {"url": f"{{mr_url:{mr['repo']}:{mr['target']}}}"}},
+        ]})
+    return {"version": 1, "type": "doc", "content": content}
+
+
+def _needs_user(mode: str, kind: str, draft: bool = True) -> bool:
+    if mode == "draft-auto":
+        return not (kind in ("push", "mr", "readback") and (kind != "mr" or draft))
+    return True
+
+
+def build_plan(run_id: str, allow_behind: bool = False) -> dict:
+    run = run_load(run_id)
+    workspace = workspace_load(run["workspace"])
+    acs = read_json(run_dir(run_id) / "acs.json")
+    ship = workspace.get("ship") or {}
+    mode = (workspace.get("autonomy") or {}).get("ship", "ask")
+    targets = _ordered_targets(run, workspace)
+    repos = _ordered_repos(run, workspace)
+    if not targets or not repos:
+        raise FactoryError("run has no repos or targets to ship")
+
+    errors = check_dependencies(run)
+    for alias in repos:
+        wt = repo_path_for_run(run, workspace, alias)
+        for target in targets:
+            try:
+                n = behind_count(wt, target)
+            except FactoryError as err:
+                errors.append(str(err))
+                continue
+            if n > 0 and not allow_behind:
+                errors.append(f"{alias}: HEAD is {n} commit(s) behind origin/{target}; rebase/merge or pass --allow-behind")
+    if errors:
+        raise GateFailed(errors)
+
+    draft = bool(ship.get("draft_default", True))
+    fmt = ship.get("mr_title_format") or "{key} - {summary}"
+    seq = [(a, t) for a in repos for t in targets]
+    mrs = []
+    for alias, target in seq:
+        deps = [(a, t) for (a, t) in seq if (a != alias and t == target and repos.index(a) < repos.index(alias))
+                or (a == alias and targets.index(t) < targets.index(target))]
+        base_title = _title(fmt, run, alias, target)
+        mrs.append({
+            "repo": alias,
+            "target": target,
+            "source_branch": source_branch(run, alias, target, targets),
+            "target_branch": target,
+            "title": (DRAFT_PREFIX + base_title) if draft else base_title,
+            "draft": draft,
+            "behind": 0,
+            "depends_on": [{"repo": a, "target": t} for a, t in deps],
+            "description": _description(run, workspace, alias, target, deps, acs),
+            "readback": f"remote/mr-{alias}-{target}.json",
+        })
+
+    actions = []
+    for mr in mrs:
+        label = f"{mr['repo']}/{mr['target']}"
+        actions.append({"type": "push", "repo": mr["repo"], "target": mr["target"], "branch": mr["source_branch"],
+                        "needs_user": _needs_user(mode, "push")})
+        actions.append({"type": "mr", "repo": mr["repo"], "target": mr["target"], "draft": mr["draft"],
+                        "note": f"create or update MR {label}; draft flag and 'Draft: ' title prefix when draft",
+                        "needs_user": _needs_user(mode, "mr", mr["draft"])})
+        actions.append({"type": "readback", "repo": mr["repo"], "target": mr["target"], "save_to": mr["readback"],
+                        "needs_user": _needs_user(mode, "readback", mr["draft"])})
+
+    keys = [t["key"] for t in run.get("tickets", [])]
+    epics = {e["key"]: e for e in workspace.get("epics", [])}
+    epic = next((epics[t["parent"]] for t in run.get("tickets", []) if t.get("parent") in epics), None)
+    jira = None
+    if ship.get("jira_comment") == "mr-links":
+        jira = {"issues": keys, "adf": _adf_comment(mrs), "epic_ship_comment": (epic or {}).get("ship_comment")}
+        actions.append({"type": "jira_comment", "issues": keys, "needs_user": _needs_user(mode, "jira_comment")})
+    transition = ship.get("jira_transition") or (epic or {}).get("jira_transition")
+    if transition:
+        actions.append({"type": "jira_transition", "issues": keys, "name": transition,
+                        "needs_user": _needs_user(mode, "jira_transition")})
+
+    plan = {"schemaVersion": 1, "run": run_id, "autonomy": mode, "mrs": mrs, "jira_comment": jira, "actions": actions}
+    write_json(run_dir(run_id) / "ship-plan.json", plan)
+    return plan
+
+
+def _strip_draft(title: str) -> str:
+    t = title.strip()
+    for p in ("Draft:", "draft:", "[Draft]"):
+        if t.startswith(p):
+            return t[len(p):].strip()
+    return t
+
+
+def verify(run_id: str) -> list[str]:
+    plan_path = run_dir(run_id) / "ship-plan.json"
+    if not plan_path.is_file():
+        return ["ship-plan.json missing; run `factory ship plan` first"]
+    plan = read_json(plan_path)
+    errors = []
+    verified = []
+    for mr in plan.get("mrs", []):
+        label = f"{mr['repo']}/{mr['target']}"
+        rb = run_dir(run_id) / mr.get("readback", f"remote/mr-{mr['repo']}-{mr['target']}.json")
+        if not rb.is_file():
+            errors.append(f"{label}: missing readback {rb.name}")
+            continue
+        try:
+            data = json.loads(rb.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as err:
+            errors.append(f"{label}: readback is not valid JSON ({err})")
+            continue
+        if data.get("source_branch") != mr["source_branch"]:
+            errors.append(f"{label}: source_branch {data.get('source_branch')!r} != planned {mr['source_branch']!r}")
+        if data.get("target_branch") != mr["target_branch"]:
+            errors.append(f"{label}: target_branch {data.get('target_branch')!r} != planned {mr['target_branch']!r}")
+        title = str(data.get("title", ""))
+        is_draft = bool(data.get("draft") or data.get("work_in_progress")) or title.lower().startswith("draft:")
+        if is_draft != bool(mr["draft"]):
+            errors.append(f"{label}: draft is {is_draft}, planned {mr['draft']}")
+        if _strip_draft(title) != _strip_draft(mr["title"]):
+            errors.append(f"{label}: title {title!r} != planned {mr['title']!r}")
+        verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid")})
+    if not errors:
+        run = run_load(run_id)
+        event(run, "ship", verified=verified)
+        run_save(run)
+    return errors
+
+
+# ---------- CLI ----------
+
+def _cmd_plan(args) -> int:
+    plan = build_plan(args.run, args.allow_behind)
+    if getattr(args, "json", False):
+        print(json.dumps(plan, indent=2, ensure_ascii=False))
+        return 0
+    print(f"ship-plan.json: {len(plan['mrs'])} MR(s), autonomy {plan['autonomy']}")
+    for mr in plan["mrs"]:
+        print(f"- {mr['repo']} -> {mr['target']}: {mr['title']} (branch {mr['source_branch']})")
+    for i, a in enumerate(plan["actions"], 1):
+        who = "ASK" if a["needs_user"] else "auto"
+        print(f"{i}. [{who}] {a['type']} {a.get('repo', '')} {a.get('target', '')}".rstrip())
+    return 0
+
+
+def _cmd_verify(args) -> int:
+    errs = verify(args.run)
+    if errs:
+        raise GateFailed(errs)
+    print("OK ship verified")
+    return 0
+
+
+def register(sub) -> None:
+    p = sub.add_parser("ship", help="ship plan and verification")
+    ssub = p.add_subparsers(dest="ship_cmd", required=True)
+    pl = ssub.add_parser("plan")
+    pl.add_argument("run")
+    pl.add_argument("--allow-behind", action="store_true")
+    pl.set_defaults(func=_cmd_plan)
+    v = ssub.add_parser("verify")
+    v.add_argument("run")
+    v.set_defaults(func=_cmd_verify)

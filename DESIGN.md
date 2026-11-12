@@ -237,6 +237,23 @@ The Python wrappers for `browser|visual|style` live in `factory/collectors/` and
 - Hook `protect.js` (installed in the profile's settings for **all** sessions): deny Write/Edit/NotebookEdit and shell redirection into `FACTORY_HOME/runs/*/{run.json,evidence/**,reviews/**,baseline/**,metrics.json,ship-plan.json}`.
 - `install.py --profile <dir> [--remove-harness] [--dry-run]`: copies/links skill, agents, hooks into the profile, merges hook entries into `settings.json`, writes the delegation snippet into the profile's `CLAUDE.md` between markers, creates `FACTORY_HOME`. `--remove-harness` removes `dev-*` skills/agents/hooks and the harness block from `CLAUDE.md` (backup first).
 
-## 6. Non-goals (v0.1)
+## 6. Epics
+
+An epic is a **parent run** that coordinates **one child run per ticket**. Children have their own phase, gates, evidence, worktrees and loops; a blocked child never blocks children that do not depend on it.
+
+- Parent id: `<ws>-<epic-key>`; child ids: `<ws>-<ticket-key>`. Parent `run.json` adds `"kind": "epic"` and `"children": ["<child-id>", …]`; child adds `"parent": "<parent-id>"`. Plain single-ticket runs have `"kind": "ticket"`.
+- `epic.json` in the parent dir (author-written, CLI-validated): `{"schemaVersion": 1, "tickets": [{"key": "DEV-9451", "repos": ["API", "React"], "depends_on": ["DEV-9450"], "summary": "…", "area": "…"}]}`.
+
+| Command | Effect |
+|---|---|
+| `epic start <ws> <EPIC> --tickets K1 K2 …` | parent run (phase intake) + child runs (phase intake), cross-linked |
+| `epic plan <parent>` | validate epic.json (unknown keys, cycles, repos unknown to workspace, every child present), copy depends_on/summary/area into children, compute `waves` (topological levels) into parent run.json |
+| `epic status <parent> [--json]` | matrix child × phase × loops × open blockers × MR readbacks; prints the next **ready** children (all deps in phase ship/done) |
+| `epic ship plan <parent>` / `epic ship verify <parent>` | aggregate children's ship plans into one ordered action list (waves order, then repos order, then targets), Depends-on links across children, one epic Jira comment (workspace epic ship_comment when set); verify = every child ship verify OK |
+| `gate <parent> <phase>` | parent phases: intake → plan → build (children running) → ship → done; leaving build requires every child in phase ship-ready (review passed) or done; leaving plan requires `epic plan` OK and each child's plan gate passed |
+
+Branches: a child that depends on another child in the same repo branches from that child's branch (stacked), recorded as `base_branch` in the child repo record; `run branch` accepts `--from-run <child-id>`.
+
+## 7. Non-goals (v0.1)
 
 Queue pulling from Jira boards, autonomy levels beyond `ask`/`draft-auto`, CI auto-fix without the orchestrator, non-Claude hosts.

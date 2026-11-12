@@ -1,0 +1,128 @@
+"""Collector `browser`: Playwright Test spec via browser/dist/cli.js. Also hosts helpers shared by visual/style."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from factory.core import Ctx
+
+FACTORY_ROOT = Path(__file__).resolve().parents[2]
+TIMEOUT_S = 600
+
+
+def _error(summary: str, **details) -> dict:
+    return {"status": "error", "summary": summary, "artifacts": [], "details": details}
+
+
+def node_command() -> list[str] | dict:
+    """argv prefix to run the browser CLI, or an error body."""
+    override = os.environ.get("FACTORY_NODE_CLI")
+    if override:
+        if not Path(override).is_file():
+            return _error(f"FACTORY_NODE_CLI not found: {override}")
+        return [sys.executable, override] if override.endswith(".py") else ["node", override]
+    if not shutil.which("node"):
+        return _error("node not found on PATH (Node >= 20 required for browser/visual/style checks)")
+    cli = FACTORY_ROOT / "browser" / "dist" / "cli.js"
+    if not cli.is_file():
+        return _error(f"browser CLI not built: run `npm install && npm run build` in {FACTORY_ROOT / 'browser'}")
+    return ["node", str(cli)]
+
+
+def base_url(ctx: Ctx) -> str | None:
+    return (ctx.env or {}).get("base_url")
+
+
+def full_url(check: dict, ctx: Ctx) -> str | dict:
+    base = base_url(ctx)
+    if not base:
+        return _error("repo env has no base_url; cannot build the URL for this check")
+    path = check.get("path") or ""
+    return base.rstrip("/") + ("/" + path.lstrip("/") if path else "")
+
+
+def storage_state(check: dict, ctx: Ctx) -> str | None:
+    try:
+        from factory.commands.env import storage_state_path  # written by another module
+    except Exception:
+        return None
+    try:
+        path = Path(storage_state_path(ctx.workspace.get("name"), check.get("repo")))
+    except Exception:
+        return None
+    return str(path) if path.is_file() else None
+
+
+def out_dir(ctx: Ctx) -> Path:
+    out = ctx.out_dir or (ctx.run_dir / "evidence" / "tmp")
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def run_cli(argv: list[str], out: Path, timeout: int = TIMEOUT_S) -> dict:
+    """Run the CLI, return its result.json (or an error body). Never decides pass/fail itself."""
+    prefix = node_command()
+    if isinstance(prefix, dict):
+        return prefix
+    result_file = out / "result.json"
+    if result_file.exists():
+        result_file.unlink()
+    try:
+        proc = subprocess.run(
+            [*prefix, *argv], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
+        )
+    except subprocess.TimeoutExpired:
+        return _error(f"browser CLI timed out after {timeout}s")
+    except OSError as err:
+        return _error(f"cannot run browser CLI: {err}")
+    if not result_file.is_file():
+        tail = (proc.stderr or proc.stdout or "").strip()[-800:]
+        return _error(f"browser CLI exit {proc.returncode} without result.json", output=tail)
+    try:
+        data = json.loads(result_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        return _error(f"invalid result.json: {err}")
+    if data.get("status") not in ("pass", "fail", "error"):
+        return _error("result.json has no valid status", result=data)
+    return data
+
+
+def relativize(artifacts: list[str], out: Path, ctx: Ctx) -> list[str]:
+    rels = []
+    for a in artifacts:
+        p = Path(a)
+        p = p if p.is_absolute() else out / a
+        try:
+            rels.append(p.resolve().relative_to(ctx.run_dir.resolve()).as_posix())
+        except ValueError:
+            rels.append(str(p))
+    return rels
+
+
+def finish(data: dict, out: Path, ctx: Ctx) -> dict:
+    return {
+        "status": data["status"],
+        "summary": data.get("summary", ""),
+        "artifacts": relativize(data.get("artifacts", []), out, ctx),
+        "details": data.get("details", {}),
+    }
+
+
+def collect(check: dict, ctx: Ctx) -> dict:
+    url = base_url(ctx)
+    if not url:
+        return _error("repo env has no base_url; cannot run the browser spec")
+    spec = ctx.run_dir / check["spec"]
+    if not spec.is_file():
+        return _error(f"spec not found: {check['spec']}")
+    out = out_dir(ctx)
+    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out)]
+    state = storage_state(check, ctx)
+    if state:
+        argv += ["--storage-state", state]
+    return finish(run_cli(argv, out), out, ctx)

@@ -16,9 +16,13 @@
 
 .EXAMPLE
   .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude", "$HOME\.claude-perfil2" -Workspace construcode
+
+.EXAMPLE
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude,$HOME\.claude-perfil2" -Workspace construcode
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
+  # One or more profile dirs. With `powershell -File`, pass them as ONE string separated by ',' or ';'.
   [string[]] $Profiles = @("$HOME\.claude"),
   [string] $Workspace = "",
   [switch] $RemoveHarness,
@@ -30,6 +34,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path $PSScriptRoot -Parent
+# `-File` passes "a,b" as one string: split on ',' / ';' and trim stray quotes or spaces.
+$Profiles = @($Profiles | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ })
 
 function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
 function Ok($text)   { Write-Host "OK   $text" -ForegroundColor Green }

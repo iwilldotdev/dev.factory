@@ -24,7 +24,7 @@ class HotfixCase(RealCase):
             sh("git", "branch", t, cwd=repo)
             sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=repo)
         self.ws["ship"] = {"targets": ["pack", "homolog"], "draft_default": True, "jira_comment": "mr-links",
-                           "hotfix": {"base": "homolog", "mirror": ["pack"]}, "package": "PACK_9",
+                           "hotfix": {"base": "homolog", "mirror": ["pack"]}, "package": "REL_9",
                            "mr_title_format": "[{area} | {target_upper}] - {summary}"}
         self.ws["branch_format"] = {"feature": "feature/{key}-{slug}", "bug": "bugfix/{key}",
                                     "hotfix": "hotfix/{package}/{key}-{target_upper}"}
@@ -65,7 +65,7 @@ class StartAndNaming(HotfixCase):
         self.assertEqual(run["targets"], ["homolog", "pack"])
         self.assertEqual(run["hotfix"], {"base": "homolog", "mirror": ["pack"]})
         self.assertEqual(run["tickets"][0]["type"], "bug")
-        self.assertEqual(run["repos"]["React"]["branch"], "hotfix/PACK_9/BUG-1-HOMOLOG")
+        self.assertEqual(run["repos"]["React"]["branch"], "hotfix/REL_9/BUG-1-HOMOLOG")
 
     def test_feature_flag_and_default_config(self):
         del self.ws["ship"]["hotfix"]
@@ -104,7 +104,7 @@ class Mirror(HotfixCase):
         self.fix_second = commit_file(self.wt, "other.txt", "x\n", "[Area] - second")
         self.ok("run", "mirror", self.rid, "React", "--to", "pack")
         rec = core.run_load(self.rid)["repos"]["React"]
-        self.assertEqual(rec["branches"]["pack"], "hotfix/PACK_9/BUG-1-PACK")
+        self.assertEqual(rec["branches"]["pack"], "hotfix/REL_9/BUG-1-PACK")
         mwt = core.Path(rec["worktrees"]["pack"])
         log = sh("git", "log", "--format=%s", "origin/pack..HEAD", cwd=mwt).splitlines()
         self.assertEqual(log, ["[Area] - second", "[Area] - fix"])
@@ -175,8 +175,8 @@ class ShipPlan(HotfixCase):
         plan = json.loads(out)
         self.assertEqual([(m["repo"], m["target"]) for m in plan["mrs"]], [("React", "homolog"), ("React", "pack")])
         base, mirror = plan["mrs"]
-        self.assertEqual(base["source_branch"], "hotfix/PACK_9/BUG-1-HOMOLOG")
-        self.assertEqual(mirror["source_branch"], "hotfix/PACK_9/BUG-1-PACK")
+        self.assertEqual(base["source_branch"], "hotfix/REL_9/BUG-1-HOMOLOG")
+        self.assertEqual(mirror["source_branch"], "hotfix/REL_9/BUG-1-PACK")
         self.assertIn("Mirrored to {mr_url:React:pack}", base["description"])
         self.assertIn("Mirror of {mr_url:React:homolog}", mirror["description"])
         self.assertEqual(base["depends_on"], [])

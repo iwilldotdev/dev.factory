@@ -15,10 +15,10 @@
   Backups are written by install.py to <profile>\backups\factory-<timestamp>\.
 
 .EXAMPLE
-  .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude", "$HOME\.claude-perfil2" -Workspace construcode
+  .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude", "$HOME\.claude-work" -Workspace acme
 
 .EXAMPLE
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude,$HOME\.claude-perfil2" -Workspace construcode
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-profiles.ps1 -Profiles "$HOME\.claude,$HOME\.claude-work" -Workspace acme
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(

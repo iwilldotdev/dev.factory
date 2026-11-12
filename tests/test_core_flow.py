@@ -16,7 +16,7 @@ class WorkspaceTests(FactoryCase):
         ws = core.workspace_load("ws")
         repo = ws["repos"][0]
         self.assertEqual((repo["alias"], repo["name"], repo["order"], repo["gitlab_project"]),
-                         ("React", "construcodereact", 2, "g/react"))
+                         ("React", "webapp", 2, "g/react"))
         self.assertEqual(repo["path"], "")
         self.assertEqual(repo["quality"], {})
         self.assertEqual(ws["ship"]["targets"], ["pack", "homolog"])

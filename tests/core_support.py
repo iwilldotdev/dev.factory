@@ -27,7 +27,7 @@ PY = f'"{sys.executable}"'
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 SAMPLE_PROFILE = {
     "schemaVersion": 1,
-    "repos": [{"alias": "React", "name": "construcodereact", "gitlab_project": "g/react", "order": 2}],
+    "repos": [{"alias": "React", "name": "webapp", "gitlab_project": "g/react", "order": 2}],
     "ship": {"targets": ["pack", "homolog"], "draft_default": True},
     "commit": {"header_regex": "^\\[[^\\]]+\\] - .+", "forbidden_trailers": ["Co-authored-by:"]},
     "epics": [{"key": "DEV-1", "roadmap": "r.md", "ship_comment": "s.md", "jira_transition": None}],

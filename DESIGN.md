@@ -2,7 +2,7 @@
 
 Ticket in → work around `dev.mcp` (Jira, GitLab, Figma, Confluence) → complete delivery: reviewed MRs whose acceptance criteria, UI included, are **proven by executed evidence**, not by model claims.
 
-Successor of dev.harness. Lessons that shaped it (see dev.harness `docs/audits/2026-11-12-eficacia-construcode.md`):
+Successor of dev.harness. Lessons that shaped it (see the dev.harness effectiveness audit of 2026-11-12):
 
 - The model plans and delegates well on its own. Prose gates add cost, not proof. → **Thin prose, thick mechanisms.**
 - PASS without execution was the main escape path. → **Only collectors write evidence; gates read only evidence.**
@@ -65,21 +65,21 @@ FACTORY_HOME/
   secrets/<ws>.env                   # test credentials (never in chat, never in repos)
 ```
 
-Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-dev-9454`.
+Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`.
 
 ### 2.1 workspace.json (schemaVersion 1)
 
 ```json
 {
   "schemaVersion": 1,
-  "name": "construcode",
+  "name": "acme",
   "worktree_root": "C:/Users/me/Code/wt",
   "repos": [
     {
-      "alias": "React", "name": "construcodereact", "order": 2,
-      "gitlab_project": "group/construcodereact",
-      "path": "C:/Users/me/Code/construcodereact",
-      "target_paths": {"homolog": "C:/Users/me/Code/construcodereact-homolog"},
+      "alias": "React", "name": "webapp", "order": 2,
+      "gitlab_project": "group/webapp",
+      "path": "C:/Users/me/Code/webapp",
+      "target_paths": {"homolog": "C:/Users/me/Code/webapp-homolog"},
       "quality": {
         "setup": "npm ci",
         "typecheck": "npx tsc --noEmit",
@@ -137,7 +137,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
 
 ```json
 {
-  "schemaVersion": 1, "id": "construcode-dev-9454", "workspace": "construcode", "kind": "ticket|epic",
+  "schemaVersion": 1, "id": "acme-dev-9454", "workspace": "acme", "kind": "ticket|epic",
   "parent": "<epic run id, child runs only>", "children": ["<child run ids, epic runs only>"],
   "tickets": [{"key": "DEV-9454", "type": "feature|bug", "parent": "DEV-7853", "depends_on": ["DEV-9451"]}],
   "repos": {"React": {"branch": "feature/DEV-9454-x", "base": "pack", "worktree": "C:/…/wt/dev-9454-react", "head": "<sha>",
@@ -358,7 +358,7 @@ A run is a bug run when a ticket is `type: bug` (`run start --bug KEY`). Phases:
 
 Only when the user asks for a hotfix (homolog + pack in one go). One run, bug semantics (reproduce phase, §8), two targets, homolog first.
 
-- **Workspace:** `ship.hotfix = {"base": "homolog", "mirror": ["pack"]}` (default when absent but a target named `homolog` exists; `workspace check` validates that base and mirrors are in `ship.targets` and the base is not a mirror). `ship.package` (optional, e.g. `"PACK_9"`). Top-level `branch_format = {"feature": "…", "bug": "…", "hotfix": "…"}` with placeholders `{key} {slug} {target} {target_upper} {package}` (`slug` = summary slug, else repo alias slug; `target` = the `--base` / mirror target). `run branch` uses it when `--name` is absent (hotfix runs use `hotfix`, falling back to `bug`; no format → the legacy `bugfix|feature/KEY-alias`).
+- **Workspace:** `ship.hotfix = {"base": "homolog", "mirror": ["pack"]}` (default when absent but a target named `homolog` exists; `workspace check` validates that base and mirrors are in `ship.targets` and the base is not a mirror). `ship.package` (optional, e.g. `"REL_9"`). Top-level `branch_format = {"feature": "…", "bug": "…", "hotfix": "…"}` with placeholders `{key} {slug} {target} {target_upper} {package}` (`slug` = summary slug, else repo alias slug; `target` = the `--base` / mirror target). `run branch` uses it when `--name` is absent (hotfix runs use `hotfix`, falling back to `bug`; no format → the legacy `bugfix|feature/KEY-alias`).
 - **`run start <ws> KEY --hotfix [--feature]`:** tickets are bugs unless `--feature`; run.json `hotfix: {base, mirror}` and `targets = [base, *mirror]` in that order. Branch the base target normally: `run branch <run> <repo> --base homolog`.
 - **`run mirror <run> <repo> --to <target> [--name …]`:** requires `gate build` passed and a clean base worktree. Creates a worktree `<run>-<repo>-<target>` from `origin/<target>` (local fallback) on the branch from `branch_format`, cherry-picks `merge-base..branch` of the base target in order, records `repos[alias].branches[target]` and `worktrees[target]`. On conflict the worktree stays mid-cherry-pick, a blocker of kind `conflict` (with `files`) is recorded and the command exits 1: a builder resolves, `git add`, `git cherry-pick --continue`, then `run unblock`. Never `--abort`/reset.
 - **Evidence per target:** `prove` runs every check in each target worktree; ids are `CHK-n@<target>` and `REPRO-CHK-n@<target>` (repro on each target's merge-base; mirror merge-base = the target tip, so mirror repro is `test` checks only, runtime checks are reproduced on the base target). `gate reproduce` and `gate prove` require every target (a missing mirror worktree is a failure). Quality delta and rule checks stay on the base target worktree. Non-hotfix runs keep plain ids. Runtime checks on a mirror need the env started from the mirror worktree (not automated).

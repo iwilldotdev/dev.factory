@@ -23,7 +23,7 @@ def _ts(text) -> _dt.datetime | None:
 
 
 def claude_roots() -> list[Path]:
-    """Claude Code `projects` dirs of every profile (~/.claude, ~/.claude-perfil2, ...)."""
+    """Claude Code `projects` dirs of every profile (~/.claude, ~/.claude-work, ...)."""
     return [p / "projects" for p in sorted(Path.home().glob(".claude*")) if (p / "projects").is_dir()]
 
 

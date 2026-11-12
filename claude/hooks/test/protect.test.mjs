@@ -5,6 +5,13 @@ import { runHook, denied, bash, write, FH, FH_POSIX, RUN, WIN } from './helpers.
 const protect = (input, env) => runHook('protect.js', [], input, env);
 const gitBashRun = WIN ? RUN.replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`) : RUN;
 
+test('a repo or folder named like dev.factory is not FACTORY_HOME', () => {
+  assert.ok(!denied(protect(bash('cd C:/Users/x/Code/dev.factory && python install.py --profile ~/.claude-perfil2 --dry-run'))));
+  assert.ok(!denied(protect(bash('python C:/Users/x/Code/dev.factory/install.py --help'))));
+  assert.ok(denied(protect(bash("python -c \"open('x','w')\" ~/.factory/runs/r/run.json"))));
+  assert.ok(denied(protect(bash('python script.py ~/.factory'))));
+});
+
 test('fails closed on unreadable input', () => {
   assert.ok(denied(protect('not json')));
   assert.ok(denied(protect('')));

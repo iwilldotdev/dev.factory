@@ -284,7 +284,8 @@ const WRITE_VERBS = new RegExp(
   + '|\\[io\\.file\\]::|(?:^|\\s)-(?:outfile|destination|literalpath|c)\\s',
   'i',
 );
-const INTERP_REFS = /factory_home|\.factory|process\.env|os\.environ|getenv|\$env:|%factory/i;
+// `.factory` only as a path segment (e.g. ~/.factory, C:\Users\x\.factory), never inside a name like `dev.factory`.
+const INTERP_REFS = /factory_home|(?:^|[^\w.-])\.factory(?=[\\/\s'"]|$)|process\.env|os\.environ|getenv|\$env:|%factory/i;
 const SCRIPT_FILE = /\.(?:py|pyw|js|mjs|cjs|ts|rb|pl|ps1|php|lua)$/i;
 const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|acs\.json|checks|figma|diagnosis\.md)/;
 
@@ -294,7 +295,7 @@ function runsMention(text, home) {
   if (forms.some((f) => t.includes(`${f}/runs`))) return true;
   if (/(?:^|[\s'"=(])~\/\.factory\/runs/.test(t)) return true;
   if (/\/env\/[^/\s]+\/[^/\s]*(?:\.pid|\.storage\.json)/.test(t)) return true;
-  return /\.factory\/runs|factory_home\}?%?\/runs/.test(t) || RUN_FILE_TAIL.test(t);
+  return /(?:^|[^\w.-])\.factory\/runs|factory_home\}?%?\/runs/.test(t) || RUN_FILE_TAIL.test(t);
 }
 
 /**

@@ -21,6 +21,8 @@ def collect(check: dict, ctx: Ctx) -> dict:
     if check.get("wait_for"):
         argv += ["--wait-for", check["wait_for"]]
     state = b.storage_state(check, ctx)
+    if isinstance(state, dict):
+        return state
     if state:
         argv += ["--storage-state", state]
     return b.finish(b.run_cli(argv, out), out, ctx)

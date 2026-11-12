@@ -240,18 +240,19 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | Command | Owner module | Effect |
 |---|---|---|
 | `workspace init <ws>` / `workspace import <ws> --from <project.json>` / `workspace check <ws>` | `commands/workspace.py` | create/convert/validate workspace.json |
-| `run start <ws> <TICKET...> [--epic KEY] [--risk high] [--bug KEY]...` | `commands/run.py` | create run dir + run.json (phase intake) |
+| `run start <ws> <TICKET...> [--epic KEY] [--risk high] [--bug KEY]... [--login-user EMAIL]` | `commands/run.py` | create run dir + run.json (phase intake) |
 | `run status <run>` / `run list` | `commands/run.py` | phase, loops, blockers, next required action |
 | `run branch <run> <repo> --base <target> [--name …] [--from-run <child-id>]` | `commands/run.py` | create worktree + branch under worktree_root, record in run.json; `--from-run` stacks on that run's branch of the same repo (records `base_branch`, `base_run`) |
 | `run start … --hotfix` / `run mirror <run> <repo> --to <target>` | `commands/run.py` | hotfix run and cherry-pick mirror worktree (§9) |
 | `run branch <run> <repo> --base <ref> --for-target <target> [--name …]` | `commands/run.py` | for a repo already branched: create a second branch (default `<branch>-<target>`) from `<ref>` and record it in `repos[alias].branches[target]`; `ship plan` uses it as that target's MR source |
 | `run decide <run> "<text>" [--by user --user-said "<gist>"]` / `run block <run> <kind> "<text>"` / `run unblock <run> <n>` | `commands/run.py` | append decision/blocker; `--by user` only for a decision the user stated in chat, and it requires `--user-said` (the gist of that message) |
+| `run login-user <run> EMAIL` | `commands/run.py` | set run.json `login_user` (event `login_user`); refused once `gate prove` has passed |
 | `run human <run> "<note>"` | `commands/run.py` | record a human intervention (orchestrator calls it for every user message that steers the run) |
 | `run replan <run> "<reason>" [--decision <n>]` | `commands/run.py` | back to plan to change acs.json/checks/figma/diagnosis: clears the plan lock, `replan` event, `loops.replan += 1`; without a user decision counts against `autonomy.max_replans` (default 2) and blocks past it (§2.6) |
 | `run rewind <run> build|prove "<reason>" [--decision <n>]` | `commands/run.py` | back to an earlier phase after the worktree moved past the proof (rebase/merge, late fix): `rewind` event; without a user decision `loops.build += 1` and blocks past `autonomy.max_build_loops` |
 | `gate <run> <phase>` | `commands/gate.py` | check exit criteria of phase; on pass, advance phase; records gate_pass/gate_fail |
 | `env up|down|check|logs <ws> <repo> [--run <run>]` | `commands/env.py` | start/stop processes from workspace env (worktree of the run when `--run`), health wait, port-owner diagnosis, pid tracking, tree-kill on Windows. `up` refuses when the env is already up for another cwd or HEAD (down first) and, without `ports`, when the health URL already answers before anything was started ("unknown server"). The pid record stores the process create time; `down` never kills a pid whose create time differs (reused pid) or cannot be read (reports and asks the user) |
-| `env login <ws> <repo>` | `commands/env.py` → browser | produce Playwright storage state from `secrets/<ws>.env`; credentials reach the Node CLI as `FACTORY_LOGIN_USER`/`FACTORY_LOGIN_PASS` env vars, never argv |
+| `env login <ws> <repo> [--user EMAIL]` | `commands/env.py` → browser | produce Playwright storage state from `secrets/<ws>.env`; credentials reach the Node CLI as `FACTORY_LOGIN_USER`/`FACTORY_LOGIN_PASS` env vars, never argv |
 | `figma check <run>` / `figma expect <run> <node> [--selector …]` | `commands/figma.py` | pack completeness; extract expected style values from a node payload into a style-map skeleton |
 | `baseline <run> [--repo R]` | `commands/prove.py` | run quality commands on merge-base once; store failures |
 | `prove <run> [--check CHK-n] [--repo R]` | `commands/prove.py` | run collectors for checks + quality delta vs baseline + `rules[]`; write evidence |
@@ -265,7 +266,7 @@ Source branch of an MR for target `T` (`ship plan`): `repos[alias].branches[T]` 
 
 Ship plan actions: per repo×target `push`, `mr`, `readback`; in `draft-auto` mode push and a draft `mr` need no confirmation, an `mr` that is not a draft does, and a `readback` carries the `needs_user` of its `mr` action. Jira comment and transition always ask.
 
-Runtime resolution for runtime collectors: `base_url` comes from `env.base_url`, else the origin of `env.health` (`factory.commands.env.base_url`); the Playwright storage state is `factory.commands.env.storage_state_path(ws, alias)` and is passed only when the file exists. `prove` puts the resolved `base_url` into `ctx.env`.
+Runtime resolution for runtime collectors: `base_url` comes from `env.base_url`, else the origin of `env.health` (`factory.commands.env.base_url`); the Playwright storage state is `factory.commands.env.storage_state_path(ws, alias[, user])` and is passed only when the file exists. Per-run login user: the workspace has one default test user (`USER`/`PASS` or `<ALIAS>_USER`/`<ALIAS>_PASS`); when a ticket names another e-mail for a scenario, `run.json login_user` is set (`run start --login-user` / `run login-user`). `env login --user EMAIL` writes `<alias>.<slug>.storage.json` (slug = e-mail lowercased, non-alphanumerics to `_`; the default user keeps `<alias>.storage.json`) and takes the password from `<ALIAS>_PASS_<slug>` / `PASS_<slug>` when present, else the default password; the password is never printed. The `browser`/`visual`/`style` collectors use the `login_user` state when set, and return an evidence `error` naming the exact `factory env login <ws> <repo> --user <email>` command when that file is missing. `prove` puts the resolved `base_url` into `ctx.env`.
 
 Phase exit criteria (`gate`):
 

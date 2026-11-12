@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -78,8 +79,20 @@ def log_path(ws: str, alias: str) -> Path:
     return _env_dir(ws) / f"{alias}.log"
 
 
-def storage_state_path(ws: str, alias: str) -> Path:
+def user_slug(email: str) -> str:
+    """E-mail lowercased, runs of non-alphanumerics -> `_` (secrets key suffix and storage file name)."""
+    return re.sub(r"[^a-z0-9]+", "_", str(email).lower()).strip("_")
+
+
+def storage_state_path(ws: str, alias: str, user: str | None = None) -> Path:
+    """`<alias>.storage.json` for the workspace default user, `<alias>.<slug>.storage.json` for an override user."""
+    if user:
+        return _env_dir(ws) / f"{alias}.{user_slug(user)}.storage.json"
     return _env_dir(ws) / f"{alias}.storage.json"
+
+
+def login_command(ws: str, alias: str, user: str | None) -> str:
+    return f"factory env login {ws} {alias}" + (f" --user {user}" if user else "")
 
 
 def read_record(ws: str, alias: str) -> dict | None:
@@ -458,34 +471,43 @@ def read_secrets(ws: str) -> dict[str, str]:
     return data
 
 
-def _credentials(ws: str, alias: str) -> tuple[str, str]:
+def _credentials(ws: str, alias: str, user: str | None = None) -> tuple[str, str]:
+    """(user, password). With an override `user` the password is `<ALIAS>_PASS_<slug>` / `PASS_<slug>` when
+    present, else the workspace default password."""
     sec = read_secrets(ws)
     up = alias.upper().replace("-", "_")
-    user = sec.get(f"{up}_USER") or sec.get("USER")
+    default_user = sec.get(f"{up}_USER") or sec.get("USER")
     pw = sec.get(f"{up}_PASS") or sec.get("PASS")
-    if not user or not pw:
+    if user:
+        slug = user_slug(user)
+        pw = sec.get(f"{up}_PASS_{slug}") or sec.get(f"PASS_{slug}") or pw
+        if not pw:
+            raise FactoryError(f"secrets/{ws}.env needs {up}_PASS (or PASS), or {up}_PASS_{slug}, for {user}")
+        return user, pw
+    if not default_user or not pw:
         raise FactoryError(f"secrets/{ws}.env needs {up}_USER and {up}_PASS (or USER and PASS)")
-    return user, pw
+    return default_user, pw
 
 
 def factory_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def login(workspace: dict, alias: str) -> tuple[bool, str]:
+def login(workspace: dict, alias: str, user: str | None = None) -> tuple[bool, str]:
     repo = repo_conf(workspace, alias)
     alias = repo["alias"]
     env = repo.get("env") or {}
     if not env.get("login"):
         raise FactoryError(f"{alias}: env.login missing")
-    user, pw = _credentials(workspace["name"], alias)
+    override = user
+    user, pw = _credentials(workspace["name"], alias, override)
     cli = factory_root() / "browser" / "dist" / "cli.js"
     if not cli.is_file():
         raise FactoryError(f"browser CLI not built: {cli}")
     node = shutil.which("node")
     if not node:
         raise FactoryError("node not found on PATH")
-    out = storage_state_path(workspace["name"], alias)
+    out = storage_state_path(workspace["name"], alias, override)
     out.parent.mkdir(parents=True, exist_ok=True)
     cfg = out.with_name(f"{alias}.login.json")  # the CLI reads --login-json as a file
     cfg.write_text(json.dumps(env["login"]), encoding="utf-8")
@@ -539,11 +561,12 @@ def _cmd_logs(args) -> int:
 
 def _cmd_login(args) -> int:
     ws, _ = _load(args)
-    ok, text = login(ws, args.repo)
+    user = getattr(args, "user", None)
+    ok, text = login(ws, args.repo, user)
     if text:
         print(text)
     if ok:
-        print(f"storage state: {storage_state_path(ws['name'], repo_conf(ws, args.repo)['alias'])}")
+        print(f"storage state: {storage_state_path(ws['name'], repo_conf(ws, args.repo)['alias'], user)}")
     return 0 if ok else 1
 
 
@@ -556,6 +579,8 @@ def register(sub) -> None:
         sp.add_argument("repo")
         if name in ("up", "check"):
             sp.add_argument("--run", help="use the worktree of this run")
+        if name == "login":
+            sp.add_argument("--user", help="log in as this e-mail instead of the workspace default user")
         if name == "logs":
             sp.add_argument("--lines", type=int, default=40)
         sp.set_defaults(func=fn)

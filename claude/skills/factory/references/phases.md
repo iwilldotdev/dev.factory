@@ -14,7 +14,7 @@
 ## plan
 
 - [ ] `factory run branch <run> <repo> --base <target> [--name …]` for every touched repo (epic: per repo; the branch is shared by the epic's tickets unless the plan says otherwise).
-- [ ] `factory env check <ws> <repo>` for every repo with runtime checks; `factory env up <ws> <repo> --run <run>` now, not at prove. Read failures with `factory env logs`. If login is needed: `factory env login <ws> <repo>` (reads `secrets/<ws>.env`).
+- [ ] `factory env check <ws> <repo>` for every repo with runtime checks; `factory env up <ws> <repo> --run <run>` now, not at prove. Read failures with `factory env logs`. If login is needed: `factory env login <ws> <repo>` (reads `secrets/<ws>.env`). If the ticket names a user e-mail for the scenario: `factory run login-user <run> <email>` and `factory env login <ws> <repo> --user <email>`; else the workspace default user.
 - [ ] Author writes `R/acs.json` + `R/checks/**`: every AC ≥1 check that can fail; UI → `visual` + `style` (maps from `factory figma expect`); bug → `red-green`; api → `api`; `human` only with a reason.
 - [ ] Figma pack complete: `factory figma check <run>`.
 - [ ] `factory baseline <run>` (quality failures on merge-base, computed once).

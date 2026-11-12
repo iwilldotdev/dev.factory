@@ -84,6 +84,8 @@ def cmd_start(args) -> int:
     }
     if hotfix:
         run["hotfix"] = hotfix
+    if getattr(args, "login_user", None):
+        run["login_user"] = args.login_user
     for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
@@ -430,6 +432,20 @@ def cmd_rewind(args) -> int:
     return 0
 
 
+def cmd_login_user(args) -> int:
+    """Per-run login e-mail for the runtime collectors; allowed until `gate prove` has passed."""
+    run = run_load(args.run)
+    if any(e["kind"] == "gate_pass" and e["data"].get("phase") == "prove" for e in run.get("events", [])):
+        raise FactoryError("gate prove already passed; login-user can no longer change (rewind to prove first)")
+    previous = run.get("login_user")
+    run["login_user"] = args.email
+    event(run, "login_user", user=args.email, previous=previous, phase=run["phase"])
+    run_save(run)
+    _emit(args, {"login_user": args.email},
+          f"login user {args.email}; then `factory env login {run['workspace']} <repo> --user {args.email}`")
+    return 0
+
+
 def cmd_human(args) -> int:
     run = run_load(args.run)
     event(run, "human", note=args.note, phase=run["phase"])
@@ -449,6 +465,7 @@ def register(sub) -> None:
     p.add_argument("--bug", action="append", help="ticket key that is a bug (repeatable)")
     p.add_argument("--hotfix", action="store_true", help="hotfix run: targets = [ship.hotfix.base, *mirror]; tickets are bugs")
     p.add_argument("--feature", action="store_true", help="with --hotfix: tickets stay features")
+    p.add_argument("--login-user", help="e-mail the runtime checks log in as (default: workspace test user)")
     p.set_defaults(func=cmd_start)
     p = rs.add_parser("status")
     p.add_argument("run")
@@ -490,6 +507,10 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("note")
     p.set_defaults(func=cmd_human)
+    p = rs.add_parser("login-user", help="set the e-mail the runtime checks log in as (before gate prove passes)")
+    p.add_argument("run")
+    p.add_argument("email")
+    p.set_defaults(func=cmd_login_user)
     p = rs.add_parser("replan", help="back to plan to change acs.json/checks/figma/diagnosis (clears the plan lock)")
     p.add_argument("run")
     p.add_argument("reason")

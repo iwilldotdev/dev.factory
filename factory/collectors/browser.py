@@ -46,16 +46,24 @@ def full_url(check: dict, ctx: Ctx) -> str | dict:
     return base.rstrip("/") + ("/" + path.lstrip("/") if path else "")
 
 
-def storage_state(check: dict, ctx: Ctx) -> str | None:
+def storage_state(check: dict, ctx: Ctx) -> str | dict | None:
+    """Storage state of the run's login_user (else the default user's, when it exists). An error body when the
+    login_user's file is missing."""
+    user = (ctx.run or {}).get("login_user")
     try:
-        from factory.commands.env import storage_state_path  # written by another module
+        from factory.commands.env import login_command, storage_state_path
     except Exception:
         return None
+    ws, alias = ctx.workspace.get("name"), check.get("repo")
     try:
-        path = Path(storage_state_path(ctx.workspace.get("name"), check.get("repo")))
+        path = Path(storage_state_path(ws, alias, user) if user else storage_state_path(ws, alias))
     except Exception:
         return None
-    return str(path) if path.is_file() else None
+    if path.is_file():
+        return str(path)
+    if user:
+        return _error(f"no storage state for login user {user}: run `{login_command(ws, alias, user)}`")
+    return None
 
 
 def out_dir(ctx: Ctx) -> Path:
@@ -123,6 +131,8 @@ def collect(check: dict, ctx: Ctx) -> dict:
     out = out_dir(ctx)
     argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out)]
     state = storage_state(check, ctx)
+    if isinstance(state, dict):
+        return state
     if state:
         argv += ["--storage-state", state]
     return finish(run_cli(argv, out), out, ctx)

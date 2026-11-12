@@ -25,6 +25,8 @@ def collect(check: dict, ctx: Ctx) -> dict:
     if check.get("settle_ms") is not None:
         cap += ["--settle-ms", str(check["settle_ms"])]
     state = b.storage_state(check, ctx)
+    if isinstance(state, dict):
+        return state
     if state:
         cap += ["--storage-state", state]
     captured = b.run_cli(cap, out)

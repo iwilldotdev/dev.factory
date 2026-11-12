@@ -28,12 +28,15 @@ param(
   [switch] $RemoveHarness,
   [switch] $SkipPath,
   [switch] $BuildDevMcp,
-  [string] $DevMcpPath = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) "dev.mcp"),
+  [string] $DevMcpPath = "",
   [switch] $Force
 )
 
 $ErrorActionPreference = "Stop"
-$repo = Split-Path $PSScriptRoot -Parent
+# $PSScriptRoot is not available in param defaults on Windows PowerShell 5.1: resolve paths here.
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$repo = Split-Path $scriptDir -Parent
+if (-not $DevMcpPath) { $DevMcpPath = Join-Path (Split-Path $repo -Parent) "dev.mcp" }
 # `-File` passes "a,b" as one string: split on ',' / ';' and trim stray quotes or spaces.
 $Profiles = @($Profiles | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ })
 

@@ -1,0 +1,18 @@
+# Ship how-to (main session only)
+
+`R` = `FACTORY_HOME/runs/<run-id>`. Phase is `ship` after `gate review` passes.
+
+1. `git -C <worktree> fetch origin` for every repo of the run.
+2. `factory ship plan <run>`. It fails when a branch is behind `origin/<target>` or a dependency MR is not merged (from `R/remote/`). Rebase/merge via a builder, then prove + review again, or ask the user (`--allow-behind` only with their explicit yes).
+3. Read `R/ship-plan.json`: `mrs[]` (repo, target, source/target branch, title, draft, description, `depends_on`, readback path), `jira_comment` (ADF), and `actions[]` in order, each with `needs_user`.
+4. **Gate S** for every action with `needs_user: true`: one chat briefing listing the MRs (repo → target, draft, title, Depends on), ACs × evidence status, `human` checks, the Jira comment and the transition. Wait for an explicit yes. The approval covers only the listed actions.
+5. Execute the actions in order:
+   - `push`: `git -C <worktree> push -u origin <branch>`. Never force.
+   - `mr`: `gitlab_save_merge_request` (create, or update when an MR already exists for the source → target) with title, description, `draft`, source/target branch, assignee/reviewer from the workspace. Keep the `Draft: ` title prefix when draft: the MCP may ignore the flag. Stacked MRs: fill `Depends on !N` from the readbacks of earlier MRs in the plan.
+   - `readback`: `gitlab_get_merge_request` → save the raw response, unedited, to the action's `save_to` (`R/remote/mr-<repo>-<target>.json`).
+   - `jira_comment`: `jira_add_comment` with the plan's ADF on each issue. Replace `{mr_url:<repo>:<target>}` with `web_url` from the readbacks. If the epic has a `ship_comment` template, use that instead.
+   - `jira_transition`: `jira_get_transitions`, then `jira_transition_issue` to the named transition.
+6. `factory ship verify <run>` compares the readbacks with the plan. Fix mismatches with another `gitlab_save_merge_request` and readback.
+7. `factory gate <run> ship`. Then go to feedback.
+
+Never un-draft, merge, or close an MR without an explicit user request for that MR.

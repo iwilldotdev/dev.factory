@@ -1,0 +1,234 @@
+"""Tests for install.py using temporary profile directories."""
+
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+import install  # noqa: E402
+
+HARNESS_CLAUDE_MD = """# Global instructions
+
+## Delegation to workers
+
+Workers table and rules.
+
+| a | b |
+
+## dev.harness flows
+
+When a dev-* skill is active, read the delegation file.
+
+## My own notes
+
+Keep me.
+"""
+
+
+def make_dir_link(link: Path, target: Path) -> str | None:
+    """Create a directory symlink, or a junction on Windows. Returns the kind or None."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return "symlink"
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if proc.returncode == 0:
+            return "junction"
+    return None
+
+
+def run_install(*args: str) -> tuple[int, str]:
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = install.main(list(args))
+    return code, out.getvalue()
+
+
+class InstallTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.profile = self.tmp / "profile"
+        self.fh = self.tmp / "fhome"
+        self.profile.mkdir()
+
+    def tearDown(self):
+        # Remove links first so cleanup never follows them into targets.
+        for root, dirs, files in os.walk(self.tmp, topdown=True):
+            for d in list(dirs):
+                p = Path(root) / d
+                if install.is_link(p):
+                    install.remove_link(p)
+                    dirs.remove(d)
+        self._tmp.cleanup()
+
+    def base(self, *extra):
+        return ("--profile", str(self.profile), "--factory-home", str(self.fh), *extra)
+
+    def harness_profile(self):
+        p = self.profile
+        (p / "skills" / "dev-cycle").mkdir(parents=True)
+        (p / "skills" / "dev-cycle" / "SKILL.md").write_text("harness", encoding="utf-8")
+        (p / "skills" / "other").mkdir()
+        (p / "agents").mkdir()
+        (p / "agents" / "dev-scout.md").write_text("x", encoding="utf-8")
+        (p / "agents" / "mine.md").write_text("keep", encoding="utf-8")
+        (p / "hooks").mkdir()
+        (p / "hooks" / "dev-worker-guard.js").write_text("//", encoding="utf-8")
+        (p / "hooks" / "other.js").write_text("//", encoding="utf-8")
+        (p / "dev-harness-delegation.md").write_text("deleg", encoding="utf-8")
+        (p / "CLAUDE.md").write_text(HARNESS_CLAUDE_MD, encoding="utf-8")
+        (p / "settings.json").write_text(json.dumps({
+            "agentPushNotifEnabled": False,
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "node other.js"}]}]},
+        }), encoding="utf-8")
+
+    def test_fresh_install(self):
+        code, out = run_install(*self.base())
+        self.assertEqual(code, 0, out)
+        p = self.profile
+        self.assertTrue((p / "skills" / "factory" / "SKILL.md").is_file())
+        self.assertTrue((p / "skills" / "factory" / "references").is_dir())
+        for role in ("scout", "author", "builder", "auditor"):
+            text = (p / "agents" / f"factory-{role}.md").read_text(encoding="utf-8")
+            self.assertNotIn("{{", text)
+            self.assertIn(f'node "{install.fwd(p / "hooks")}/worker-guard.js" {role}', text)
+            self.assertIn(install.fwd(self.fh), text)
+        for name in install.HOOK_FILES:
+            self.assertTrue((p / "hooks" / name).is_file())
+        settings = json.loads((p / "settings.json").read_text(encoding="utf-8"))
+        cmds = [h["command"] for e in settings["hooks"]["PreToolUse"] for h in e["hooks"]]
+        self.assertEqual(len(cmds), 1)
+        self.assertIn("protect.js", cmds[0])
+        self.assertEqual(settings["env"]["FACTORY_HOME"], install.fwd(self.fh))
+        md = (p / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertIn(install.MARK_START, md)
+        self.assertIn("factory-scout", md)
+        self.assertTrue((p / "bin" / "factory").is_file())
+        self.assertIn("python -m factory", (p / "bin" / "factory.cmd").read_text(encoding="utf-8"))
+        for sub in install.FACTORY_DIRS:
+            self.assertTrue((self.fh / sub).is_dir())
+
+    def test_idempotent_and_keeps_other_settings(self):
+        self.harness_profile()
+        run_install(*self.base())
+        first_md = (self.profile / "CLAUDE.md").read_text(encoding="utf-8")
+        code, _ = run_install(*self.base())
+        self.assertEqual(code, 0)
+        settings = json.loads((self.profile / "settings.json").read_text(encoding="utf-8"))
+        self.assertFalse(settings["agentPushNotifEnabled"])
+        pre = settings["hooks"]["PreToolUse"]
+        self.assertEqual(len(pre), 2)
+        self.assertEqual(sum("protect.js" in h["command"] for e in pre for h in e["hooks"]), 1)
+        md = (self.profile / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertEqual(md, first_md)
+        self.assertEqual(md.count(install.MARK_START), 1)
+
+    def test_snippet_block_is_replaced_in_place(self):
+        text = f"# Top\n\n{install.MARK_START}\nold\n{install.MARK_END}\n\n## After\n"
+        new = install.upsert_block(text, "fresh")
+        self.assertIn("fresh", new)
+        self.assertNotIn("old", new)
+        self.assertTrue(new.startswith("# Top"))
+        self.assertIn("## After", new)
+
+    def test_dry_run_changes_nothing(self):
+        self.harness_profile()
+        before = sorted(str(p) for p in self.profile.rglob("*"))
+        md_before = (self.profile / "CLAUDE.md").read_text(encoding="utf-8")
+        code, out = run_install(*self.base("--remove-harness", "--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("DRY", out)
+        self.assertNotIn("DO   ", out)
+        self.assertEqual(before, sorted(str(p) for p in self.profile.rglob("*")))
+        self.assertEqual(md_before, (self.profile / "CLAUDE.md").read_text(encoding="utf-8"))
+        self.assertFalse(self.fh.exists())
+
+    def test_remove_harness(self):
+        self.harness_profile()
+        code, out = run_install(*self.base("--remove-harness"))
+        self.assertEqual(code, 0, out)
+        p = self.profile
+        self.assertFalse((p / "skills" / "dev-cycle").exists())
+        self.assertTrue((p / "skills" / "other").is_dir())
+        self.assertFalse((p / "agents" / "dev-scout.md").exists())
+        self.assertTrue((p / "agents" / "mine.md").is_file())
+        self.assertFalse((p / "hooks" / "dev-worker-guard.js").exists())
+        self.assertTrue((p / "hooks" / "other.js").is_file())
+        self.assertFalse((p / "dev-harness-delegation.md").exists())
+        md = (p / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertNotIn("## Delegation to workers", md)
+        self.assertNotIn("## dev.harness flows", md)
+        self.assertIn("## My own notes", md)
+        self.assertIn("Keep me.", md)
+        self.assertIn(install.MARK_START, md)
+        backups = list((p / "backups").glob("harness-*"))
+        self.assertEqual(len(backups), 1)
+        b = backups[0]
+        self.assertTrue((b / "skills" / "dev-cycle" / "SKILL.md").is_file())
+        self.assertTrue((b / "agents" / "dev-scout.md").is_file())
+        self.assertTrue((b / "hooks" / "dev-worker-guard.js").is_file())
+        self.assertTrue((b / "dev-harness-delegation.md").is_file())
+        self.assertIn("## Delegation to workers", (b / "CLAUDE.md").read_text(encoding="utf-8"))
+
+    def test_remove_harness_unlinks_linked_skill_without_touching_target(self):
+        shared = self.tmp / "shared-skills" / "dev-ship"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("shared content", encoding="utf-8")
+        (self.profile / "skills").mkdir()
+        kind = make_dir_link(self.profile / "skills" / "dev-ship", shared)
+        if not kind:
+            self.skipTest("cannot create directory links on this system")
+        self.assertTrue(install.is_link(self.profile / "skills" / "dev-ship"))
+        code, out = run_install(*self.base("--remove-harness"))
+        self.assertEqual(code, 0, out)
+        self.assertFalse(os.path.lexists(self.profile / "skills" / "dev-ship"), kind)
+        self.assertEqual((shared / "SKILL.md").read_text(encoding="utf-8"), "shared content")
+        links = list((self.profile / "backups").glob("harness-*/links.json"))
+        self.assertEqual(len(links), 1)
+        self.assertIn("dev-ship", links[0].read_text(encoding="utf-8"))
+
+    def test_shared_skills_folder_needs_yes(self):
+        shared = self.tmp / "shared"
+        (shared / "dev-cycle").mkdir(parents=True)
+        (shared / "dev-cycle" / "SKILL.md").write_text("x", encoding="utf-8")
+        (shared / "grill-me").mkdir()
+        if not make_dir_link(self.profile / "skills", shared):
+            self.skipTest("cannot create directory links on this system")
+        code, out = run_install(*self.base("--remove-harness"))
+        self.assertEqual(code, 1, out)
+        self.assertIn("SKIP", out)
+        self.assertTrue((shared / "dev-cycle").is_dir())
+        self.assertFalse((shared / "factory").exists())
+        code, out = run_install(*self.base("--remove-harness", "--yes"))
+        self.assertEqual(code, 0, out)
+        self.assertFalse((shared / "dev-cycle").exists())
+        self.assertTrue((shared / "grill-me").is_dir())
+        self.assertTrue((shared / "factory" / "SKILL.md").is_file())
+        self.assertTrue(install.is_link(self.profile / "skills"))
+
+    def test_invalid_settings_is_not_clobbered(self):
+        (self.profile / "settings.json").write_text("{not json", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            run_install(*self.base())
+        self.assertEqual((self.profile / "settings.json").read_text(encoding="utf-8"), "{not json")
+
+    def test_strip_harness_sections_without_sections(self):
+        text = "# Title\n\nbody\n"
+        self.assertEqual(install.strip_harness_sections(text), text)
+
+
+if __name__ == "__main__":
+    unittest.main()

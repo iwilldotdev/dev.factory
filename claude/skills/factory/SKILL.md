@@ -52,7 +52,7 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 ## Rules by work type
 
 - **UI ACs** need a `visual` check and a `style` check against a packed Figma node. Style expectations come from `factory figma expect`, never from the model. A generic Modal/Drawer or hug/fill stand-in does not close a fixed-size or absolute-position gap.
-- **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base, a `red-green` check (`cmd` or `of: CHK-n`), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
+- **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base, a `red-green` check (`cmd` or `of: CHK-n`), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. UI bugs (no unit-testable cause): the author writes a `browser` spec instead of `red-green`; you bring the env up from the clean run worktree before any build and run `prove --repro --assume-env`; `gate prove` then requires that check `reproduced` on base and passing at HEAD. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
 - **Small, low-risk tickets** still go through prove and review: the gate is the point. They may skip review round 2.
 - **Runtime checks** (`browser`, `visual`, `style`, `api`) need the repo `env` block. Bring env up at plan time, not at prove time. A missing env goes in the question round as one consolidated list (the plan gate prints it).
 - **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice.
@@ -92,3 +92,7 @@ Stop and ask only when a gate fails for a reason only the user can fix: credenti
 ## Do yourself vs delegate
 
 Do yourself: CLI commands, `git fetch`/`git push`, dev.mcp writes, dev.mcp readbacks you just made (MR readback with `save_to`), questions to the user, and reading a CLI summary. Delegate everything else: reading tickets, Figma, code, and diffs (scout/author), writing ACs and checks (author), code (builder), reviews (auditor). Check worker reports cheaply (`git log`, `factory run status`, gate exit code) before relaying them.
+
+## Hotfix
+
+When the user asks for a hotfix (homolog + pack): do both in one go, homolog first. `factory run start <ws> KEY --hotfix`, branch the base target (`run branch … --base homolog`), reproduce, build and `gate build` on it, then `factory run mirror <run> <repo> --to pack` per repo. On a `conflict` blocker a builder resolves the cherry-pick (`git cherry-pick --continue`, never `--abort`), then `run unblock`. `prove` and the gates cover every target (`CHK-n@<target>`); `ship plan` orders homolog first and cross-links the MRs. Details: `references/ship.md`, DESIGN section 9.

@@ -13,6 +13,7 @@ from ..core import (
     read_json,
     repo_conf,
     repo_path_for_run,
+    target_worktree,
     run_dir,
     run_load,
     run_save,
@@ -25,6 +26,8 @@ DRAFT_PREFIX = "Draft: "
 
 
 def _ordered_targets(run: dict, workspace: dict) -> list[str]:
+    if run.get("hotfix"):  # base target first, then the mirrors
+        return list(run.get("targets") or [])
     ship_targets = (workspace.get("ship") or {}).get("targets") or []
     run_targets = run.get("targets") or []
     if ship_targets and run_targets:
@@ -118,7 +121,7 @@ def _rel(run_id: str, artifact: str) -> str:
     return artifact.replace("\\", "/")
 
 
-def _ac_table(run_id: str, alias: str, acs: dict) -> tuple[str, list[dict]]:
+def _ac_table(run_id: str, alias: str, acs: dict, target: str | None = None) -> tuple[str, list[dict]]:
     checks = {c["id"]: c for c in acs.get("checks", [])}
     rows = ["| AC | Checks | Evidence | Artifacts |", "|---|---|---|---|"]
     humans: list[dict] = []
@@ -134,7 +137,7 @@ def _ac_table(run_id: str, alias: str, acs: dict) -> tuple[str, list[dict]]:
                 if chk not in humans:
                     humans.append(chk)
                 continue
-            ev = load_evidence(run_id, cid)
+            ev = load_evidence(run_id, f"{cid}@{target}" if target else cid)
             ev_parts.append(f"{cid}: {ev['status'] if ev else 'missing'}")
             for a in (ev or {}).get("artifacts", []):
                 arts.append(f"[{Path(a).name}]({_rel(run_id, a)})")
@@ -161,11 +164,12 @@ def _baseline_summary(run_id: str, alias: str) -> str:
     return f"Baseline (merge-base) pre-existing quality failures: {detail}. This MR adds none (prove gate)."
 
 
-def _description(run: dict, workspace: dict, alias: str, target: str, deps: list[tuple[str, str]], acs: dict) -> str:
+def _description(run: dict, workspace: dict, alias: str, target: str, deps: list[tuple[str, str]], acs: dict,
+                 cross: list[str] | None = None) -> str:
     lines = ["## Tickets", ""]
     for t in run.get("tickets", []):
         lines.append(f"- {t['key']}" + (f" - {t['summary']}" if t.get("summary") else ""))
-    table, humans = _ac_table(run["id"], alias, acs)
+    table, humans = _ac_table(run["id"], alias, acs, target if run.get("hotfix") else None)
     lines += ["", "## Acceptance criteria and evidence", "", table]
     lines += ["", "## Human checks", ""]
     if humans:
@@ -174,6 +178,8 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
     else:
         lines.append("None.")
     lines += ["", "## Baseline", "", _baseline_summary(run["id"], alias)]
+    if cross:
+        lines += ["", "## Hotfix mirror", ""] + cross
     if deps:
         lines += ["", "## Dependencies", ""]
         lines += [f"Depends on {{mr_url:{a}:{t}}}" for a, t in deps]
@@ -209,8 +215,11 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
 
     errors = check_dependencies(run, internal_deps)
     for alias in repos:
-        wt = repo_path_for_run(run, workspace, alias)
         for target in targets:
+            wt = target_worktree(run, workspace, alias, target)
+            if wt is None:
+                errors.append(f"{alias}: no worktree for target {target} (factory run mirror {run_id} {alias} --to {target})")
+                continue
             try:
                 n = behind_count(wt, target)
             except FactoryError as err:
@@ -223,10 +232,16 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
 
     draft = bool(ship.get("draft_default", True))
     fmt = ship.get("mr_title_format") or "{key} - {summary}"
-    seq = [(a, t) for a in repos for t in targets]
+    hotfix = run.get("hotfix")
+    seq = [(a, t) for t in targets for a in repos] if hotfix else [(a, t) for a in repos for t in targets]
     mrs = []
     for alias, target in seq:
-        deps = [(a, t) for (a, t) in seq if (a != alias and t == target and repos.index(a) < repos.index(alias))
+        cross: list[str] = []
+        if hotfix and target == hotfix["base"]:
+            cross = [f"Mirrored to {{mr_url:{alias}:{t}}}" for t in targets if t != target]
+        elif hotfix:
+            cross = [f"Mirror of {{mr_url:{alias}:{hotfix['base']}}}"]
+        deps = [] if hotfix else [(a, t) for (a, t) in seq if (a != alias and t == target and repos.index(a) < repos.index(alias))
                 or (a == alias and targets.index(t) < targets.index(target))]
         base_title = _title(fmt, run, alias, target)
         mrs.append({
@@ -238,7 +253,7 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
             "draft": draft,
             "behind": 0,
             "depends_on": [{"repo": a, "target": t} for a, t in deps],
-            "description": _description(run, workspace, alias, target, deps, acs),
+            "description": _description(run, workspace, alias, target, deps, acs, cross),
             "readback": f"remote/mr-{alias}-{target}.json",
         })
 

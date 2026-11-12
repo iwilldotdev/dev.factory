@@ -10,10 +10,10 @@ import traceback
 from pathlib import Path
 
 from ..collectors.test import DEFAULT_TIMEOUT_S, drop_worktree, run_shell, temp_worktree
-from ..core import (SCHEMA_VERSION, Ctx, FactoryError, event, git, git_dirty,
-                    git_head, now, read_json, repo_conf, repo_path_for_run,
-                    run_dir, run_load, run_save, workspace_load, write_evidence,
-                    write_json)
+from ..core import (SCHEMA_VERSION, Ctx, FactoryError, event, evidence_id, git,
+                    git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
+                    repo_path_for_run, run_dir, run_load, run_save, run_targets,
+                    target_worktree, workspace_load, write_evidence, write_json)
 from . import gate
 
 TSC_RE = re.compile(r"^(?P<p>.+?)\((?P<l>\d+),(?P<c>\d+)\):\s*error\s+(?P<code>[A-Za-z]+\d+):\s*(?P<m>.*?)(?:\s*\[[^\]]*\])?$")
@@ -159,9 +159,11 @@ def dispatch(check: dict, ctx: Ctx) -> dict:
                 "details": {"traceback": traceback.format_exc()[-3000:]}}
 
 
-def collect_one(run: dict, ws: dict, check: dict) -> dict:
+def collect_one(run: dict, ws: dict, check: dict, target: str | None = None) -> dict:
     alias = repo_conf(ws, check["repo"])["alias"] if check.get("repo") else None
-    repo_path = repo_path_for_run(run, ws, alias) if alias else None
+    repo_path = target_worktree(run, ws, alias, target) if alias else None
+    if target and hotfix_of(run):
+        check = dict(check, id=evidence_id(run, check["id"], target))
     out_dir = run_dir(run["id"]) / "evidence" / check["id"]
     env = dict(repo_conf(ws, alias).get("env") or {}) if alias else {}
     if alias and not env.get("base_url"):
@@ -205,12 +207,12 @@ LOCAL_TYPES = {"test"}  # run inside a temp worktree at the merge-base
 ENV_TYPES = {"api", "browser"}  # run against the already-running env (--assume-env)
 
 
-def repro_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
+def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | None = None) -> dict:
     """Run one check against the merge-base; evidence/REPRO-<id>.json (only the CLI writes it)."""
     alias = repo_conf(ws, check["repo"])["alias"]
     wt = repo_path_for_run(run, ws, alias)
-    mb = gate.merge_base_for(run, ws, alias)
-    rid = gate.repro_id(check["id"])
+    mb = gate.merge_base_for(run, ws, alias, target)
+    rid = gate.repro_id(evidence_id(run, check["id"], target))
     conf = repo_conf(ws, alias)
     main = Path(conf.get("path") or wt)
     main = main if (main / ".git").exists() else wt
@@ -274,10 +276,14 @@ def cmd_repro(args) -> int:
     if not checks:
         raise FactoryError("no reproducible checks (kind: bug ACs need a test/api/browser check)")
     records = []
+    hf = hotfix_of(run)
     for chk in checks:
         if not chk.get("repo"):
             raise FactoryError(f"{chk['id']}: repo is required")
-        records.append(repro_one(run, ws, chk, args.assume_env))
+        for target in run_targets(run):
+            if hf and target != hf["base"] and chk.get("type") not in LOCAL_TYPES:
+                continue  # runtime checks are reproduced on the base target only (env serves one worktree)
+            records.append(repro_one(run, ws, chk, args.assume_env, target))
     run_save(run)
     bad = [r for r in records if r["status"] != "reproduced"]
     if getattr(args, "json", False):
@@ -308,7 +314,11 @@ def cmd_prove(args) -> int:
         if alias in run["repos"] and git_dirty(repo_path_for_run(run, ws, alias)):
             print(f"warning: {alias} worktree is dirty; evidence will be rejected by the gate")
     for chk in checks:
-        records.append(collect_one(run, ws, chk))
+        for target in run_targets(run):
+            if chk.get("repo") and target_worktree(run, ws, repo_conf(ws, chk["repo"])["alias"], target) is None:
+                print(f"warning: {chk['id']}: no worktree for target {target} (factory run mirror); skipped")
+                continue
+            records.append(collect_one(run, ws, chk, target))
     if not args.check:
         for alias in _select_repos(run, ws, wanted_repo):
             if repo_conf(ws, alias).get("quality"):

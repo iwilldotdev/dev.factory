@@ -83,6 +83,54 @@ def cmd_import(args) -> int:
     return 0
 
 
+BRANCH_PLACEHOLDERS = {"key", "slug", "target", "target_upper", "package"}
+
+
+def hotfix_config(ws: dict) -> dict | None:
+    """ship.hotfix, or the default (homolog + mirror pack) when a target named homolog exists."""
+    ship = ws.get("ship") or {}
+    if isinstance(ship.get("hotfix"), dict):
+        return ship["hotfix"]
+    if "homolog" in (ship.get("targets") or []):
+        return {"base": "homolog", "mirror": ["pack"]}
+    return None
+
+
+def hotfix_config_errors(ws: dict) -> list[str]:
+    import string
+    errors = []
+    ship = ws.get("ship") or {}
+    hf = ship.get("hotfix")
+    if hf is not None:
+        if not isinstance(hf, dict) or not hf.get("base") or not isinstance(hf.get("mirror", []), list):
+            errors.append("ship.hotfix must be {base: <target>, mirror: [<target>, ...]}")
+        else:
+            targets = ship.get("targets") or []
+            for t in [hf["base"], *hf.get("mirror", [])]:
+                if t not in targets:
+                    errors.append(f"ship.hotfix target {t!r} is not in ship.targets")
+            if hf["base"] in hf.get("mirror", []):
+                errors.append("ship.hotfix.mirror must not contain the base target")
+    fmt = ws.get("branch_format")
+    if fmt is not None:
+        if not isinstance(fmt, dict):
+            errors.append("branch_format must be an object {feature, bug, hotfix}")
+        else:
+            for key, text in fmt.items():
+                if key not in ("feature", "bug", "hotfix"):
+                    errors.append(f"branch_format.{key}: unknown key (feature, bug, hotfix)")
+                    continue
+                try:
+                    names = {n for _, n, _, _ in string.Formatter().parse(str(text)) if n}
+                except ValueError as err:
+                    errors.append(f"branch_format.{key}: {err}")
+                    continue
+                bad = names - BRANCH_PLACEHOLDERS
+                if bad:
+                    errors.append(f"branch_format.{key}: unknown placeholder(s) {sorted(bad)}")
+    return errors
+
+
 def check_workspace(ws: dict) -> list[str]:
     missing: list[str] = []
     root = ws.get("worktree_root")
@@ -115,6 +163,7 @@ def check_workspace(ws: dict) -> list[str]:
     autonomy = ws.get("autonomy") or {}
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):
         missing.append("autonomy.ship must be ask or draft-auto")
+    missing.extend(hotfix_config_errors(ws))
     for rule in ws.get("rules", []):
         if not rule.get("id") or not isinstance(rule.get("check"), dict):
             missing.append(f"rule needs id and check: {rule}")

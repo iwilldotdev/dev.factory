@@ -120,7 +120,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
   "risk": "normal|high",
   "loops": {"build": 0, "review": 0},
   "decisions": [{"at": "…", "phase": "plan", "text": "…", "by": "agent|user"}],
-  "blockers": [{"at": "…", "kind": "env|access|question|dependency", "text": "…", "resolved": false}],
+  "blockers": [{"at": "…", "kind": "env|access|question|dependency|conflict", "text": "…", "resolved": false}],
   "events": [{"at": "…", "kind": "phase|gate_fail|gate_pass|evidence|review|ship|human|loop", "data": {}}],
   "sessions": ["<claude session id or transcript path>"],
   "created": "…", "updated": "…"
@@ -154,7 +154,7 @@ Plan-gate rules (`factory gate <run> plan`):
 
 - Every AC has ≥1 check; every check is referenced by ≥1 AC; ids unique.
 - `kind: ui` ACs need ≥1 `visual` **and** ≥1 `style` check; every `node` has a pack entry (`figma/<node>.json` + `.png` decodable) and `figma/meta.json` names its file revision.
-- `kind: bug` ACs need a `red-green` check.
+- `kind: bug` ACs need a `red-green` check, **or** a runtime check (`browser`/`api`/`visual`/`style`) that has REPRO evidence `reproduced` at the merge-base and passes at HEAD (enforced at `gate prove`; §8).
 - `browser`/`visual`/`style`/`api` checks need the repo's `env` block and `factory env check` capability (start command + health); missing env → gate fails with one consolidated list of what the user must provide.
 - `human` checks are allowed but counted; the ship briefing lists them; they never satisfy a `ui` or `bug` AC on their own.
 - Style maps: every expected value must appear in the node's pack JSON (as number or hex), so expectations come from Figma, not from the model.
@@ -196,6 +196,7 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | `run start <ws> <TICKET...> [--epic KEY] [--risk high] [--bug KEY]...` | `commands/run.py` | create run dir + run.json (phase intake) |
 | `run status <run>` / `run list` | `commands/run.py` | phase, loops, blockers, next required action |
 | `run branch <run> <repo> --base <target> [--name …] [--from-run <child-id>]` | `commands/run.py` | create worktree + branch under worktree_root, record in run.json; `--from-run` stacks on that run's branch of the same repo (records `base_branch`, `base_run`) |
+| `run start … --hotfix` / `run mirror <run> <repo> --to <target>` | `commands/run.py` | hotfix run and cherry-pick mirror worktree (§9) |
 | `run branch <run> <repo> --base <ref> --for-target <target> [--name …]` | `commands/run.py` | for a repo already branched: create a second branch (default `<branch>-<target>`) from `<ref>` and record it in `repos[alias].branches[target]`; `ship plan` uses it as that target's MR source |
 | `run decide <run> "<text>" [--by user]` / `run block <run> <kind> "<text>"` / `run unblock <run> <n>` | `commands/run.py` | append decision/blocker |
 | `run human <run> "<note>"` | `commands/run.py` | record a human intervention (orchestrator calls it for every user message that steers the run) |
@@ -298,8 +299,19 @@ A run is a bug run when a ticket is `type: bug` (`run start --bug KEY`). Phases:
 - Checks must be runnable on the base without the fix (an existing test, or a script that does not need branch changes). `test` checks run in the temp worktree. `api`/`browser` checks need a running env, which serves the run worktree, not the temp one: they run only with `--assume-env`, and only if the run worktree is clean and still at the merge-base (before any fix commit), otherwise status `error`. `visual`/`style` cannot be reproduced.
 - **Gate `reproduce`:** each bug AC has a check with REPRO status `reproduced` and `git_sha` equal to the current merge-base; `diagnosis.md` exists with the three sections non-empty (structure only; the code auditor judges the content); runtime repro checks need the repo env (the same consolidated env message as plan). No builder touches code before this gate passes.
 - **Build:** the builder fixes the cause named in `diagnosis.md`. The code auditor must state whether the fix addresses the root cause and files a finding if it only masks the symptom.
+- **UI bugs (no red-green):** a `kind: bug` AC may use a runtime check instead of `red-green` (`of` only supports `test`). The author writes a `browser` spec (or `api` check) that fails on the unfixed code. Order matters: the orchestrator brings the env up from the clean run worktree **before any build** (`factory env up --run`) and runs `factory prove <run> --repro --assume-env` (`reproduced`), then the builder fixes; `prove` later must pass the same check at HEAD. `gate prove` enforces for bug ACs without `red-green`: ≥1 runtime check with `REPRO-<id>` `reproduced` and bound to the merge-base, plus the normal passing evidence at HEAD. `visual`/`style` cannot be reproduced on base, so they cannot satisfy this alone.
 - **`red-green` with `of`:** `of` references a `test` check of the same repo (validated at plan; `cmd` and `of` are exclusive). The collector runs the inner check in the `fix_commit~1` worktree (with the test files from `fix_commit`; must fail) and in the `fix_commit` worktree (must pass), through the `test` collector with `ctx.repo_path` set to the temp worktree. `browser`/`api` inner checks are not supported: the env would have to be started from the temp worktree, so plan rejects them. Use a `test` check for red-green (a `browser`/`api` check can still be the reproduction). Evidence details carry `of`.
 
-## 9. Non-goals (v0.1)
+## 9. Hotfix
+
+Only when the user asks for a hotfix (homolog + pack in one go). One run, bug semantics (reproduce phase, §8), two targets, homolog first.
+
+- **Workspace:** `ship.hotfix = {"base": "homolog", "mirror": ["pack"]}` (default when absent but a target named `homolog` exists; `workspace check` validates that base and mirrors are in `ship.targets` and the base is not a mirror). `ship.package` (optional, e.g. `"PACK_9"`). Top-level `branch_format = {"feature": "…", "bug": "…", "hotfix": "…"}` with placeholders `{key} {slug} {target} {target_upper} {package}` (`slug` = summary slug, else repo alias slug; `target` = the `--base` / mirror target). `run branch` uses it when `--name` is absent (hotfix runs use `hotfix`, falling back to `bug`; no format → the legacy `bugfix|feature/KEY-alias`).
+- **`run start <ws> KEY --hotfix [--feature]`:** tickets are bugs unless `--feature`; run.json `hotfix: {base, mirror}` and `targets = [base, *mirror]` in that order. Branch the base target normally: `run branch <run> <repo> --base homolog`.
+- **`run mirror <run> <repo> --to <target> [--name …]`:** requires `gate build` passed and a clean base worktree. Creates a worktree `<run>-<repo>-<target>` from `origin/<target>` (local fallback) on the branch from `branch_format`, cherry-picks `merge-base..branch` of the base target in order, records `repos[alias].branches[target]` and `worktrees[target]`. On conflict the worktree stays mid-cherry-pick, a blocker of kind `conflict` (with `files`) is recorded and the command exits 1: a builder resolves, `git add`, `git cherry-pick --continue`, then `run unblock`. Never `--abort`/reset.
+- **Evidence per target:** `prove` runs every check in each target worktree; ids are `CHK-n@<target>` and `REPRO-CHK-n@<target>` (repro on each target's merge-base; mirror merge-base = the target tip, so mirror repro is `test` checks only, runtime checks are reproduced on the base target). `gate reproduce` and `gate prove` require every target (a missing mirror worktree is a failure). Quality delta and rule checks stay on the base target worktree. Non-hotfix runs keep plain ids. Runtime checks on a mirror need the env started from the mirror worktree (not automated).
+- **Ship plan:** MRs ordered base target first, then mirrors; no inter-MR `Depends on`; each description has a `Hotfix mirror` section: `Mirrored to {mr_url:<repo>:<mirror>}` on the base MR, `Mirror of {mr_url:<repo>:<base>}` on mirrors (the orchestrator replaces them with `!N` after creating the MRs); one Jira comment lists all MRs.
+
+## 10. Non-goals (v0.1)
 
 Queue pulling from Jira boards, autonomy levels beyond `ask`/`draft-auto`, CI auto-fix without the orchestrator, non-Claude hosts.

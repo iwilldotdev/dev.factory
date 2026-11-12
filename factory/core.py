@@ -155,6 +155,31 @@ def repo_path_for_run(run: dict, workspace: dict, alias: str) -> Path:
     return Path(repo_conf(workspace, alias)["path"])
 
 
+def hotfix_of(run: dict) -> dict | None:
+    hf = run.get("hotfix")
+    return hf if isinstance(hf, dict) and hf.get("base") else None
+
+
+def run_targets(run: dict) -> list[str | None]:
+    """Evidence targets: [base, *mirror] for hotfix runs, else [None] (ids unchanged)."""
+    hf = hotfix_of(run)
+    return [hf["base"], *(hf.get("mirror") or [])] if hf else [None]
+
+
+def evidence_id(run: dict, check_id: str, target: str | None) -> str:
+    """`CHK-1@homolog` for hotfix runs, plain `CHK-1` otherwise."""
+    return f"{check_id}@{target}" if target and hotfix_of(run) else check_id
+
+
+def target_worktree(run: dict, workspace: dict, alias: str, target: str | None = None) -> Path | None:
+    """Worktree for a target; the run worktree for the base/None; None when a mirror is not created yet."""
+    hf = hotfix_of(run)
+    if hf and target and target != hf["base"]:
+        wt = ((run.get("repos") or {}).get(alias) or {}).get("worktrees", {}).get(target)
+        return Path(wt) if wt else None
+    return repo_path_for_run(run, workspace, alias)
+
+
 # ---------- git ----------
 
 def git(repo: Path, *args: str, check: bool = True) -> str:

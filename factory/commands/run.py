@@ -8,12 +8,12 @@ import subprocess
 from pathlib import Path
 
 from ..collectors.test import link_deps
-from ..core import (SCHEMA_VERSION, FactoryError, event, factory_home,
-                    git, git_head, now, repo_conf, run_dir, run_load,
+from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, event, factory_home,
+                    git, git_dirty, git_head, now, repo_conf, run_dir, run_load,
                     run_save, workspace_load, write_json)
 from . import gate
 
-BLOCKER_KINDS = ("env", "access", "question", "dependency")
+BLOCKER_KINDS = ("env", "access", "question", "dependency", "conflict")
 
 
 def _emit(args, payload, text: str) -> None:
@@ -29,12 +29,44 @@ def slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+def branch_name(run: dict, ws: dict, alias: str, target: str | None, mirror: bool = False) -> str:
+    """Branch name from workspace branch_format (feature|bug|hotfix); legacy default when no format applies."""
+    first = run["tickets"][0]
+    kind = "hotfix" if run.get("hotfix") else ("bug" if first["type"] == "bug" else "feature")
+    formats = ws.get("branch_format") or {}
+    fmt = formats.get(kind) or (formats.get("bug") if kind == "hotfix" else None)
+    if not fmt:
+        base = f"{'bugfix' if first['type'] == 'bug' else 'feature'}/{first['key']}-{slug(alias)}"
+        return f"{base}-{target}" if mirror and target else base
+    target = target or ""
+    values = {"key": first["key"], "slug": slug(first.get("summary") or alias), "target": target,
+              "target_upper": target.upper(), "package": (ws.get("ship") or {}).get("package") or ""}
+    try:
+        return fmt.format(**values)
+    except (KeyError, IndexError, ValueError) as err:
+        raise FactoryError(f"branch_format.{kind} {fmt!r} is invalid: {err}") from err
+
+
 # ---------- start ----------
 
 def cmd_start(args) -> int:
     ws = workspace_load(args.workspace)
     tickets = [t.upper() for t in args.tickets]
     bugs = {b.upper() for b in args.bug or []}
+    hotfix = None
+    targets = list((ws.get("ship") or {}).get("targets") or [])
+    if getattr(args, "hotfix", False):
+        from .workspace import hotfix_config, hotfix_config_errors
+        cfg = hotfix_config(ws)
+        if not cfg:
+            raise FactoryError("--hotfix needs ship.hotfix in workspace.json (or a target named homolog)")
+        bad = hotfix_config_errors(dict(ws, ship=dict(ws.get("ship") or {}, hotfix=cfg)))
+        if bad:
+            raise FactoryError("; ".join(bad))
+        hotfix = {"base": cfg["base"], "mirror": list(cfg.get("mirror") or [])}
+        targets = [hotfix["base"], *hotfix["mirror"]]
+        if not args.feature:
+            bugs |= set(tickets)
     run_id = f"{ws['name'].lower()}-{(args.epic or tickets[0]).lower()}"
     if (run_dir(run_id) / "run.json").exists():
         raise FactoryError(f"run {run_id} already exists")
@@ -43,12 +75,14 @@ def cmd_start(args) -> int:
         "schemaVersion": SCHEMA_VERSION, "id": run_id, "workspace": ws["name"], "kind": "ticket",
         "tickets": [{"key": t, "type": "bug" if t in bugs else "feature",
                      "parent": args.epic.upper() if args.epic else None, "depends_on": []} for t in tickets],
-        "repos": {}, "targets": list((ws.get("ship") or {}).get("targets") or []),
+        "repos": {}, "targets": targets,
         "phase": "intake", "risk": args.risk,
         "loops": {"build": 0, "review": 0},
         "decisions": [], "blockers": [], "events": [], "sessions": [],
         "created": stamp, "updated": stamp,
     }
+    if hotfix:
+        run["hotfix"] = hotfix
     for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
@@ -161,7 +195,7 @@ def cmd_branch(args) -> int:
     if not root:
         raise FactoryError("workspace worktree_root is not set")
     first = run["tickets"][0]
-    branch = args.name or f"{'bugfix' if first['type'] == 'bug' else 'feature'}/{first['key']}-{slug(alias)}"
+    branch = args.name or branch_name(run, ws, alias, args.base)
     worktree = Path(root) / f"{run_short(run)}-{alias.lower()}"
     if worktree.exists():
         raise FactoryError(f"worktree path already exists: {worktree}")
@@ -190,6 +224,70 @@ def cmd_branch(args) -> int:
         run["repos"][alias]["base_run"] = args.from_run
     run_save(run)
     _emit(args, run["repos"][alias], f"{alias}: branch {branch} from {base} at {worktree}")
+    return 0
+
+
+def cmd_mirror(args) -> int:
+    run = run_load(args.run)
+    ws = workspace_load(run["workspace"])
+    hf = run.get("hotfix")
+    if not hf:
+        raise FactoryError("run mirror is for hotfix runs (run start --hotfix)")
+    target = args.to
+    if target not in (hf.get("mirror") or []):
+        raise FactoryError(f"{target!r} is not a mirror target of this hotfix ({hf.get('mirror')})")
+    conf = repo_conf(ws, args.repo)
+    alias = conf["alias"]
+    rec = run["repos"].get(alias)
+    if not rec:
+        raise FactoryError(f"repo {alias} has no branch in run {run['id']}")
+    if target in (rec.get("worktrees") or {}):
+        raise FactoryError(f"{alias} already mirrored to {target} ({rec['worktrees'][target]}); "
+                           "if a cherry-pick is in progress there, resolve it and `git cherry-pick --continue`")
+    base_wt = Path(rec["worktree"])
+    if not any(e["kind"] == "gate_pass" and e["data"].get("phase") == "build" for e in run.get("events", [])):
+        raise GateFailed([f"gate build has not passed for {hf['base']}; commit the fix and run `factory gate {run['id']} build` first"])
+    if git_dirty(base_wt):
+        raise GateFailed([f"{alias}: {hf['base']} worktree has uncommitted changes; commit before mirroring"])
+    main = Path(conf.get("path") or "")
+    base_ref = gate.resolve_base(base_wt, rec.get("base", hf["base"]))
+    mb = git(base_wt, "merge-base", "HEAD", base_ref)
+    shas = git(base_wt, "rev-list", "--reverse", f"{mb}..{rec['branch']}").split()
+    if not shas:
+        raise GateFailed([f"{alias}: no commits between merge-base and {rec['branch']} to mirror"])
+    root = ws.get("worktree_root")
+    worktree = Path(root) / f"{run_short(run)}-{alias.lower()}-{target}"
+    if worktree.exists():
+        raise FactoryError(f"worktree path already exists: {worktree}")
+    name = args.name or branch_name(run, ws, alias, target, mirror=True)
+    start = gate.resolve_base(main, target)
+    if not git(main, "rev-parse", "--verify", "--quiet", start + "^{commit}", check=False):
+        raise FactoryError(f"base ref {start} not found in {main}")
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        ["git", "-C", str(main), "worktree", "add", "--no-track", "-b", name, str(worktree), start],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
+    link_deps(main, worktree)
+    rec.setdefault("branches", {})[target] = name
+    rec.setdefault("worktrees", {})[target] = str(worktree)
+    pick = subprocess.run(["git", "-C", str(worktree), "cherry-pick", *shas],
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if pick.returncode != 0:
+        files = [f for f in git(worktree, "diff", "--name-only", "--diff-filter=U", check=False).splitlines() if f]
+        text = f"cherry-pick conflict mirroring {alias} to {target} in {worktree}: " + ", ".join(files or ["?"])
+        run.setdefault("blockers", []).append({"at": now(), "kind": "conflict", "text": text,
+                                               "files": files, "resolved": False})
+        event(run, "mirror", repo=alias, target=target, status="conflict", files=files)
+        run_save(run)
+        raise GateFailed([text,
+                          f"worktree left mid-cherry-pick at {worktree}: a builder resolves the files, `git add` them and runs "
+                          "`git cherry-pick --continue`; never --abort or reset; then `factory run unblock`"])
+    event(run, "mirror", repo=alias, target=target, status="ok", commits=len(shas))
+    run_save(run)
+    _emit(args, {"target": target, "branch": name, "worktree": str(worktree), "commits": len(shas)},
+          f"{alias}: mirrored {len(shas)} commit(s) to {target} on {name} at {worktree}")
     return 0
 
 
@@ -244,6 +342,8 @@ def register(sub) -> None:
     p.add_argument("--epic")
     p.add_argument("--risk", choices=["normal", "high"], default="normal")
     p.add_argument("--bug", action="append", help="ticket key that is a bug (repeatable)")
+    p.add_argument("--hotfix", action="store_true", help="hotfix run: targets = [ship.hotfix.base, *mirror]; tickets are bugs")
+    p.add_argument("--feature", action="store_true", help="with --hotfix: tickets stay features")
     p.set_defaults(func=cmd_start)
     p = rs.add_parser("status")
     p.add_argument("run")
@@ -259,6 +359,12 @@ def register(sub) -> None:
     p.add_argument("--from-run", help="child run id whose branch (same repo) this branch stacks on")
     p.add_argument("--for-target", help="record a per-target source branch (branches[target]) instead of the main branch")
     p.set_defaults(func=cmd_branch)
+    p = rs.add_parser("mirror", help="hotfix: cherry-pick the base-target commits into a mirror target worktree")
+    p.add_argument("run")
+    p.add_argument("repo")
+    p.add_argument("--to", required=True)
+    p.add_argument("--name")
+    p.set_defaults(func=cmd_mirror)
     p = rs.add_parser("decide")
     p.add_argument("run")
     p.add_argument("text")

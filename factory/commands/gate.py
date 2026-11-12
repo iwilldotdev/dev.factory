@@ -7,10 +7,10 @@ import json
 import re
 from pathlib import Path
 
-from ..core import (FactoryError, GateFailed, event, git, git_dirty, git_head,
-                    load_evidence, node_file, now, read_json, repo_conf,
-                    repo_path_for_run, run_dir, run_load, run_save,
-                    workspace_load)
+from ..core import (FactoryError, GateFailed, event, evidence_id, git, git_dirty,
+                    git_head, hotfix_of, load_evidence, node_file, now,
+                    read_json, repo_conf, repo_path_for_run, run_dir, run_load,
+                    run_save, run_targets, target_worktree, workspace_load)
 
 PHASES = ["intake", "plan", "build", "prove", "review", "ship", "feedback", "done"]
 BUG_PHASES = ["intake", "plan", "reproduce", "build", "prove", "review", "ship", "feedback", "done"]
@@ -21,6 +21,7 @@ BATCH_PHASES = ["intake", "report", "done"]  # kind review-batch parent
 RUNTIME_TYPES = {"browser", "visual", "style", "api"}
 CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human"}
 AC_KINDS = {"ui", "api", "logic", "data", "bug"}
+LOCAL_REPRO_TYPES = {"test"}  # reproducible in a temp worktree; the only types required on mirror targets
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
@@ -67,7 +68,12 @@ def repro_checks(run_id: str) -> list[dict]:
     return list(out.values())
 
 
-def merge_base_for(run: dict, ws: dict, alias: str) -> str:
+def merge_base_for(run: dict, ws: dict, alias: str, target: str | None = None) -> str:
+    hf = hotfix_of(run)
+    if hf and target and target != hf["base"]:
+        # mirror target: nothing is cherry-picked yet at reproduce time, so the merge-base is the target tip
+        main = Path(repo_conf(ws, alias).get("path") or repo_path_for_run(run, ws, alias))
+        return git(main, "rev-parse", resolve_base(main, target) + "^{commit}")
     wt = repo_path_for_run(run, ws, alias)
     base = resolve_base(wt, run["repos"][alias].get("base", "main"))
     return git(wt, "merge-base", "HEAD", base)
@@ -348,8 +354,9 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             for needed in ("visual", "style"):
                 if needed not in types:
                     errors.append(f"{aid}: ui AC needs a {needed} check")
-        if ac.get("kind") == "bug" and "red-green" not in types:
-            errors.append(f"{aid}: bug AC needs a red-green check")
+        if ac.get("kind") == "bug" and "red-green" not in types and not types & RUNTIME_TYPES:
+            errors.append(f"{aid}: bug AC needs a red-green check, or a runtime check "
+                          "(browser/api/visual/style) reproduced on base and passing at HEAD")
     for cid in check_ids:
         if cid not in referenced:
             errors.append(f"{cid}: not referenced by any AC")
@@ -456,30 +463,42 @@ def _reproduce(run_id, run, ws) -> list[str]:
         if not cands:
             errors.append(f"{aid}: bug AC has no reproducible check (test/browser/api/...) besides red-green")
             continue
-        good = False
-        for chk in cands:
-            alias = chk.get("repo")
-            rec = load_evidence_file(run_id, repro_id(chk["id"]))
-            if rec is None:
-                errors.append(f"{aid}: {chk['id']}: no REPRO evidence (factory prove {run_id} --repro)")
-                continue
-            if rec.get("status") != "reproduced":
-                errors.append(f"{aid}: {chk['id']}: REPRO status {rec.get('status')} ({rec.get('summary')})")
-                continue
-            try:
-                mb = merge_base_for(run, ws, alias)
-            except (FactoryError, KeyError):
-                errors.append(f"{aid}: {chk['id']}: cannot compute merge-base for {alias}")
-                continue
-            if rec.get("git_sha") != mb:
-                errors.append(f"{aid}: {chk['id']}: REPRO evidence not bound to merge-base {mb[:8]} (sha {str(rec.get('git_sha'))[:8]})")
-                continue
-            good = True
-        if not good and not any(e.startswith(f"{aid}:") for e in errors):
-            errors.append(f"{aid}: no reproduced check")
+        hf = hotfix_of(run)
+        for target in run_targets(run):
+            tcands = cands if not (hf and target != hf["base"]) else [c for c in cands if c.get("type") in LOCAL_REPRO_TYPES]
+            if not tcands:
+                continue  # runtime-only AC: reproduced on the base target; mirrors share the cause
+            errors.extend(_repro_target_errors(run_id, run, ws, aid, tcands, target))
     errors.extend(diagnosis_errors(run_id))
     errors.extend(env_errors(ws, repro_checks(run_id)))
     return list(dict.fromkeys(errors))
+
+
+def _repro_target_errors(run_id, run, ws, aid, cands, target) -> list[str]:
+    errors, good = [], False
+    tag = f"@{target}" if hotfix_of(run) else ""
+    for chk in cands:
+        alias = chk.get("repo")
+        name = chk["id"] + tag
+        rec = load_evidence_file(run_id, repro_id(evidence_id(run, chk["id"], target)))
+        if rec is None:
+            errors.append(f"{aid}: {name}: no REPRO evidence (factory prove {run_id} --repro)")
+            continue
+        if rec.get("status") != "reproduced":
+            errors.append(f"{aid}: {name}: REPRO status {rec.get('status')} ({rec.get('summary')})")
+            continue
+        try:
+            mb = merge_base_for(run, ws, alias, target)
+        except (FactoryError, KeyError):
+            errors.append(f"{aid}: {name}: cannot compute merge-base for {alias}")
+            continue
+        if rec.get("git_sha") != mb:
+            errors.append(f"{aid}: {name}: REPRO evidence not bound to merge-base {mb[:8]} (sha {str(rec.get('git_sha'))[:8]})")
+            continue
+        good = True
+    if not good and not errors:
+        errors.append(f"{aid}: no reproduced check{tag}")
+    return errors
 
 
 def load_evidence_file(run_id: str, name: str) -> dict | None:
@@ -524,8 +543,8 @@ def _build(run_id, run, ws) -> list[str]:
     return errors
 
 
-def _evidence_errors(run_id, run, ws, check: dict) -> list[str]:
-    cid = check["id"]
+def _evidence_errors(run_id, run, ws, check: dict, target: str | None = None) -> list[str]:
+    cid = evidence_id(run, check["id"], target)
     ev = load_evidence(run_id, cid)
     if ev is None:
         return [f"{cid}: no evidence (factory prove)"]
@@ -537,11 +556,35 @@ def _evidence_errors(run_id, run, ws, check: dict) -> list[str]:
     alias = check.get("repo")
     if alias:
         try:
-            head = git_head(repo_path_for_run(run, ws, alias))
+            wt = target_worktree(run, ws, alias, target)
+            head = git_head(wt) if wt else None
         except (FactoryError, KeyError):
             head = None
         if ev.get("git_sha") != head:
             errors.append(f"{cid}: evidence is stale (sha {str(ev.get('git_sha'))[:8]} != HEAD {str(head)[:8]})")
+    return errors
+
+
+def _bug_runtime_errors(run_id, run, ws) -> list[str]:
+    """Bug ACs without red-green: a runtime check must have REPRO `reproduced` at the merge-base (and it passes at HEAD)."""
+    try:
+        data = load_acs(run_id)
+    except FactoryError:
+        return []
+    by_id = {c.get("id"): c for c in data.get("checks") or []}
+    errors = []
+    for ac in data.get("acs") or []:
+        if ac.get("kind") != "bug":
+            continue
+        chks = [by_id[c] for c in ac.get("checks") or [] if c in by_id]
+        if any(c.get("type") == "red-green" for c in chks):
+            continue
+        runtime = [c for c in chks if c.get("type") in RUNTIME_TYPES]
+        if not runtime:
+            continue  # plan gate reports this
+        target = run_targets(run)[0]
+        errors.extend(e.replace(f"{ac.get('id', '?')}:", f"{ac.get('id', '?')}: runtime bug check:", 1)
+                      for e in _repro_target_errors(run_id, run, ws, ac.get("id", "?"), runtime, target))
     return errors
 
 
@@ -552,12 +595,19 @@ def _prove(run_id, run, ws) -> list[str]:
     except FactoryError as err:
         return [str(err)]
     for alias in touched_repos(run):
-        path = repo_path_for_run(run, ws, alias)
-        if path.is_dir() and git_dirty(path):
-            errors.append(f"{alias}: worktree is dirty")
+        for target in run_targets(run):
+            path = target_worktree(run, ws, alias, target)
+            if path is None:
+                errors.append(f"{alias}: no worktree for target {target} (factory run mirror {run_id} {alias} --to {target})")
+            elif path.is_dir() and git_dirty(path):
+                errors.append(f"{alias}: worktree is dirty" + (f" ({target})" if hotfix_of(run) else ""))
     for chk in checks:
         if chk.get("type") != "human":
-            errors.extend(_evidence_errors(run_id, run, ws, chk))
+            for target in run_targets(run):
+                if chk.get("repo") and target_worktree(run, ws, chk["repo"], target) is None:
+                    continue  # reported once above
+                errors.extend(_evidence_errors(run_id, run, ws, chk, target))
+    errors.extend(_bug_runtime_errors(run_id, run, ws))
     for alias in touched_repos(run):
         if repo_conf(ws, alias).get("quality"):
             errors.extend(_evidence_errors(run_id, run, ws, {"id": quality_id(alias), "repo": alias}))

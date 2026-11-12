@@ -18,6 +18,8 @@ A phase ends only when `factory gate <run> <phase>` passes. Evidence is bound to
 
 **Epics** are a parent run plus one child run per ticket. `epic.json` declares repos and dependencies, and `factory epic plan` computes waves. Ready children run in parallel, each with its own worktree, gates, and loops, and a blocked child does not stop independent ones. Same-repo dependents branch from their dependency, which gives stacked MRs with `Depends on !N`. `factory epic ship plan` orders every MR and builds the single epic Jira comment. `factory epic status` is the progress view.
 
+**Review runs** cover MRs the factory did not build: ask for your review queue, an MR URL, or tickets in code review. `factory review queue` filters the saved GitLab list (drafts, your own MRs, ones you approved), `factory review start` creates a review run (or a batch with one child per MR), and `factory run branch --mr` checks out the MR head in a detached worktree. The acceptance criteria come from the ticket, not the diff; the same collectors and two fresh auditors produce the evidence, and `factory review report` gives `ok`, `not-ok`, or `incomplete` per MR. Nothing is posted to GitLab or Jira unless you say so, and `factory review fix` turns a run into a normal ticket run on the MR branch.
+
 ## Requirements
 
 - Python ≥ 3.10 (stdlib only), Node ≥ 20, git.

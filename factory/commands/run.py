@@ -148,6 +148,11 @@ def cmd_branch(args) -> int:
     main = Path(conf.get("path") or "")
     if not conf.get("path") or not (main / ".git").exists():
         raise FactoryError(f"repo {alias}: workspace path is missing or not a git repository: {conf.get('path')!r}")
+    if args.mr:
+        from . import review
+        return review.branch_for_mr(args, run, ws, conf, main)
+    if not args.base:
+        raise FactoryError("--base is required (or --mr <iid> for a review run)")
     if args.for_target:
         return _for_target(args, run, conf, main)
     if alias in run["repos"]:
@@ -248,7 +253,8 @@ def register(sub) -> None:
     p = rs.add_parser("branch")
     p.add_argument("run")
     p.add_argument("repo")
-    p.add_argument("--base", required=True)
+    p.add_argument("--base")
+    p.add_argument("--mr", type=int, help="review run: detached worktree at the saved head of this MR iid")
     p.add_argument("--name")
     p.add_argument("--from-run", help="child run id whose branch (same repo) this branch stacks on")
     p.add_argument("--for-target", help="record a per-target source branch (branches[target]) instead of the main branch")

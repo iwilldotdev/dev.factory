@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Delivers Jira tickets and epics end to end through dev.factory (intake, plan, build, prove, review, ship, feedback) with executed evidence and CLI gates. Use when the request names a Jira ticket or epic key (e.g. ABC-123) or a Jira browse URL, or says "factory", "implement ticket", "deliver this ticket/epic", or asks to resume a factory run.
+description: Delivers Jira tickets and epics end to end through dev.factory (intake, plan, build, prove, review, ship, feedback) with executed evidence and CLI gates. Use when the request names a Jira ticket or epic key (e.g. ABC-123) or a Jira browse URL, or says "factory", "implement ticket", "deliver this ticket/epic", asks to resume a factory run, or asks to review merge requests ("revisar MR", "review my queue", an MR URL, "tickets em code review").
 ---
 
 # factory: ticket in, proven MRs out
@@ -62,6 +62,14 @@ An epic is a parent run plus one child run per ticket. Each child follows the ph
 - A blocked child does not stop independent children.
 - Parent gates: intake → plan → build (every child reviewed) → ship → done. Ship uses `factory epic ship plan|verify <parent>` for stacked MRs and the single epic Jira comment.
 - `factory epic status <parent>` is the progress view you give the user.
+
+## Review runs
+
+For MRs the factory did not build. Triggers: "revisar MR", "review my queue", an MR URL, "tickets em code review". Full flow: [references/review.md](references/review.md).
+
+- Queue (`factory review queue`) → the user picks, or passes MRs. Save the MR, ticket and Figma raw payloads; `factory review start <ws> --mr <alias>!<iid> … --from <dir>`; `factory run branch <run> <repo> --mr <iid>` after your `git fetch origin <source_branch>`.
+- Author writes ACs from the **ticket** (and Figma), never from the diff. Env up, `factory prove`, two fresh auditors, `factory review report`.
+- Give the verdict per MR in chat as a compact table (`ok` / `not-ok` / `incomplete`, blockers, unproven ACs). Post nothing to GitLab or Jira unless the user says so. Offer `factory review fix`.
 
 ## Blocked
 

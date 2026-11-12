@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Review runs (DESIGN §7): `review queue|start|report|fix`, `run branch --mr` (detached worktree at the MR head), `kind: review` / `review-batch` phase machines (intake, plan, prove, review, report, done; no build or ship), `review-report.json` and `.md` with a verdict per MR (`ok`, `not-ok`, `incomplete`). Nothing is posted remotely without the user's approval. Skill: `references/review.md` and a short section in `SKILL.md`.
+
 ## 0.1.0 — 2026-11-12
 
 First release, succeeding dev.harness.

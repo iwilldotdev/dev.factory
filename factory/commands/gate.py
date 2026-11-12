@@ -14,6 +14,8 @@ from ..core import (FactoryError, GateFailed, event, git, git_dirty, git_head,
 
 PHASES = ["intake", "plan", "build", "prove", "review", "ship", "feedback", "done"]
 NEXT = {p: PHASES[i + 1] for i, p in enumerate(PHASES[:-1])}
+REVIEW_PHASES = ["intake", "plan", "prove", "review", "report", "done"]  # kind review: no build, no ship
+BATCH_PHASES = ["intake", "report", "done"]  # kind review-batch parent
 RUNTIME_TYPES = {"browser", "visual", "style", "api"}
 CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human"}
 AC_KINDS = {"ui", "api", "logic", "data", "bug"}
@@ -480,8 +482,78 @@ def _feedback(run_id, run, ws) -> list[str]:
     return [f"open blocker #{i}: {b.get('text')}" for i, b in enumerate(run.get("blockers", [])) if not b.get("resolved")]
 
 
+# ---------- review runs (DESIGN §7) ----------
+
+def _mr_worktree_errors(run: dict, ws: dict, need_head: bool) -> list[str]:
+    errors = []
+    for mr in run.get("mrs", []):
+        alias, rec = mr["repo"], run.get("repos", {}).get(mr["repo"])
+        if not rec:
+            errors.append(f"{alias}: no worktree for MR !{mr['iid']} (factory run branch {run['id']} {alias} --mr {mr['iid']})")
+            continue
+        path = Path(rec.get("worktree", ""))
+        if not path.is_dir():
+            errors.append(f"{alias}: MR worktree missing on disk: {path}")
+        elif need_head and git_head(path) != mr["head_sha"]:
+            errors.append(f"{alias}: worktree HEAD is not the MR head {mr['head_sha'][:8]}; evidence must bind to the MR head sha")
+    return errors
+
+
+def _review_intake(run_id, run, ws) -> list[str]:
+    errors = _intake(run_id, run, ws)
+    if not run.get("mrs"):
+        errors.append("no MRs in run (factory review start)")
+    for mr in run.get("mrs", []):
+        if not (run_dir(run_id) / "remote" / f"mr-{mr['repo']}-{mr['iid']}.json").is_file():
+            errors.append(f"remote/mr-{mr['repo']}-{mr['iid']}.json missing")
+    return errors
+
+
+def _review_plan(run_id, run, ws) -> list[str]:
+    return list(dict.fromkeys(_plan(run_id, run, ws) + _mr_worktree_errors(run, ws, True)))
+
+
+def _review_prove(run_id, run, ws) -> list[str]:
+    return _mr_worktree_errors(run, ws, True) + _prove(run_id, run, ws)
+
+
+def _review_review(run_id, run, ws) -> list[str]:
+    """Both reviews recorded and bound to the MR head. A CHANGES verdict is a result for the report, not a gate failure."""
+    return review_status(run_id, run, ws)[0]
+
+
+def _report(run_id, run, ws) -> list[str]:
+    from . import review
+    if run.get("kind") == "review-batch":
+        if not run.get("children"):
+            return ["review batch has no children"]
+        return [f"{c}: phase {run_load(c)['phase']}, not done" for c in run["children"] if run_load(c)["phase"] != "done"]
+    return review.report_errors(run_id, run, ws)
+
+
+def _batch_intake(run_id, run, ws) -> list[str]:
+    if not run.get("children"):
+        return ["review batch has no children"]
+    return [f"open question blocker #{i}: {b.get('text')}" for i, b in enumerate(run.get("blockers", []))
+            if b.get("kind") == "question" and not b.get("resolved")]
+
+
 EVALUATORS = {"intake": _intake, "plan": _plan, "build": _build, "prove": _prove,
-              "review": _review, "ship": _ship, "feedback": _feedback}
+              "review": _review, "ship": _ship, "feedback": _feedback, "report": _report}
+TICKET_EVALUATORS = {k: v for k, v in EVALUATORS.items() if k != "report"}
+REVIEW_EVALUATORS = {"intake": _review_intake, "plan": _review_plan, "prove": _review_prove,
+                     "review": _review_review, "report": _report}
+BATCH_EVALUATORS = {"intake": _batch_intake, "report": _report}
+
+
+def machine(run: dict) -> tuple[list[str], dict]:
+    """(phase order, evaluators) for the run's kind (epic runs use epic.PHASES/EVALUATORS)."""
+    kind = run.get("kind")
+    if kind == "review":
+        return REVIEW_PHASES, REVIEW_EVALUATORS
+    if kind == "review-batch":
+        return BATCH_PHASES, BATCH_EVALUATORS
+    return PHASES, TICKET_EVALUATORS
 
 
 def evaluate(run_id: str, phase: str) -> list[str]:
@@ -492,7 +564,10 @@ def evaluate(run_id: str, phase: str) -> list[str]:
     ws = workspace_load(run["workspace"])
     if run.get("kind") == "epic":
         return _epic_errors(run, ws, phase)
-    return EVALUATORS[phase](run_id, run, ws)
+    _phases, evals = machine(run)
+    if phase not in evals:
+        raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
+    return evals[phase](run_id, run, ws)
 
 
 def _epic_errors(run: dict, ws: dict, phase: str) -> list[str]:
@@ -517,7 +592,10 @@ def cmd_gate(args) -> int:
         raise FactoryError(f"run {run['id']} is in phase {run['phase']}, not {phase}")
     if run.get("kind") == "epic":
         return _gate_epic(args, run, ws, phase)
-    if phase == "review":
+    phases, evals = machine(run)
+    if phase not in evals:
+        raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
+    if phase == "review" and evals is TICKET_EVALUATORS:
         plain, changes = review_status(args.run, run, ws)
         errors = plain + changes
         if errors:
@@ -540,7 +618,7 @@ def cmd_gate(args) -> int:
             run_save(run)
             raise GateFailed(errors)
     else:
-        errors = EVALUATORS[phase](args.run, run, ws)
+        errors = evals[phase](args.run, run, ws)
         if errors:
             event(run, "gate_fail", phase=phase, reasons=errors)
             run_save(run)
@@ -549,7 +627,7 @@ def cmd_gate(args) -> int:
         for alias in run.get("repos", {}):
             run["repos"][alias]["head"] = git_head(repo_path_for_run(run, ws, alias))
     event(run, "gate_pass", phase=phase)
-    new = NEXT[phase]
+    new = phases[phases.index(phase) + 1]
     _set_phase(run, new)
     run_save(run)
     if getattr(args, "json", False):

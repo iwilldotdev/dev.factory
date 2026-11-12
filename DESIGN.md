@@ -269,6 +269,25 @@ An epic is a **parent run** that coordinates **one child run per ticket**. Child
 
 Branches: a child that depends on another child in the same repo branches from that child's branch (stacked), recorded as `base_branch` in the child repo record; `run branch` accepts `--from-run <child-id>`.
 
-## 7. Non-goals (v0.1)
+## 7. Review runs (reviewing work that already exists)
+
+For MRs the factory did not build: someone else's MR, the user's earlier work, tickets already in code review. Same machinery, different entry and exit; **read-only by default, nothing posted remotely unless the user approves**.
+
+- `run.json` `"kind": "review"`; `"mrs": [{"repo": "React", "iid": 669, "source_branch": "…", "target_branch": "pack", "head_sha": "…", "ticket": "DEV-9431"}]`. Several MRs → a parent review run with one child per MR (reuse §6 parent/children; `"kind": "review-batch"`).
+- Ticket ACs, not the diff, are the reference: the author writes `acs.json` from the ticket (and Figma), then checks; the diff is reviewed against them.
+
+| Command | Effect |
+|---|---|
+| `review queue <ws> --mrs-json <file> [--me <username>]` | the agent saves `gitlab_list_merge_requests` responses (reviewer = me, state opened) to a file; CLI filters out drafts, MRs the user already approved (when approvals are present in the payload) and MRs authored by the user, maps each to its ticket key (title/branch/description regex from the workspace or `[A-Z]+-\d+`), prints the queue |
+| `review start <ws> --mr <alias>!<iid> … [--ticket KEY]` | review run (or review-batch parent + children); records MR facts from `remote/mr-<alias>-<iid>.json` the agent saved |
+| `run branch <run> <repo> --mr <iid>` | detached worktree at the MR head (`git fetch origin <source_branch>` done by the orchestrator first); builders are not used; `dirty` is checked as usual |
+| `review report <run>` | verdict per MR: `ok` / `not-ok` / `incomplete`, with findings (severity, file:line, AC), ACs × evidence, `human` checks, freshness (behind-count vs target, unmerged deps), and what could not be verified; writes `review-report.json` + `.md` |
+| `review fix <run>` | converts the run into `kind: ticket` on the MR source branch (worktree re-created as a normal branch worktree), keeps acs/evidence/findings, phase → build |
+
+Implementation notes: `review start` takes the saved payloads with `--from <folder-or-file>` (the run folder does not exist yet; payloads are copied to `remote/mr-<alias>-<iid>.json`), `--mr alias!iid[=TICKET]`; run ids are `<ws>-<ticket>-review` and batch parents `<ws>-review-<stamp>`; the batch parent has phases intake → report → done (`gate report` needs every child done; `review report <parent>` aggregates). `gate <run> review` for a review run only needs both reviews recorded and bound to the MR head (a `CHANGES` verdict is a report result, not a loop to build). `review fix` converts in place with `git checkout` in the same worktree (no worktree removal) and refuses a dirty worktree or a local branch that is not at the MR head.
+
+Phases for `kind: review`: intake → plan → prove → review → report → done. No build, no ship. `gate <run> report` requires `review report` written. Remote actions after report (MR comment with the findings, approval, Jira comment) are listed in the report with `needs_user: true` and are never pre-authorised by `autonomy`.
+
+## 8. Non-goals (v0.1)
 
 Queue pulling from Jira boards, autonomy levels beyond `ask`/`draft-auto`, CI auto-fix without the orchestrator, non-Claude hosts.

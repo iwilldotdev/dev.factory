@@ -9,7 +9,8 @@ import time
 import traceback
 from pathlib import Path
 
-from ..collectors.test import DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree
+from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
+                               weak_pattern_reason)
 from ..core import (SCHEMA_VERSION, Ctx, FactoryError, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save, run_targets,
@@ -252,6 +253,8 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
         if ctype in LOCAL_TYPES and not check.get("expect_fail_pattern"):
             body = {"status": "error", "summary": "test check has no expect_fail_pattern: a failure on base "
                     "cannot be told from a setup failure"}
+        elif check.get("expect_fail_pattern") and (weak := weak_pattern_reason(check["expect_fail_pattern"])):
+            body = {"status": "error", "summary": weak}
         elif ctype in LOCAL_TYPES:
             tmp = temp_worktree(main, mb, setup_command(ws, alias), env.get("env_vars"))
             ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=tmp, env=env,

@@ -26,7 +26,7 @@ class ShipBase(FactoryCase):
 
     def setUp(self):
         super().setUp()
-        for name, value in (("integrity_errors", []), ("branch_head", HEAD)):
+        for name, value in (("integrity_errors", []), ("review_errors", []), ("branch_head", HEAD)):
             patcher = mock.patch.object(ship, name, return_value=value)
             patcher.start()
             self.addCleanup(patcher.stop)

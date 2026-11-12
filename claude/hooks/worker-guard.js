@@ -42,7 +42,7 @@ const ORCHESTRATOR_ONLY = [
   [factory(String.raw`gate\b`), 'gates are run by the main session'],
   [factory(String.raw`ship\b`), 'ship belongs to the main session'],
   [factory(String.raw`feedback\b`), 'feedback ingest belongs to the main session'],
-  [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human)\b`), 'run state changes belong to the main session'],
+  [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human|replan|rewind)\b`), 'run state changes (incl. replan/rewind/decide/unblock) belong to the main session'],
   [factory(String.raw`workspace\s+(?:init|import)\b`), 'workspace changes belong to the main session'],
 ];
 const REVIEW_RECORD = factory(String.raw`review\s+record\b`);
@@ -96,8 +96,8 @@ function checkBash(command, ctx) {
     if (pattern.test(command)) deny(why);
   }
   if (role !== 'auditor' && REVIEW_RECORD.test(command)) deny('only the auditor records reviews');
-  if (lib.setsFactoryRole(command) && role !== 'auditor' && /auditor/i.test(command)) {
-    deny('only the auditor may run as FACTORY_ROLE=auditor');
+  if (role !== 'auditor' && /FACTORY_ROLE/i.test(command)) {
+    deny('only the auditor may mention FACTORY_ROLE (review record)');
   }
   if (/\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-e(?:c|nc\w*)?\b/i.test(command)) {
     deny('encoded PowerShell commands are forbidden for workers');

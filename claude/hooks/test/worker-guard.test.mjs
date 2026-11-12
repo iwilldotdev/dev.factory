@@ -61,7 +61,9 @@ test('auditor and author never commit or move the worktree', () => {
 test('factory subcommands reserved for the main session', () => {
   const reserved = ['factory gate r prove', 'factory ship plan r', 'factory feedback ingest r',
     'factory run human r "x"', 'factory run start acme DEV-1', 'python -m factory gate r plan',
-    'factory --json gate r build', 'C:/p/bin/factory.cmd ship verify r', 'factory workspace import a --from x'];
+    'factory --json gate r build', 'C:/p/bin/factory.cmd ship verify r', 'factory workspace import a --from x',
+    'factory run replan r "x"', 'factory run rewind r prove "x"', 'factory run decide r "x" --by user',
+    'python -m factory run unblock r 0'];
   for (const role of ['builder', 'author', 'auditor']) {
     for (const cmd of reserved) assert.ok(denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
   }
@@ -134,7 +136,11 @@ test('roles other than author cannot save into author-owned run paths via MCP', 
 
 test('FACTORY_ROLE=auditor only for the auditor; encoded PowerShell denied', () => {
   const cmd = 'FACTORY_ROLE=auditor factory review record x';
-  for (const role of ['builder', 'author']) assert.ok(denied(guard(role, bash(cmd))), role);
+  for (const role of ['builder', 'author', 'scout']) {
+    assert.ok(denied(guard(role, bash(cmd))), role);
+    assert.ok(denied(guard(role, bash('echo $FACTORY_ROLE'))), `${role} mention`);
+    assert.ok(denied(guard(role, bash('python -c "import os; print(os.environ.get(\"FACTORY_ROLE\"))"'))), `${role} py`);
+  }
   assert.ok(!denied(guard('auditor', bash(cmd))));
   for (const role of ['builder', 'author', 'auditor']) {
     assert.ok(denied(guard(role, bash('powershell -NoProfile -EncodedCommand ZQBjAGgAbwA='))), role);

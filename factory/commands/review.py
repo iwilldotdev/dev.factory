@@ -63,6 +63,13 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
 
 
 AUDITOR_ROLE = "auditor"
+# Best-effort hint of which Claude session/agent ran `review record` (whatever the host exports; omitted if none).
+SESSION_HINT_VARS = ("CLAUDE_AGENT_ID", "CLAUDE_CODE_AGENT_ID", "CLAUDE_SUBAGENT_ID", "CLAUDE_SESSION_ID",
+                     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
+
+
+def session_hint() -> dict:
+    return {k: os.environ[k] for k in SESSION_HINT_VARS if os.environ.get(k)}
 
 
 def cmd_record(args) -> int:
@@ -93,10 +100,16 @@ def cmd_record(args) -> int:
     existing = [int(p.stem.rsplit("-", 1)[1]) for p in rdir.glob(f"{args.kind}-*.json")
                 if p.stem.rsplit("-", 1)[1].isdigit()]
     rnd = max(existing, default=0) + 1
-    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now())
+    lock = (run.get("plan_lock") or {}).get("digest") if isinstance(run.get("plan_lock"), dict) else None
+    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now(), plan_lock=lock)
+    hint = session_hint()
+    if hint:
+        out["recorded_by"] = hint
+    else:
+        out.pop("recorded_by", None)
     write_json(rdir / f"{args.kind}-{rnd}.json", out)
     event(run, "review", review_kind=args.kind, round=rnd, verdict=out["verdict"], findings=len(out["findings"]),
-          digest=file_sha256(rdir / f"{args.kind}-{rnd}.json"))
+          digest=file_sha256(rdir / f"{args.kind}-{rnd}.json"), plan_lock=lock, **({"recorded_by": hint} if hint else {}))
     run_save(run)
     if getattr(args, "json", False):
         print(json.dumps({"kind": args.kind, "round": rnd, "verdict": out["verdict"]}))

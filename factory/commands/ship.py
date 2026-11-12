@@ -82,6 +82,15 @@ def integrity_errors(run_id: str, run: dict, workspace: dict) -> list[str]:
     return gate.proof_errors(run_id, run, workspace)
 
 
+def review_errors(run_id: str, run: dict, workspace: dict) -> list[str]:
+    """Latest code + qa reviews still APPROVE, digest-intact, bound to the current SHAs and plan lock."""
+    if run.get("kind", "ticket") != "ticket":
+        return []
+    from . import gate
+    plain, changes = gate.review_status(run_id, run, workspace)
+    return plain + changes
+
+
 def branch_head(run: dict, workspace: dict, alias: str, target: str, branch: str) -> str | None:
     """Local tip of the MR source branch (refs are shared by the run's worktrees)."""
     wt = target_worktree(run, workspace, alias, target)
@@ -325,6 +334,7 @@ def verify(run_id: str) -> list[str]:
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
     errors = list(integrity_errors(run_id, run, workspace))
+    errors += review_errors(run_id, run, workspace)
     verified = []
     for mr in plan.get("mrs", []):
         label = f"{mr['repo']}/{mr['target']}"

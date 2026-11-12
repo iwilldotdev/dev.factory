@@ -8,7 +8,7 @@ from pathlib import Path
 from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, read_json,
                     workspace_load, workspace_path, write_json)
 
-DEFAULT_AUTONOMY = {"ship": "ask", "max_build_loops": 3, "max_review_rounds": 2}
+DEFAULT_AUTONOMY = {"ship": "ask", "max_build_loops": 3, "max_review_rounds": 2, "max_replans": 2}
 
 
 def _skeleton(name: str) -> dict:

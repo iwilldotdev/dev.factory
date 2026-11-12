@@ -83,7 +83,7 @@ class FetchHintTests(FactoryCase):
                                                             "head_sha": sha}]})
         self.write("runs/ws-dev-1/remote/mr-React-pack.json", {"merge_request": {
             "iid": 4, "source_branch": "b", "target_branch": "pack", "title": "t", "web_url": "u", "sha": sha}})
-        with mock.patch.object(ship, "integrity_errors", return_value=[]),                 mock.patch.object(ship, "branch_head", return_value=sha):  # integrity: tests/test_integrity_*.py
+        with mock.patch.object(ship, "integrity_errors", return_value=[]),                 mock.patch.object(ship, "review_errors", return_value=[]),                 mock.patch.object(ship, "branch_head", return_value=sha):  # integrity: tests/test_integrity_*.py
             rc, out, _ = cli("ship", "verify", "ws-dev-1")
         self.assertEqual((rc, out.strip()), (0, "OK ship verified"))
 

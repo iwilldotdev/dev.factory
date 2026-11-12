@@ -92,7 +92,7 @@ def collect(check: dict, ctx) -> dict:
             green_code = 0 if green_st == "pass" else 1
         else:
             red_code, red_out = run_shell(check["cmd"], red_wt / (check.get("cwd") or "."), timeout, env_vars)
-            setup_fail = fail_pattern_error({"expect_fail_pattern": pattern}, red_code, red_out)
+            setup_fail = fail_pattern_error({"expect_fail_pattern": pattern, "cmd": check["cmd"]}, red_code, red_out)
             if setup_fail:
                 details.update(red_exit=red_code, red_tail=red_out[-TAIL:])
                 return {"status": "error", "summary": f"red side: {setup_fail}", "details": details}

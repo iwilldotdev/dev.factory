@@ -142,12 +142,61 @@ def collect(check: dict, ctx) -> dict:
     }
 
 
+# exit codes of a shell that could not run the command (126 not executable, 127 / cmd 9009 not found)
+SETUP_EXIT_CODES = frozenset({126, 127, 9009})
+SETUP_FAILURE_RE = re.compile("|".join(re.escape(m) for m in (
+    "command not found", "is not recognized as an internal or external command", "ENOENT",
+    "No such file or directory", "Cannot find module", "could not find a part of the path",
+    "MSBUILD : error MSB1009", "ModuleNotFoundError")), re.IGNORECASE)
+MIN_PATTERN_LEN = 6
+MIN_PATTERN_WORD_CHARS = 4
+
+
+def weak_pattern_reason(pattern) -> str | None:
+    r"""None when `expect_fail_pattern` is specific enough to name a test or assertion: at least
+    MIN_PATTERN_LEN chars and MIN_PATTERN_WORD_CHARS literal word characters (`.`, `.*`, `\w+` are rejected)."""
+    text = str(pattern or "")
+    if len(text) < MIN_PATTERN_LEN:
+        return f"expect_fail_pattern {text!r} is shorter than {MIN_PATTERN_LEN} characters"
+    lit = re.sub(r"\[(?:\\.|[^\]\\])*\]", "", text)  # character classes
+    lit = re.sub(r"\(\?(?:P?<\w+>|P=\w+\)|[aiLmsux-]+\)|[:=!]|<[=!])", "", lit)  # group names, inline flags
+    lit = re.sub(r"\{\d*(?:,\d*)?\}", "", lit)  # {n,m} quantifiers
+    lit = re.sub(r"\\[A-Za-z0-9]", "", lit)  # \w \d \b \1 ... are not literal characters
+    words = len(re.findall(r"\w", lit))
+    if words < MIN_PATTERN_WORD_CHARS:
+        return (f"expect_fail_pattern {text!r} has {words} literal word character(s); it needs at least "
+                f"{MIN_PATTERN_WORD_CHARS} (name the failing test or assertion text)")
+    return None
+
+
+def _first_word(cmd: str | None) -> str | None:
+    m = re.match(r'\s*(?:"([^"]+)"|(\S+))', cmd or "")
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def setup_failure_reason(code: int, output: str, cmd: str | None = None) -> str | None:
+    """A failing exit that is the shell or toolchain not finding the command, file or module."""
+    if code in SETUP_EXIT_CODES:
+        return f"exit {code} (command not found / not executable)"
+    m = SETUP_FAILURE_RE.search(output or "")
+    if m:
+        return f"output shows a setup failure marker {m.group(0)!r}"
+    word = _first_word(cmd)
+    # Windows cmd.exe prints `'<cmd>' <localized "is not recognized ...">` (exit 1) in the user's language.
+    if os.name == "nt" and word and re.search(rf"^'{re.escape(word)}'\s", output or "", re.MULTILINE):
+        return f"cmd.exe could not run {word!r} (command not found)"
+    return None
+
+
 def fail_pattern_error(check: dict, code: int, output: str) -> str | None:
-    """A failing exit must show `expect_fail_pattern` (the test name or assertion); otherwise it is a
-    setup failure (missing deps, compile error, wrong cwd), not a reproduction."""
+    """A failing exit must show `expect_fail_pattern` (the test name or assertion) and no setup-failure
+    marker (command/file/module not found); otherwise it is a setup failure, not a reproduction."""
     pattern = check.get("expect_fail_pattern")
     if not pattern or code == 0:
         return None
+    setup = setup_failure_reason(code, output, check.get("cmd"))
+    if setup:
+        return f"could not reproduce: setup failure ({setup})"
     try:
         found = re.search(pattern, output, re.MULTILINE)
     except re.error as err:

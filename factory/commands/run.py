@@ -307,8 +307,16 @@ def cmd_mirror(args) -> int:
 # ---------- decide / block / unblock / human ----------
 
 def cmd_decide(args) -> int:
+    """`--by user` only for a decision the user actually stated in chat; `--user-said` keeps the gist of that message."""
     run = run_load(args.run)
-    run["decisions"].append({"at": now(), "phase": run["phase"], "text": args.text, "by": args.by})
+    said = (getattr(args, "user_said", None) or "").strip()
+    if args.by == "user" and not said:
+        raise FactoryError("--by user needs --user-said \"<gist of the user's chat message>\": record only decisions "
+                           "the user actually stated")
+    rec = {"at": now(), "phase": run["phase"], "text": args.text, "by": args.by}
+    if said:
+        rec["user_said"] = said
+    run["decisions"].append(rec)
     run_save(run)
     _emit(args, {"decisions": len(run["decisions"])}, f"decision #{len(run['decisions']) - 1} recorded")
     return 0
@@ -338,6 +346,32 @@ def cmd_unblock(args) -> int:
     return 0
 
 
+def _use_decision(run: dict, n, action: str) -> dict | None:
+    """The user decision #n authorising `action` (recorded --by user in the current phase, not used before)."""
+    if n is None:
+        return None
+    decisions = run.get("decisions") or []
+    if not 0 <= n < len(decisions):
+        raise FactoryError(f"no decision #{n}")
+    d = decisions[n]
+    if d.get("by") != "user":
+        raise FactoryError(f"decision #{n} is not a user decision (--by user)")
+    if d.get("phase") != run["phase"]:
+        raise FactoryError(f"decision #{n} was recorded in phase {d.get('phase')}, not the current phase {run['phase']}")
+    if d.get("used"):
+        raise FactoryError(f"decision #{n} already authorised {d['used'].get('action')}")
+    d["used"] = {"action": action, "at": now()}
+    return d
+
+
+def _cap_block(run: dict, text: str, resume: str) -> None:
+    gate.block(run, text, resume)
+    run_save(run)
+    raise GateFailed([f"{text}: run blocked. Ask the user; record their decision with "
+                      f"`factory run decide {run['id']} \"<decision>\" --by user --user-said \"<gist>\"`, "
+                      "then `factory run unblock` and retry with --decision <n>"])
+
+
 def cmd_replan(args) -> int:
     """The one legit way to change acs.json/checks/figma/diagnosis after the plan gate: back to plan, lock cleared."""
     run = run_load(args.run)
@@ -346,9 +380,17 @@ def cmd_replan(args) -> int:
     if run["phase"] in ("intake", "plan", "done"):
         raise FactoryError(f"run {run['id']} is in phase {run['phase']}; nothing to replan")
     loops = run.setdefault("loops", {"build": 0, "review": 0})
+    decision = _use_decision(run, getattr(args, "decision", None), "replan")
+    if decision is None:
+        cap = integrity.locked_autonomy(run).get("max_replans", 2)
+        if loops.get("replan", 0) - loops.get("replan_approved", 0) + 1 > cap:
+            _cap_block(run, f"max_replans ({cap}) reached without a user decision", run["phase"])
     loops["replan"] = loops.get("replan", 0) + 1
+    if decision is not None:
+        loops["replan_approved"] = loops.get("replan_approved", 0) + 1
     changed = integrity.changed_files(run) if isinstance(run.get("plan_lock"), dict) else []
-    event(run, "replan", reason=args.reason, **{"from": run["phase"]}, changed=changed, loop=loops["replan"])
+    event(run, "replan", reason=args.reason, **{"from": run["phase"]}, changed=changed, loop=loops["replan"],
+          decision=getattr(args, "decision", None))
     event(run, "loop", replan=loops["replan"])
     run.pop("plan_lock", None)
     gate._set_phase(run, "plan")
@@ -373,9 +415,15 @@ def cmd_rewind(args) -> int:
     if current not in phases or phases.index(current) <= phases.index(args.phase):
         raise FactoryError(f"run {run['id']} is in phase {current}; rewind goes back to an earlier phase")
     loops = run.setdefault("loops", {"build": 0, "review": 0})
-    loops["build"] = loops.get("build", 0) + 1
-    event(run, "rewind", reason=args.reason, **{"from": current, "to": args.phase}, loop=loops["build"])
-    event(run, "loop", build=loops["build"])
+    decision = _use_decision(run, getattr(args, "decision", None), "rewind")
+    if decision is None:  # counts into loops.build and blocks past max_build_loops
+        limit = integrity.locked_autonomy(run).get("max_build_loops", 3)
+        if loops.get("build", 0) + 1 > limit:
+            _cap_block(run, f"max_build_loops ({limit}) reached by rewinds without a user decision", current)
+        loops["build"] = loops.get("build", 0) + 1
+        event(run, "loop", build=loops["build"])
+    event(run, "rewind", reason=args.reason, **{"from": current, "to": args.phase}, loop=loops["build"],
+          decision=getattr(args, "decision", None))
     gate._set_phase(run, args.phase)
     run_save(run)
     _emit(args, {"phase": args.phase, "loops": loops}, f"phase {current} -> {args.phase} (build loop {loops['build']})")
@@ -425,7 +473,9 @@ def register(sub) -> None:
     p = rs.add_parser("decide")
     p.add_argument("run")
     p.add_argument("text")
-    p.add_argument("--by", choices=["agent", "user"], default="agent")
+    p.add_argument("--by", choices=["agent", "user"], default="agent",
+                   help="user: only for a decision the user actually stated in chat (needs --user-said)")
+    p.add_argument("--user-said", help="gist of the user's chat message behind a --by user decision")
     p.set_defaults(func=cmd_decide)
     p = rs.add_parser("block")
     p.add_argument("run")
@@ -443,9 +493,13 @@ def register(sub) -> None:
     p = rs.add_parser("replan", help="back to plan to change acs.json/checks/figma/diagnosis (clears the plan lock)")
     p.add_argument("run")
     p.add_argument("reason")
+    p.add_argument("--decision", type=int, help="user decision # (run decide --by user, this phase); else counts "
+                   "against autonomy.max_replans")
     p.set_defaults(func=cmd_replan)
     p = rs.add_parser("rewind", help="back to build or prove after the worktree moved past the proof")
     p.add_argument("run")
     p.add_argument("phase", choices=REWIND_TO)
     p.add_argument("reason")
+    p.add_argument("--decision", type=int, help="user decision # (run decide --by user, this phase); else counts "
+                   "into loops.build and blocks past autonomy.max_build_loops")
     p.set_defaults(func=cmd_rewind)

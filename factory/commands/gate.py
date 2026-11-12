@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from .. import integrity
+from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
@@ -429,6 +430,10 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
                 re.compile(str(chk["expect_fail_pattern"]))
             except re.error as err:
                 errors.append(f"{cid}: expect_fail_pattern is not a valid regex: {err}")
+            else:
+                weak = weak_pattern_reason(chk["expect_fail_pattern"])
+                if weak:
+                    errors.append(f"{cid}: {weak}")
         if ctype == "red-green" and not (chk.get("expect_fail_pattern") or (
                 next((c for c in checks if c.get("id") == chk.get("of")), None) or {}).get("expect_fail_pattern")):
             errors.append(f"{cid}: red-green needs expect_fail_pattern (on the check or its `of` test check): the red side "
@@ -775,7 +780,7 @@ def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
         if rec is None:
             plain.append(f"no {kind} review recorded (factory review record)")
             continue
-        bad = integrity.review_error(run, path, kind, rec.get("round"))
+        bad = integrity.review_error(run, path, kind, rec.get("round")) or integrity.review_lock_error(run, rec, kind)
         if bad:
             plain.append(bad)
             continue
@@ -826,8 +831,8 @@ def _feedback(run_id, run, ws) -> list[str]:
         plan = read_json(plan_path)
     except FactoryError as err:
         return errors + [str(err)]
-    waived = any(d.get("by") == "user" and d.get("phase") == "feedback" and "pipeline" in str(d.get("text", "")).lower()
-                 for d in run.get("decisions") or [])
+    waivers = [str(d.get("text", "")) for d in run.get("decisions") or []
+               if d.get("by") == "user" and d.get("phase") == "feedback" and "pipeline" in str(d.get("text", "")).lower()]
     for mr in plan.get("mrs") or []:
         tag = f"{mr['repo']}-{mr['target']}"
         label = f"{mr['repo']}/{mr['target']}"
@@ -855,19 +860,24 @@ def _feedback(run_id, run, ws) -> list[str]:
                 errors.append(f"{label}: {len(open_threads)} unresolved review thread(s); feedback ingest, fix, ship again")
             if isinstance(ddata, dict) and isinstance(ddata.get("pipelines"), list):
                 pipes = [x for x in ddata["pipelines"] if isinstance(x, dict) and x.get("id") is not None]
-        if waived:
-            continue
         ppath = rd / "remote" / f"pipeline-{tag}.json"
+        pipe: dict = {}
+        if ppath.is_file():
+            try:
+                pdata = read_json(ppath)
+                pipe = pdata.get("pipeline", pdata) if isinstance(pdata, dict) else {}
+            except FactoryError as err:
+                errors.append(str(err))
+                continue
+        # A waiver names the pipeline it waives: the latest one GitLab lists, else the fetched one.
+        current = (max(pipes, key=lambda x: x["id"] if isinstance(x["id"], int) else -1)["id"] if pipes
+                   else pipe.get("id"))
+        if current is not None and any(re.search(rf"(?<!\w){re.escape(str(current))}(?!\w)", w) for w in waivers):
+            continue  # the user waived this pipeline, naming its id
         if not ppath.is_file():
-            errors.append(f"{label}: remote/pipeline-{tag}.json missing (or record `factory run decide {run_id} "
-                          "\"pipeline: <why>\" --by user`)")
+            errors.append(f"{label}: remote/pipeline-{tag}.json missing (fetch it; a user waiver `factory run decide "
+                          f"{run_id} \"pipeline #<id>: <why>\" --by user --user-said \"<gist>\"` must name the pipeline id)")
             continue
-        try:
-            pdata = read_json(ppath)
-        except FactoryError as err:
-            errors.append(str(err))
-            continue
-        pipe = pdata.get("pipeline", pdata) if isinstance(pdata, dict) else {}
         if pipes:
             latest = max(pipes, key=lambda x: x["id"] if isinstance(x["id"], int) else -1)
             if pipe.get("id") != latest.get("id"):
@@ -1019,6 +1029,11 @@ def cmd_gate(args) -> int:
     phases, evals = machine(run)
     if phase not in evals:
         raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
+    ws_changed = integrity.workspace_error(run) if phase not in ("intake", "plan") else None
+    if ws_changed:  # before any loop/cap logic: caps read from a changed workspace.json are not trusted
+        event(run, "gate_fail", phase=phase, reasons=[ws_changed])
+        run_save(run)
+        raise GateFailed([ws_changed])
     if phase == "review" and evals is TICKET_EVALUATORS:
         plain, changes = review_status(args.run, run, ws)
         errors = proof_errors(args.run, run, ws) + plain + changes

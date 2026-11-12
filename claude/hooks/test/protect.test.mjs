@@ -164,11 +164,11 @@ EOF`,
   assert.ok(!denied(protect(bash(`factory gate x plan # ${RUN}`, '/work'))));
 });
 
-test('denies commands that set FACTORY_ROLE in any session', () => {
-  for (const cmd of ['FACTORY_ROLE=auditor factory review record x', 'export FACTORY_ROLE=auditor',
-    '$env:FACTORY_ROLE="auditor"; factory review record x', 'set FACTORY_ROLE=auditor && factory review record x']) {
-    assert.ok(denied(protect(bash(cmd, '/work'))), cmd);
-    assert.ok(denied(protect(ps(cmd))), cmd);
+test('protect does not block the auditor FACTORY_ROLE command (hooks also run inside subagents)', () => {
+  for (const cmd of ['FACTORY_ROLE=auditor factory review record x --kind code --file /tmp/c.json',
+    "$env:FACTORY_ROLE='auditor'; factory review record x --kind qa --file C:/tmp/q.json"]) {
+    assert.ok(!denied(protect(bash(cmd, '/work'))), cmd);
+    assert.ok(!denied(protect(ps(cmd))), cmd);
   }
   assert.ok(!denied(protect(bash('echo hello', '/work'))));
 });

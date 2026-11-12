@@ -19,8 +19,8 @@
 - [ ] Figma pack complete: `factory figma check <run>`.
 - [ ] `factory baseline <run>` (quality failures on merge-base, computed once).
 - [ ] **Question round (one message):** env gaps from the gate/env check, credential keys to add to `secrets/<ws>.env` (names only), targets (which branches), product unknowns, and anything blocked at intake. Number the questions; give a default for each so the user can answer "defaults ok".
-- [ ] After answers: `factory run human`, `factory run unblock`, `factory run decide … --by user`.
-- [ ] `factory gate <run> plan`. It locks `acs.json`, `checks/**`, `figma/**` (and `diagnosis.md` if present): later gates, `ship plan` and `ship verify` refuse any change. To change them later: `factory run replan <run> "<reason>"`, edit, pass `gate plan` again, then prove again.
+- [ ] After answers: `factory run human`, `factory run unblock`, `factory run decide … --by user --user-said "<gist>"` (only what the user stated in chat).
+- [ ] `factory gate <run> plan`. It locks `acs.json`, `checks/**`, `figma/**` (and `diagnosis.md` if present): later gates, `ship plan` and `ship verify` refuse any change. `workspace.json` is locked too. To change them later: `factory run replan <run> "<reason>" [--decision <n>]` (without a user decision it counts against `autonomy.max_replans`), edit, pass `gate plan` again, then prove and review again.
 
 ## reproduce (bug runs only)
 

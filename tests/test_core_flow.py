@@ -65,7 +65,8 @@ class RunTests(FactoryCase):
         rc, out = cli("gate", rid, "intake")
         self.assertEqual(rc, 1)
         self.assertIn("open question blocker", out)
-        cli("run", "decide", rid, "use pack", "--by", "user")
+        self.assertNotEqual(cli("run", "decide", rid, "use pack", "--by", "user")[0], 0)  # needs --user-said
+        self.assertEqual(cli("run", "decide", rid, "use pack", "--by", "user", "--user-said", "use the pack")[0], 0)
         cli("run", "human", rid, "user said go")
         self.assertEqual(cli("run", "unblock", rid, "0")[0], 0)
         rc, out = cli("gate", rid, "intake")
@@ -420,6 +421,10 @@ class ReviewGateTests(FactoryCase):
         ws = core.workspace_load("ws")
         ws["autonomy"]["max_review_rounds"] = 9  # this test is about max_build_loops
         core.write_json(core.workspace_path("ws"), ws)
+        from factory import integrity  # the caps belong to the plan: re-lock as if set before the plan gate
+        run = core.run_load(self.run_id)
+        integrity.lock_plan(run, "test fixture", keep_seq=True)
+        core.run_save(run)
         for expected in (1, 2):
             self.review(verdict="CHANGES", findings=[{"id": "F1", "severity": "blocker", "text": "bad", "file": "a.txt:1"}])
             self.review(kind="qa")

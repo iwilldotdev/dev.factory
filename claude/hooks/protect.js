@@ -5,6 +5,9 @@
 // MCP tools (mcp__*) whose input has `save_to` are checked the same way.
 // Also author-owned (intake/plan): acs.json, diagnosis.md, checks/**, figma/** - denied to shell writes and
 // MCP save_to (except into figma/); file tools may write them here, worker-guard restricts the role.
+// FACTORY_ROLE is NOT checked here: settings hooks also run inside subagents, so a block here would stop the
+// auditor's documented `FACTORY_ROLE=auditor factory review record`. worker-guard limits it to the auditor;
+// the main session is the trusted orchestrator (DESIGN "Threat model") and never records reviews.
 // Defence in depth only: the factory CLI's evidence digests / plan-lock hashes are authoritative.
 // `factory` / `python -m factory` commands are the legitimate writers and pass.
 // Usage: protect.js [--factory-home <dir>]   (env FACTORY_HOME wins when set)
@@ -57,7 +60,6 @@ process.stdin.on('end', () => {
     if (lib.isCliOwned(lib.normPath(target, ctx.cwd), home)) deny(`write to ${target}`);
   } else if (SHELL_TOOLS.includes(tool)) {
     const command = String(args.command || '');
-    if (lib.setsFactoryRole(command)) deny('FACTORY_ROLE must not be set from a command');
     const reason = lib.bashWriteReason(command, ctx);
     if (reason) deny(reason);
   }

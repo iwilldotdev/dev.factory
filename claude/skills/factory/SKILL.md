@@ -16,10 +16,11 @@ You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to t
 3. **One question round.** Batch every question for the user (env gaps, credentials, targets, unknowns) into one message at intake/plan. Then run autonomously until ship, unless blocked.
 4. **Credentials never go in chat.** Ask the user to put them in `FACTORY_HOME/secrets/<ws>.env` and say which keys. Never echo them back.
 5. **Every steering user message → `factory run human <run> "<one-line gist>"`** before acting on it.
-6. **Author ≠ auditor.** Auditors start fresh, never re-judge after being resumed, and never review their own work.
+6. **Author ≠ auditor.** Auditors start fresh, never re-judge after being resumed, and never review their own work. You (the orchestrator) never run `factory review record` and never set `FACTORY_ROLE`: only the factory-auditor records reviews.
 7. **Git safety:** no hard reset, stash, destructive checkout, or force-push. Push only at ship, per the ship plan.
-8. **Loops are capped** by the workspace `autonomy` (`max_build_loops`, `max_review_rounds`). The CLI blocks the run when they are exceeded; then ask the user.
-9. **The proof is locked.** `gate plan` locks `acs.json`, `checks/`, `figma/`; changing them later needs `factory run replan <run> "<reason>"`. A commit after prove invalidates review and ship: `factory run rewind <run> prove "<reason>"`. Gates refuse evidence or reviews whose digest does not match what the CLI recorded.
+8. **Loops are capped** by the workspace `autonomy` (`max_build_loops`, `max_review_rounds`, `max_replans`), locked with the plan: editing `workspace.json` after `gate plan` fails every later gate ("workspace changed after plan; replan"). The CLI blocks the run when a cap is exceeded; then ask the user.
+9. **The proof is locked.** `gate plan` locks `acs.json`, `checks/`, `figma/`, `workspace.json`; changing them later needs `factory run replan <run> "<reason>"`. A commit after prove invalidates review and ship: `factory run rewind <run> prove "<reason>"`. A replan also invalidates the reviews (fresh auditors again). Gates refuse evidence or reviews whose digest does not match what the CLI recorded.
+10. **`--by user` means the user said it.** Use `factory run decide <run> "<text>" --by user --user-said "<gist of their chat message>"` only for a decision the user actually stated in chat this conversation, never for your own inference. Replan/rewind without such a decision (`--decision <n>`, recorded in the current phase) count against the caps; with one they do not.
 
 ## Remote payloads (dev.mcp `save_to`)
 
@@ -79,7 +80,7 @@ For MRs the factory did not build. Triggers: "revisar MR", "review my queue", an
 
 ## Blocked
 
-Stop and ask only when a gate fails for a reason only the user can fix: credentials, access, an env you cannot start, a product decision, or an exceeded loop cap. Record it first (`factory run block <run> <kind> "<text>"`), ask one batched message, then `factory run unblock <run> <n>` and `factory run decide <run> "<answer>" --by user`.
+Stop and ask only when a gate fails for a reason only the user can fix: credentials, access, an env you cannot start, a product decision, or an exceeded loop cap. Record it first (`factory run block <run> <kind> "<text>"`), ask one batched message, then `factory run unblock <run> <n>` and `factory run decide <run> "<answer>" --by user --user-said "<gist>"` (pass its number as `--decision <n>` to the replan/rewind it authorises).
 
 ## Ship authority
 

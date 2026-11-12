@@ -60,12 +60,13 @@ class FeedbackGateTests(IntegrityCase):
         self.assertEqual(core.run_load(self.rid)["phase"], "done")
 
     def test_user_decision_waives_pipeline_not_threads(self):
-        core.write_json(self.rd / "remote" / f"mr-{self.tag}-discussions.json", {"discussions": [thread(False)]})
-        self.ok("run", "decide", self.rid, "pipeline: CI is down, user accepts", "--by", "user")
+        self.files(status="failed", threads=[thread(False)])
+        self.ok("run", "decide", self.rid, "pipeline #5: CI is down, user accepts", "--by", "user",
+                "--user-said", "CI is down, ship anyway")
         rc, out = self.gate("feedback")
-        self.assertNotIn(f"pipeline-{self.tag}.json missing", out)
+        self.assertNotIn("status 'failed'", out)
         self.assertIn("unresolved review thread", out)
-        core.write_json(self.rd / "remote" / f"mr-{self.tag}-discussions.json", {"discussions": []})
+        self.files(status="failed")
         self.ok("gate", self.rid, "feedback")
 
     def test_agent_decision_does_not_waive(self):

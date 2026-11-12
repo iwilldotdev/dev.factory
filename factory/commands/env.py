@@ -188,13 +188,28 @@ def process_create_time(pid: int) -> str | None:
     return out or None
 
 
-def record_alive(rec: dict | None) -> bool:
-    """The recorded process still runs and is the same process (create time matches)."""
+def record_state(rec: dict | None) -> str:
+    """"gone" (no record or not running), "same" (create time matches), "other" (pid reused) or
+    "unknown" (a create time could not be read on either side: identity cannot be verified)."""
     if not rec or not pid_alive(rec["pid"]):
-        return False
-    if rec.get("create_time") is None:
-        return True  # legacy record: no stamp to compare
-    return process_create_time(rec["pid"]) == rec["create_time"]
+        return "gone"
+    if not rec.get("create_time"):
+        return "unknown"  # legacy record or unreadable at start: never assume it is ours
+    cur = process_create_time(rec["pid"])
+    if cur is None:
+        return "unknown"
+    return "same" if cur == rec["create_time"] else "other"
+
+
+def record_alive(rec: dict | None) -> bool:
+    """The recorded process still runs and is verifiably the same process (create time matches)."""
+    return record_state(rec) == "same"
+
+
+def _unknown_identity(alias: str, pid: int) -> str:
+    kill = f"taskkill /T /F /PID {pid}" if IS_WIN else f"kill {pid}"
+    return (f"{alias}: pid {pid} is running but its create time cannot be read, so factory cannot tell whether it is "
+            f"the process it started; NOT killed. Ask the user to check and stop it (e.g. `{kill}`), then retry.")
 
 
 def process_name(pid: int) -> str:
@@ -302,7 +317,11 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     cwd = _cwd_for(workspace, run, alias)
     head = _head_of(cwd) if cwd.is_dir() else None
     rec = read_record(ws, alias)
-    if rec and record_alive(rec):
+    state = record_state(rec) if rec else "gone"
+    if state == "unknown":
+        out.append(_unknown_identity(alias, rec["pid"]))
+        return False
+    if state == "same":
         if not _same_path(rec.get("cwd"), cwd) or (rec.get("head") or None) != head:
             out.append(
                 f"{alias}: already up (pid {rec['pid']}) for {rec.get('cwd') or '?'} at "
@@ -315,7 +334,7 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
         kill_tree(rec["pid"])  # stale: ours, alive but unhealthy; restart below
         _drop_record(ws, alias)
     elif rec:
-        if pid_alive(rec["pid"]):
+        if state == "other":
             out.append(f"{alias}: pid {rec['pid']} now belongs to another process (create time differs); not touched")
         _drop_record(ws, alias)  # our process is gone
     for port in env.get("ports") or []:
@@ -387,9 +406,12 @@ def down(workspace: dict, alias: str) -> str:
     if not rec:
         return f"{alias}: no pid file (nothing started by factory)"
     pid = rec["pid"]
-    if record_alive(rec):
+    state = record_state(rec)
+    if state == "unknown":
+        raise FactoryError(_unknown_identity(alias, pid) + " (pid record kept)")
+    if state == "same":
         kill_tree(pid)
-    elif pid_alive(pid):
+    elif state == "other":
         _drop_record(ws, alias)
         return (f"{alias}: pid {pid} now belongs to another process (create time differs); "
                 "not killed; pid record removed")
@@ -405,7 +427,10 @@ def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None)
     if not rec:
         return (f"env {alias}: not started by `factory env up {ws} {alias} --run <run>` (no pid record); "
                 "evidence cannot be bound to the worktree")
-    if not record_alive(rec):
+    state = record_state(rec)
+    if state == "unknown":
+        return f"env {alias}: process {rec['pid']} identity cannot be verified (create time unreadable); ask the user"
+    if state != "same":
         return f"env {alias}: recorded process {rec['pid']} is not running (or its pid was reused); env up again"
     want = (Path(worktree) / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
     if not _same_path(rec.get("cwd"), want):

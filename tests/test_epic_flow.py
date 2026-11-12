@@ -139,6 +139,12 @@ class TestEpicShip(EpicBase):
                 {"id": "AC-1", "text": "works", "kind": "logic", "checks": ["C1"]}],
                 "checks": [{"id": "C1", "type": "test", "repo": alias, "cmd": PASS}]})
             self.lock_and_prove(cid)
+            for kind in ("code", "qa"):  # ship verify re-checks the latest reviews
+                rec = {"verdict": "APPROVE", "reviewer": "factory-auditor", "findings": [],
+                       "completeness": {"done": 1, "gap": 0, "not_checked": 0},
+                       "ac_coverage": [{"ac": "AC-1", "exercises": True}]}
+                core.write_json(self.tmp / f"{cid}-{kind}.json", rec)
+                self.ok("review", "record", cid, "--kind", kind, "--file", str(self.tmp / f"{cid}-{kind}.json"))
             self.set_phase(cid, "ship")
 
     def test_aggregated_order_and_depends_on(self):

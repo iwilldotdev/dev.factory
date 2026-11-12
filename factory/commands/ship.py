@@ -81,9 +81,9 @@ def _merged_mrs(run_id: str) -> list[dict]:
     return out
 
 
-def check_dependencies(run: dict) -> list[str]:
+def check_dependencies(run: dict, internal: set[str] | None = None) -> list[str]:
     errors = []
-    in_run = {t["key"] for t in run.get("tickets", [])}
+    in_run = {t["key"] for t in run.get("tickets", [])} | set(internal or ())
     mrs = _merged_mrs(run["id"])
     for t in run.get("tickets", []):
         for dep in t.get("depends_on") or []:
@@ -188,7 +188,7 @@ def _needs_user(mode: str, kind: str, draft: bool = True) -> bool:
     return True
 
 
-def build_plan(run_id: str, allow_behind: bool = False) -> dict:
+def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] | None = None) -> dict:
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
     acs = read_json(run_dir(run_id) / "acs.json")
@@ -199,7 +199,7 @@ def build_plan(run_id: str, allow_behind: bool = False) -> dict:
     if not targets or not repos:
         raise FactoryError("run has no repos or targets to ship")
 
-    errors = check_dependencies(run)
+    errors = check_dependencies(run, internal_deps)
     for alias in repos:
         wt = repo_path_for_run(run, workspace, alias)
         for target in targets:
@@ -239,11 +239,12 @@ def build_plan(run_id: str, allow_behind: bool = False) -> dict:
         label = f"{mr['repo']}/{mr['target']}"
         actions.append({"type": "push", "repo": mr["repo"], "target": mr["target"], "branch": mr["source_branch"],
                         "needs_user": _needs_user(mode, "push")})
+        mr_needs_user = _needs_user(mode, "mr", mr["draft"])
         actions.append({"type": "mr", "repo": mr["repo"], "target": mr["target"], "draft": mr["draft"],
                         "note": f"create or update MR {label}; draft flag and 'Draft: ' title prefix when draft",
-                        "needs_user": _needs_user(mode, "mr", mr["draft"])})
+                        "needs_user": mr_needs_user})
         actions.append({"type": "readback", "repo": mr["repo"], "target": mr["target"], "save_to": mr["readback"],
-                        "needs_user": _needs_user(mode, "readback", mr["draft"])})
+                        "needs_user": mr_needs_user})  # a readback only reads what its MR action wrote
 
     keys = [t["key"] for t in run.get("tickets", [])]
     epics = {e["key"]: e for e in workspace.get("epics", [])}

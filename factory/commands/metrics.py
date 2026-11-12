@@ -184,6 +184,10 @@ def compute(run_id: str) -> dict:
         if e.get("kind") == "gate_fail":
             d = e.get("data") or {}
             gate_fail[d.get("phase") or d.get("gate") or "unknown"] += 1
+    review_rounds: Counter = Counter()
+    for e in events:
+        if e.get("kind") == "review":
+            review_rounds[(e.get("data") or {}).get("review_kind") or "unknown"] += 1
     total = Counter()
     total.update(tokens)
     total.update(sub_tokens)
@@ -198,6 +202,7 @@ def compute(run_id: str) -> dict:
         "subagents": dict(sorted(agents.items())),
         "tokens": {"main": dict(tokens), "subagents": dict(sub_tokens), "total": dict(total)},
         "gate_fail": dict(gate_fail),
+        "review_rounds": dict(review_rounds),
         "loops": run.get("loops", {}),
         "escaped_findings": _escaped(run, rd),
         "transcripts": [str(p) for p in transcripts],

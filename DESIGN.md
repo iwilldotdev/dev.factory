@@ -110,9 +110,11 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
 
 ```json
 {
-  "schemaVersion": 1, "id": "construcode-dev-9454", "workspace": "construcode",
+  "schemaVersion": 1, "id": "construcode-dev-9454", "workspace": "construcode", "kind": "ticket|epic",
+  "parent": "<epic run id, child runs only>", "children": ["<child run ids, epic runs only>"],
   "tickets": [{"key": "DEV-9454", "type": "feature|bug", "parent": "DEV-7853", "depends_on": ["DEV-9451"]}],
-  "repos": {"React": {"branch": "feature/DEV-9454-x", "base": "pack", "worktree": "C:/…/wt/dev-9454-react", "head": "<sha>"}},
+  "repos": {"React": {"branch": "feature/DEV-9454-x", "base": "pack", "worktree": "C:/…/wt/dev-9454-react", "head": "<sha>",
+                      "branches": {"homolog": "feature/DEV-9454-x-homolog"}, "base_branch": "<stacked epic child branch>", "base_run": "<child id>"}},
   "targets": ["pack", "homolog"],
   "phase": "intake|plan|build|prove|review|ship|feedback|done|blocked",
   "risk": "normal|high",
@@ -137,14 +139,16 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `construcode-de
   "checks": [
     {"id": "CHK-1", "type": "test", "repo": "React", "cmd": "npx vitest run src/x.test.tsx", "expect": "exit0"},
     {"id": "CHK-2", "type": "browser", "repo": "React", "spec": "checks/browser/ac-1.spec.ts"},
-    {"id": "CHK-3", "type": "visual", "repo": "React", "node": "3544:5710", "path": "/obras/1/tarefas", "selector": "[data-testid=drawer]", "viewport": [1440, 900], "max_diff_ratio": 0.02, "masks": []},
-    {"id": "CHK-4", "type": "style", "repo": "React", "node": "3544:5710", "path": "/obras/1/tarefas", "map": "checks/style/drawer.json"},
+    {"id": "CHK-3", "type": "visual", "repo": "React", "node": "3544:5710", "path": "/obras/1/tarefas", "selector": "[data-testid=drawer]", "viewport": [1440, 900], "max_diff_ratio": 0.02, "masks": [], "wait_for": "[data-testid=drawer]", "settle_ms": 300, "fit": false},
+    {"id": "CHK-4", "type": "style", "repo": "React", "node": "3544:5710", "path": "/obras/1/tarefas", "map": "checks/style/drawer.json", "wait_for": "[data-testid=drawer]"},
     {"id": "CHK-5", "type": "api", "repo": "API", "method": "POST", "path": "/v2/campos", "body": {}, "expect": {"status": 201, "json": {"$.id": "exists"}}},
     {"id": "CHK-6", "type": "red-green", "repo": "API", "cmd": "dotnet test --filter X", "fix_commit": "<sha or HEAD>"},
     {"id": "CHK-7", "type": "human", "text": "Native screen picker cannot be automated", "reason": "…"}
   ]
 }
 ```
+
+Optional UI check keys: `wait_for` (selector awaited before capture/probe; visual and style), `settle_ms` (extra wait after load; visual), `fit` (visual: scale the capture to the Figma image size before comparing instead of failing on a size mismatch).
 
 Plan-gate rules (`factory gate <run> plan`):
 
@@ -170,6 +174,8 @@ Plan-gate rules (`factory gate <run> plan`):
 
 Collected with a dirty worktree → `status` may be pass but the prove gate rejects it.
 
+Evidence ids: one record per check id; the quality-delta record of a repo is `QUALITY-<alias>` (type `quality`), and each workspace rule check is `RULE-<rule-id>-<alias>` for every touched repo it applies to. The prove gate requires all of them to be `pass`.
+
 ### 2.5 Review record (via `factory review record`)
 
 ```json
@@ -178,7 +184,7 @@ Collected with a dirty worktree → `status` may be pass but the prove gate reje
  "completeness": {"done": 0, "gap": 0, "not_checked": 0}}
 ```
 
-QA review must state, for every AC, whether its checks actually exercise the AC (a check that cannot fail is a finding).
+QA review must state, for every AC, whether its checks actually exercise the AC (a check that cannot fail is a finding). The record carries `"ac_coverage": [{"ac": "AC-1", "exercises": true, "note": "…"}]` with one entry per AC in `acs.json`; `review record --kind qa` rejects a missing entry, and `exercises: false` cannot be combined with `APPROVE`. The CLI adds `recorded` (ISO time) to every stored review; `metrics` uses it to count findings that appear after the prove gate (escaped). The `review` event in run.json is `{review_kind, round, verdict, findings}`; `gate_pass`/`gate_fail` events carry `phase`.
 
 ## 3. CLI contract
 
@@ -187,9 +193,10 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | Command | Owner module | Effect |
 |---|---|---|
 | `workspace init <ws>` / `workspace import <ws> --from <project.json>` / `workspace check <ws>` | `commands/workspace.py` | create/convert/validate workspace.json |
-| `run start <ws> <TICKET...> [--epic KEY] [--risk high]` | `commands/run.py` | create run dir + run.json (phase intake) |
+| `run start <ws> <TICKET...> [--epic KEY] [--risk high] [--bug KEY]...` | `commands/run.py` | create run dir + run.json (phase intake) |
 | `run status <run>` / `run list` | `commands/run.py` | phase, loops, blockers, next required action |
-| `run branch <run> <repo> --base <target> [--name …]` | `commands/run.py` | create worktree + branch under worktree_root, record in run.json |
+| `run branch <run> <repo> --base <target> [--name …] [--from-run <child-id>]` | `commands/run.py` | create worktree + branch under worktree_root, record in run.json; `--from-run` stacks on that run's branch of the same repo (records `base_branch`, `base_run`) |
+| `run branch <run> <repo> --base <ref> --for-target <target> [--name …]` | `commands/run.py` | for a repo already branched: create a second branch (default `<branch>-<target>`) from `<ref>` and record it in `repos[alias].branches[target]`; `ship plan` uses it as that target's MR source |
 | `run decide <run> "<text>" [--by user]` / `run block <run> <kind> "<text>"` / `run unblock <run> <n>` | `commands/run.py` | append decision/blocker |
 | `run human <run> "<note>"` | `commands/run.py` | record a human intervention (orchestrator calls it for every user message that steers the run) |
 | `gate <run> <phase>` | `commands/gate.py` | check exit criteria of phase; on pass, advance phase; records gate_pass/gate_fail |
@@ -203,6 +210,12 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | `ship verify <run>` | `commands/ship.py` | compare `remote/mr-<repo>-<target>.json` readbacks with the plan (draft, target, source, title); record ship event |
 | `feedback ingest <run>` | `commands/feedback.py` | read `remote/mr-*-discussions.json` and `remote/pipeline-*.json`; unresolved human threads and failed jobs become findings; moves phase back to build |
 | `metrics <run>` / `metrics report [--since DATE]` | `commands/metrics.py` | from run.json + Claude transcripts (session ids in run.json, or transcripts mentioning `factory-run: <id>`): wall time, human messages, subagents by type/model, tokens, loops, gate failures, escaped findings (review/feedback findings after a prove pass) |
+
+Source branch of an MR for target `T` (`ship plan`): `repos[alias].branches[T]` when recorded (`run branch --for-target`), else `branch` when `T` is the run's `base` for that repo (or the run ships to a single target), else `<branch>-<T>`.
+
+Ship plan actions: per repo×target `push`, `mr`, `readback`; in `draft-auto` mode push and a draft `mr` need no confirmation, an `mr` that is not a draft does, and a `readback` carries the `needs_user` of its `mr` action. Jira comment and transition always ask.
+
+Runtime resolution for runtime collectors: `base_url` comes from `env.base_url`, else the origin of `env.health` (`factory.commands.env.base_url`); the Playwright storage state is `factory.commands.env.storage_state_path(ws, alias)` and is passed only when the file exists. `prove` puts the resolved `base_url` into `ctx.env`.
 
 Phase exit criteria (`gate`):
 
@@ -251,6 +264,8 @@ An epic is a **parent run** that coordinates **one child run per ticket**. Child
 | `epic status <parent> [--json]` | matrix child × phase × loops × open blockers × MR readbacks; prints the next **ready** children (all deps in phase ship/done) |
 | `epic ship plan <parent>` / `epic ship verify <parent>` | aggregate children's ship plans into one ordered action list (waves order, then repos order, then targets), Depends-on links across children, one epic Jira comment (workspace epic ship_comment when set); verify = every child ship verify OK |
 | `gate <parent> <phase>` | parent phases: intake → plan → build (children running) → ship → done; leaving build requires every child in phase ship-ready (review passed) or done; leaving plan requires `epic plan` OK and each child's plan gate passed |
+
+`epic plan` also writes `wave`, `planned_repos` and `stack_from` (`{repo: child-id}`, the dependency child to pass to `run branch --from-run`) into each child, and `waves`/`epic_plan` into the parent. A child is **ready** when it is not in ship/feedback/done/blocked and every `depends_on` child is in ship, feedback or done. `epic ship plan` refuses while any child is before ship; it builds each child's own plan (writing the child `ship-plan.json`, which `ship verify` reads), then writes the parent `ship-plan.json` with `mrs[]` (each with `child` and cross-child `depends_on`; descriptions gain `Depends on {mr_url:<child>:<repo>:<target>}`) and `actions[]` (push/mr/readback per MR, one epic Jira comment, child transitions). Parent gates: intake needs children; plan needs epic.json valid and applied and every child past its plan gate; build needs every child in ship/feedback/done; ship needs every child `ship verify` OK; then `done`.
 
 Branches: a child that depends on another child in the same repo branches from that child's branch (stacked), recorded as `base_branch` in the child repo record; `run branch` accepts `--from-run <child-id>`.
 

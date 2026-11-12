@@ -163,8 +163,14 @@ def collect_one(run: dict, ws: dict, check: dict) -> dict:
     alias = repo_conf(ws, check["repo"])["alias"] if check.get("repo") else None
     repo_path = repo_path_for_run(run, ws, alias) if alias else None
     out_dir = run_dir(run["id"]) / "evidence" / check["id"]
-    ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path,
-              env=(repo_conf(ws, alias).get("env") or {}) if alias else {}, out_dir=out_dir)
+    env = dict(repo_conf(ws, alias).get("env") or {}) if alias else {}
+    if alias and not env.get("base_url"):
+        try:  # same resolution as `factory env` (base_url, else origin of health)
+            from .env import base_url as env_base_url
+            env["base_url"] = env_base_url(ws, alias)
+        except (ImportError, FactoryError):
+            pass
+    ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path, env=env, out_dir=out_dir)
     started, t0 = now(), time.monotonic()
     body = dispatch(check, ctx)
     record = write_evidence(run["id"], check, body, repo_path, started, time.monotonic() - t0)

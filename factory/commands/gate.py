@@ -489,7 +489,17 @@ def evaluate(run_id: str, phase: str) -> list[str]:
     if phase not in EVALUATORS:
         raise FactoryError(f"no gate for phase {phase!r}; phases: {', '.join(EVALUATORS)}")
     run = run_load(run_id)
-    return EVALUATORS[phase](run_id, run, workspace_load(run["workspace"]))
+    ws = workspace_load(run["workspace"])
+    if run.get("kind") == "epic":
+        return _epic_errors(run, ws, phase)
+    return EVALUATORS[phase](run_id, run, ws)
+
+
+def _epic_errors(run: dict, ws: dict, phase: str) -> list[str]:
+    from . import epic
+    if phase not in epic.EVALUATORS:
+        raise FactoryError(f"epic gates: {', '.join(epic.EVALUATORS)}; not {phase!r}")
+    return epic.EVALUATORS[phase](run, ws)
 
 
 def _set_phase(run: dict, new: str) -> None:
@@ -505,6 +515,8 @@ def cmd_gate(args) -> int:
         raise FactoryError(f"no gate for phase {phase!r}; phases: {', '.join(EVALUATORS)}")
     if run["phase"] != phase:
         raise FactoryError(f"run {run['id']} is in phase {run['phase']}, not {phase}")
+    if run.get("kind") == "epic":
+        return _gate_epic(args, run, ws, phase)
     if phase == "review":
         plain, changes = review_status(args.run, run, ws)
         errors = plain + changes
@@ -538,6 +550,24 @@ def cmd_gate(args) -> int:
             run["repos"][alias]["head"] = git_head(repo_path_for_run(run, ws, alias))
     event(run, "gate_pass", phase=phase)
     new = NEXT[phase]
+    _set_phase(run, new)
+    run_save(run)
+    if getattr(args, "json", False):
+        print(json.dumps({"run": run["id"], "passed": phase, "phase": new}))
+    else:
+        print(f"PASS {phase} -> {new}")
+    return 0
+
+
+def _gate_epic(args, run: dict, ws: dict, phase: str) -> int:
+    from . import epic
+    errors = _epic_errors(run, ws, phase)
+    if errors:
+        event(run, "gate_fail", phase=phase, reasons=errors)
+        run_save(run)
+        raise GateFailed(errors)
+    event(run, "gate_pass", phase=phase)
+    new = epic.PHASES[epic.PHASES.index(phase) + 1]
     _set_phase(run, new)
     run_save(run)
     if getattr(args, "json", False):

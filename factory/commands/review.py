@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ..core import (SCHEMA_VERSION, FactoryError, event, git_head, read_json,
+from ..core import (SCHEMA_VERSION, now, FactoryError, event, git_head, read_json,
                     repo_path_for_run, run_dir, run_load, run_save,
                     workspace_load, write_json)
 
@@ -74,7 +74,7 @@ def cmd_record(args) -> int:
     existing = [int(p.stem.rsplit("-", 1)[1]) for p in rdir.glob(f"{args.kind}-*.json")
                 if p.stem.rsplit("-", 1)[1].isdigit()]
     rnd = max(existing, default=0) + 1
-    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas)
+    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now())
     write_json(rdir / f"{args.kind}-{rnd}.json", out)
     event(run, "review", review_kind=args.kind, round=rnd, verdict=out["verdict"], findings=len(out["findings"]))
     run_save(run)

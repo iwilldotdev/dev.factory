@@ -40,7 +40,7 @@ def cmd_start(args) -> int:
         raise FactoryError(f"run {run_id} already exists")
     stamp = now()
     run = {
-        "schemaVersion": SCHEMA_VERSION, "id": run_id, "workspace": ws["name"],
+        "schemaVersion": SCHEMA_VERSION, "id": run_id, "workspace": ws["name"], "kind": "ticket",
         "tickets": [{"key": t, "type": "bug" if t in bugs else "feature",
                      "parent": args.epic.upper() if args.epic else None, "depends_on": []} for t in tickets],
         "repos": {}, "targets": list((ws.get("ship") or {}).get("targets") or []),
@@ -120,16 +120,38 @@ def cmd_list(args) -> int:
 
 # ---------- branch ----------
 
+def _for_target(args, run: dict, conf: dict, main: Path) -> int:
+    """Record a per-target source branch (branches[target]) created from --base in the main repo."""
+    alias = conf["alias"]
+    rec = run["repos"].get(alias)
+    if not rec:
+        raise FactoryError(f"repo {alias} has no branch in run {run['id']}; create the main branch first")
+    target = args.for_target
+    name = args.name or f"{rec['branch']}-{target}"
+    base = gate.resolve_base(main, args.base)
+    if not git(main, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False):
+        raise FactoryError(f"base ref {base} not found in {main}")
+    if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}", check=False):
+        raise FactoryError(f"branch {name} already exists in {main}")
+    git(main, "branch", "--no-track", name, base)
+    rec.setdefault("branches", {})[target] = name
+    run_save(run)
+    _emit(args, {"target": target, "branch": name}, f"{alias}: target {target} ships from branch {name} (from {base})")
+    return 0
+
+
 def cmd_branch(args) -> int:
     run = run_load(args.run)
     ws = workspace_load(run["workspace"])
     conf = repo_conf(ws, args.repo)
     alias = conf["alias"]
-    if alias in run["repos"]:
-        raise FactoryError(f"repo {alias} already has a branch in run {run['id']}")
     main = Path(conf.get("path") or "")
     if not conf.get("path") or not (main / ".git").exists():
         raise FactoryError(f"repo {alias}: workspace path is missing or not a git repository: {conf.get('path')!r}")
+    if args.for_target:
+        return _for_target(args, run, conf, main)
+    if alias in run["repos"]:
+        raise FactoryError(f"repo {alias} already has a branch in run {run['id']}")
     root = ws.get("worktree_root")
     if not root:
         raise FactoryError("workspace worktree_root is not set")
@@ -138,7 +160,15 @@ def cmd_branch(args) -> int:
     worktree = Path(root) / f"{run_short(run)}-{alias.lower()}"
     if worktree.exists():
         raise FactoryError(f"worktree path already exists: {worktree}")
-    base = gate.resolve_base(main, args.base)
+    base_branch = None
+    if args.from_run:
+        parent_rec = (run_load(args.from_run).get("repos") or {}).get(alias)
+        if not parent_rec:
+            raise FactoryError(f"run {args.from_run} has no branch for repo {alias}")
+        base_branch = parent_rec["branch"]
+        base = base_branch
+    else:
+        base = gate.resolve_base(main, args.base)
     if not git(main, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False):
         raise FactoryError(f"base ref {base} not found in {main}")
     worktree.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +180,9 @@ def cmd_branch(args) -> int:
     link_deps(main, worktree)
     run["repos"][alias] = {"branch": branch, "base": args.base, "worktree": str(worktree),
                            "head": git_head(worktree), "base_ref": base}
+    if base_branch:
+        run["repos"][alias]["base_branch"] = base_branch
+        run["repos"][alias]["base_run"] = args.from_run
     run_save(run)
     _emit(args, run["repos"][alias], f"{alias}: branch {branch} from {base} at {worktree}")
     return 0
@@ -217,6 +250,8 @@ def register(sub) -> None:
     p.add_argument("repo")
     p.add_argument("--base", required=True)
     p.add_argument("--name")
+    p.add_argument("--from-run", help="child run id whose branch (same repo) this branch stacks on")
+    p.add_argument("--for-target", help="record a per-target source branch (branches[target]) instead of the main branch")
     p.set_defaults(func=cmd_branch)
     p = rs.add_parser("decide")
     p.add_argument("run")

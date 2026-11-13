@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .. import integrity
 from ..collectors.test import prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
+from ..core import (SCHEMA_VERSION, SESSION_HINT_VARS, session_hint, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
                     git_head, load_evidence, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save,
                     workspace_load, write_json)
@@ -63,13 +63,6 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
 
 
 AUDITOR_ROLE = "auditor"
-# Best-effort hint of which Claude session/agent ran `review record` (whatever the host exports; omitted if none).
-SESSION_HINT_VARS = ("CLAUDE_AGENT_ID", "CLAUDE_CODE_AGENT_ID", "CLAUDE_SUBAGENT_ID", "CLAUDE_SESSION_ID",
-                     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
-
-
-def session_hint() -> dict:
-    return {k: os.environ[k] for k in SESSION_HINT_VARS if os.environ.get(k)}
 
 
 def cmd_record(args) -> int:

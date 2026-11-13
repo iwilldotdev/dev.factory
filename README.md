@@ -20,6 +20,8 @@ A phase ends only when `factory gate <run> <phase>` passes. Evidence is bound to
 
 **Review runs** cover MRs the factory did not build: ask for your review queue, an MR URL, or tickets in code review. `factory review queue` filters the saved GitLab list (drafts, your own MRs, ones you approved), `factory review start` creates a review run (or a batch with one child per MR), and `factory run branch --mr` checks out the MR head in a detached worktree. The acceptance criteria come from the ticket, not the diff; the same collectors and two fresh auditors produce the evidence, and `factory review report` gives `ok`, `not-ok`, or `incomplete` per MR. Nothing is posted to GitLab or Jira unless you say so, and `factory review fix` turns a run into a normal ticket run on the MR branch.
 
+**Parallel sessions.** With `orchestration.sessions` on in the workspace, a batch (epic or several MRs) opens one Claude session per ticket that you can open and follow in the app. The parent session only coordinates and shows `factory batch status`. A child claims its runs (`factory run claim`) and narrates every phase. Only one local environment fits the fixed ports, so children take turns through `factory env lease`; everything else runs in parallel. `factory run log <run>` prints a run's timeline. See DESIGN.md §11.
+
 ## Threat model
 
 dev.factory defends against accidental or lazy false PASS by a cooperative model (claims without execution, checks that cannot fail, setup failures taken for reproductions, caps or checks loosened to go green, stale proof or reviews) and against workers exceeding their role. It does **not** defend against a deliberately adversarial orchestrator: all state is local files writable by the same OS user, so forged run.json events, hand-written `remote/` readbacks and files hidden by `.git/info/exclude` are accepted residual risks. Tamper-proof proof would need `prove` to run in another trust domain (GitLab CI); that is future work. See DESIGN.md §0.
@@ -57,7 +59,7 @@ Why: the agent never pastes Jira, GitLab, or Figma payloads. When a gate lacks a
 
 In Claude Code, mention a ticket or epic (`ABC-123`, a Jira URL) or say "factory". The skill starts or resumes the run, asks one batched question round (environment, credentials file keys, targets, unknowns), and works until ship. It asks before every remote write the ship plan marks `needs_user`. Credentials go in `FACTORY_HOME/secrets/<ws>.env`, never in chat.
 
-CLI directly: `factory --help`, `factory run status <run>`, `factory epic status <parent>`, `factory metrics report`.
+CLI directly: `factory --help`, `factory run status <run>`, `factory run log <run>`, `factory batch status <parent>`, `factory env lease status <ws>`, `factory metrics report`.
 
 ## Tests
 

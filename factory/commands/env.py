@@ -1,7 +1,9 @@
-"""`factory env up|down|check|logs|login`: codified runtime environment (DESIGN §3)."""
+"""`factory env up|down|check|logs|login|lease`: codified runtime environment (DESIGN §3, §11 env lease)."""
 
 from __future__ import annotations
 
+import contextlib
+import datetime as _dt
 import json
 import os
 import re
@@ -16,17 +18,22 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ..core import (
+from ..core import (ensure_owner, 
     FactoryError,
+    event,
     factory_home,
     git,
     now,
     read_json,
     repo_conf,
     repo_path_for_run,
+    run_dir,
     run_load,
+    run_update,
     secrets_path,
+    session_hint,
     workspace_load,
+    write_json,
 )
 
 IS_WIN = os.name == "nt"
@@ -303,6 +310,297 @@ def _health_url(workspace: dict, alias: str) -> str:
     return env.get("health") or base_url(workspace, alias)
 
 
+# ---------- lock + lease (DESIGN §11) ----------
+
+LOCK_TIMEOUT_S = 15.0
+LOCK_STALE_S = 120.0     # a lock file older than this was left by a dead process
+LEASE_TTL_S = 900        # default `env.lease_ttl_s`
+WAITER_STALE_S = 120.0   # a queued waiter that has not polled for this long leaves the queue
+LEASE_POLL_S = 2.0
+FINISHED_PHASES = ("done", "blocked")
+_LOCKS_HELD: set[str] = set()  # lock paths this process holds (re-entrant: `up` -> lease check, deps)
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path, timeout: float = LOCK_TIMEOUT_S):
+    """Exclusive cross-process lock: `path` created with O_CREAT|O_EXCL, removed on exit. Re-entrant in-process;
+    a lock file older than LOCK_STALE_S is reclaimed."""
+    key = os.path.normcase(os.path.abspath(str(path)))
+    if key in _LOCKS_HELD:
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > LOCK_STALE_S:
+                    path.unlink()
+                    continue
+            except OSError:
+                pass
+        except PermissionError:
+            pass  # Windows: the lock file is being deleted by its owner
+        else:
+            try:
+                os.write(fd, f"{os.getpid()}\n".encode())
+            finally:
+                os.close(fd)
+            break
+        if time.monotonic() > deadline:
+            raise FactoryError(f"env lock {path} is held by another process; retry, or delete it if stale")
+        time.sleep(0.02)
+    _LOCKS_HELD.add(key)
+    try:
+        yield
+    finally:
+        _LOCKS_HELD.discard(key)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def lease_path(ws: str) -> Path:
+    return _env_dir(ws) / "lease.json"
+
+
+def _lock_path(ws: str) -> Path:
+    return _env_dir(ws) / "env.lock"
+
+
+def lease_conf(workspace: dict) -> tuple[bool, int]:
+    """(`env.lease` on, `env.lease_ttl_s`) from the workspace-level `env` block."""
+    env = workspace.get("env") if isinstance(workspace.get("env"), dict) else {}
+    ttl = env.get("lease_ttl_s", LEASE_TTL_S)
+    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:
+        ttl = LEASE_TTL_S
+    return env.get("lease") is True, int(ttl)
+
+
+def _age(stamp) -> float | None:
+    try:
+        at = _dt.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=_dt.timezone.utc)
+    return max(0.0, (_dt.datetime.now(_dt.timezone.utc) - at).total_seconds())
+
+
+def _hhmm(stamp) -> str:
+    try:
+        at = _dt.datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return "?"
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=_dt.timezone.utc)
+    return at.astimezone().strftime("%H:%M")
+
+
+def _dur(seconds) -> str:
+    if seconds is None:
+        return "?"
+    s = int(seconds)
+    return f"{s}s" if s < 120 else f"{s // 60}m" if s < 7200 else f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def _session_short(hint) -> str:
+    if not isinstance(hint, dict):
+        return "-"
+    for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID", "CLAUDE_CODE_AGENT_ID"):
+        if hint.get(k):
+            return str(hint[k])[:8]
+    return "-"
+
+
+def _finished(run_id) -> str | None:
+    """"done"/"blocked" when the run is finished, "missing" when it has no run.json; None otherwise (or unreadable)."""
+    if not run_id:
+        return None
+    if not (run_dir(str(run_id)) / "run.json").is_file():
+        return "missing"
+    try:
+        phase = run_load(str(run_id)).get("phase")
+    except (FactoryError, OSError):
+        return None
+    return phase if phase in FINISHED_PHASES else None
+
+
+def lease_read(ws: str) -> dict:
+    """{run, session, pid, acquired_at, heartbeat, queue: [{run, session, pid, since, seen}]}; run None = free."""
+    try:
+        data = json.loads(lease_path(ws).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("run", None)
+    if not isinstance(data.get("queue"), list):
+        data["queue"] = []
+    data["queue"] = [w for w in data["queue"] if isinstance(w, dict) and w.get("run")]
+    return data
+
+
+def _lease_write(ws: str, lease: dict) -> None:
+    if not lease.get("run") and not lease.get("queue"):
+        try:  # free and nobody waiting: no file (a present lease.json reads as "held" elsewhere)
+            lease_path(ws).unlink()
+        except OSError:
+            pass
+        return
+    write_json(lease_path(ws), lease)
+
+
+def lease_stale(lease: dict, ttl: int) -> str | None:
+    """Why the held lease may be reclaimed (heartbeat older than the TTL, or the owning run finished), else None."""
+    run_id = lease.get("run")
+    if not run_id:
+        return None
+    age = _age(lease.get("heartbeat"))
+    if age is None or age > ttl:
+        return f"heartbeat {_dur(age)} old > ttl {ttl}s"
+    fin = _finished(run_id)
+    return f"run {run_id} is {fin}" if fin else None
+
+
+def _clear_holder(lease: dict) -> None:
+    lease.update(run=None, session=None, pid=None, acquired_at=None, heartbeat=None)
+
+
+def _prune(lease: dict, ttl: int) -> list[tuple[str, str]]:
+    """Drop a stale holder and stale/duplicate waiters. Returns [(reclaimed run, reason)]."""
+    reclaimed: list[tuple[str, str]] = []
+    reason = lease_stale(lease, ttl)
+    if reason:
+        reclaimed.append((lease["run"], reason))
+        _clear_holder(lease)
+    keep, seen = [], set()
+    for w in lease["queue"]:
+        age = _age(w.get("seen"))
+        if w["run"] in seen or age is None or age > WAITER_STALE_S or _finished(w["run"]):
+            continue
+        seen.add(w["run"])
+        keep.append(w)
+    lease["queue"] = keep
+    return reclaimed
+
+
+def lease_try(ws: str, run_id: str, ttl: int, wait: bool = False) -> dict:
+    """One atomic acquire attempt. FIFO: a free lease goes to the head of the queue. With `wait` a refused run
+    joins (or refreshes its place in) the queue. Returns {granted, fresh, position, lease, reclaimed}."""
+    with _file_lock(_lock_path(ws)):
+        lease = lease_read(ws)
+        reclaimed = _prune(lease, ttl)
+        stamp = now()
+        queue = lease["queue"]
+        fresh = False
+        if lease.get("run") == run_id:
+            lease["heartbeat"] = stamp
+            granted = True
+        elif not lease.get("run") and (not queue or queue[0]["run"] == run_id):
+            lease.update(run=run_id, session=session_hint() or None, pid=os.getpid(), acquired_at=stamp, heartbeat=stamp)
+            lease["queue"] = [w for w in queue if w["run"] != run_id]
+            granted = fresh = True
+        else:
+            granted = False
+            if wait:
+                mine = next((w for w in queue if w["run"] == run_id), None)
+                if mine:
+                    mine.update(seen=stamp, pid=os.getpid())
+                else:
+                    queue.append({"run": run_id, "session": session_hint() or None, "pid": os.getpid(),
+                                  "since": stamp, "seen": stamp})
+        position = 0 if granted else next((i + 1 for i, w in enumerate(lease["queue"]) if w["run"] == run_id), None)
+        _lease_write(ws, lease)
+    return {"granted": granted, "fresh": fresh, "position": position, "lease": lease, "reclaimed": reclaimed}
+
+
+def lease_release(ws: str, run_id: str, force: bool = False) -> str:
+    with _file_lock(_lock_path(ws)):
+        lease = lease_read(ws)
+        holder = lease.get("run")
+        queued = any(w["run"] == run_id for w in lease["queue"])
+        lease["queue"] = [w for w in lease["queue"] if w["run"] != run_id]
+        if holder and (holder == run_id or force):
+            _clear_holder(lease)
+            msg = f"lease of {ws} released (was held by {holder})"
+        elif queued:
+            msg = f"{run_id} left the queue of {ws}; lease still held by {holder or 'nobody'}"
+        elif holder:
+            raise FactoryError(f"lease of {ws} is held by run {holder}, not {run_id}; "
+                               "pass --force to release it anyway")
+        else:
+            msg = f"lease of {ws} is not held"
+        _lease_write(ws, lease)
+    return msg
+
+
+def _leave_queue(ws: str, run_id: str) -> None:
+    with _file_lock(_lock_path(ws)):
+        lease = lease_read(ws)
+        lease["queue"] = [w for w in lease["queue"] if w["run"] != run_id]
+        _lease_write(ws, lease)
+
+
+def lease_heartbeat(ws: str, run_id: str | None) -> bool:
+    """Refresh the heartbeat when `run_id` holds the lease. True when it holds it."""
+    if not run_id or not lease_path(ws).is_file():
+        return False
+    with _file_lock(_lock_path(ws)):
+        lease = lease_read(ws)
+        if lease.get("run") != run_id:
+            return False
+        lease["heartbeat"] = now()
+        _lease_write(ws, lease)
+    return True
+
+
+def _holder_text(lease: dict) -> str:
+    if not lease.get("run"):
+        return "free"
+    return f"held by {lease['run']} since {_hhmm(lease.get('acquired_at'))}"
+
+
+def require_lease(workspace: dict, run_id: str | None, what: str) -> None:
+    """With `env.lease: true`, `run_id` must hold the env lease (its heartbeat is refreshed). No-op otherwise."""
+    enabled, _ = lease_conf(workspace)
+    if not enabled:
+        return
+    ws = workspace["name"]
+    acquire = f"`factory env lease acquire {ws} --run {run_id or '<run>'} --wait`"
+    if not run_id:
+        raise FactoryError(f"{what}: env.lease is on for {ws}; pass --run <run> holding the env lease ({acquire})")
+    if not lease_heartbeat(ws, run_id):
+        raise FactoryError(f"{what}: run {run_id} does not hold the env lease of {ws} "
+                           f"({_holder_text(lease_read(ws))}); {acquire} first")
+
+
+def _record(run_id: str | None, kind: str, **data) -> None:
+    """Best-effort event on a run (never fails the env command)."""
+    if not run_id:
+        return
+    try:
+        run_update(run_id, lambda r: event(r, kind, **data))
+    except (FactoryError, OSError):
+        pass
+
+
+def lease_status(ws: str, ttl: int) -> dict:
+    lease = lease_read(ws)
+    return {
+        "workspace": ws, "holder": lease.get("run"), "session": lease.get("session"), "pid": lease.get("pid"),
+        "acquired_at": lease.get("acquired_at"), "heartbeat": lease.get("heartbeat"),
+        "age_s": None if not lease.get("run") else _age(lease.get("acquired_at")),
+        "heartbeat_age_s": None if not lease.get("run") else _age(lease.get("heartbeat")),
+        "ttl_s": ttl, "stale": lease_stale(lease, ttl),
+        "queue": [{"run": w["run"], "since": w.get("since"), "wait_s": _age(w.get("since")),
+                   "session": w.get("session")} for w in lease["queue"]],
+    }
+
+
 # ---------- up / down / check ----------
 
 def _cwd_for(workspace: dict, run: dict | None, alias: str) -> Path:
@@ -329,21 +627,46 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     health = _health_url(workspace, alias)
     cwd = _cwd_for(workspace, run, alias)
     head = _head_of(cwd) if cwd.is_dir() else None
+    # record check -> port checks -> Popen -> pid write under the env lock: two concurrent ups cannot both start
+    with _file_lock(_lock_path(ws)):
+        status, proc = _start_locked(env, ws, alias, health, cwd, head, out)
+    if status != "started":
+        return status == "up"
+    log = log_path(ws, alias)
+
+    deadline = time.time() + float(env.get("startup_timeout_s") or 120)
+    while time.time() < deadline:
+        if health_ok(health):
+            out.append(f"{alias}: up (pid {proc.pid}) {health}")
+            return True
+        if proc.poll() is not None:
+            out.append(f"{alias}: process exited with code {proc.returncode} before becoming healthy")
+            break
+        time.sleep(0.5)
+    else:
+        out.append(f"{alias}: not healthy after {env.get('startup_timeout_s') or 120}s ({health})")
+    out.append(f"--- last 40 log lines ({log}) ---\n{tail(log)}")
+    return False
+
+
+def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: str | None,
+                  out: list[str]) -> tuple[str, subprocess.Popen | None]:
+    """("up", None) already running for this request, ("fail", None) refused, ("started", proc)."""
     rec = read_record(ws, alias)
     state = record_state(rec) if rec else "gone"
     if state == "unknown":
         out.append(_unknown_identity(alias, rec["pid"]))
-        return False
+        return "fail", None
     if state == "same":
         if not _same_path(rec.get("cwd"), cwd) or (rec.get("head") or None) != head:
             out.append(
                 f"{alias}: already up (pid {rec['pid']}) for {rec.get('cwd') or '?'} at "
                 f"{str(rec.get('head') or '?')[:8]}, but this request is {cwd} at {str(head or '?')[:8]}. "
                 f"Run `factory env down {ws} {alias}` first, then up again.")
-            return False
+            return "fail", None
         if health_ok(health):
             out.append(f"{alias}: already up (pid {rec['pid']})")
-            return True
+            return "up", None
         kill_tree(rec["pid"])  # stale: ours, alive but unhealthy; restart below
         _drop_record(ws, alias)
     elif rec:
@@ -358,11 +681,11 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
                 f"{alias}: port {port} is already in use by {who}, not started by factory. "
                 f"Ask the user to stop it (e.g. {'taskkill /F /PID ' + str(owner[0]) if owner and IS_WIN else 'kill ' + str(owner[0]) if owner else 'free the port'}) and retry."
             )
-            return False
+            return "fail", None
     if not env.get("ports") and health_ok(health):
         out.append(f"{alias}: unknown server already answering at {health}, not started by factory. "
                    "Ask the user to stop it (or declare env.ports to see its owner) and retry.")
-        return False
+        return "fail", None
 
     if not cwd.is_dir():
         raise FactoryError(f"{alias}: cwd {cwd} does not exist")
@@ -390,31 +713,37 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     pid_path(ws, alias).write_text(json.dumps({
         "pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
         "create_time": process_create_time(proc.pid)}), encoding="utf-8")
-
-    deadline = time.time() + float(env.get("startup_timeout_s") or 120)
-    while time.time() < deadline:
-        if health_ok(health):
-            out.append(f"{alias}: up (pid {proc.pid}) {health}")
-            return True
-        if proc.poll() is not None:
-            out.append(f"{alias}: process exited with code {proc.returncode} before becoming healthy")
-            break
-        time.sleep(0.5)
-    else:
-        out.append(f"{alias}: not healthy after {env.get('startup_timeout_s') or 120}s ({health})")
-    out.append(f"--- last 40 log lines ({log}) ---\n{tail(log)}")
-    return False
+    return "started", proc
 
 
 def up(workspace: dict, alias: str, run: dict | None = None) -> tuple[bool, list[str]]:
+    require_lease(workspace, run["id"] if run else None, f"env up {alias}")
     out: list[str] = []
     ok = _up_one(workspace, run, alias, set(), out)
     return ok, out
 
 
-def down(workspace: dict, alias: str) -> str:
+def down(workspace: dict, alias: str, run_id: str | None = None, force: bool = False) -> str:
+    """Stop the env of `alias`. Refused when a live env lease is held by another run than `run_id`, unless
+    `force`. The stop is recorded on `run_id` (and, when forced, on the holder's run)."""
     repo = repo_conf(workspace, alias)
     ws, alias = workspace["name"], repo["alias"]
+    _, ttl = lease_conf(workspace)
+    lease = lease_read(ws)
+    holder = lease.get("run")
+    other = holder if holder and holder != run_id and not lease_stale(lease, ttl) else None
+    if other and not force:
+        raise FactoryError(f"{alias}: the env lease of {ws} is {_holder_text(lease)}; not stopped. "
+                           f"Pass --run <run> if that run is yours, or --force to stop another run's env")
+    with _file_lock(_lock_path(ws)):
+        msg = _down_locked(ws, alias)
+    _record(run_id, "env_down", repo=alias, result=msg, forced=bool(other), lease_holder=holder)
+    if other:
+        _record(other, "env_down_forced", repo=alias, by=run_id, result=msg)
+    return msg + (f" (forced: lease held by {other})" if other else "")
+
+
+def _down_locked(ws: str, alias: str) -> str:
     rec = read_record(ws, alias)
     if not rec:
         return f"{alias}: no pid file (nothing started by factory)"
@@ -493,7 +822,8 @@ def factory_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def login(workspace: dict, alias: str, user: str | None = None) -> tuple[bool, str]:
+def login(workspace: dict, alias: str, user: str | None = None, run_id: str | None = None) -> tuple[bool, str]:
+    require_lease(workspace, run_id, f"env login {alias}")  # the storage state is shared per workspace
     repo = repo_conf(workspace, alias)
     alias = repo["alias"]
     env = repo.get("env") or {}
@@ -524,6 +854,8 @@ def login(workspace: dict, alias: str, user: str | None = None) -> tuple[bool, s
 def _load(args) -> tuple[dict, dict | None]:
     ws = workspace_load(args.workspace)
     run = run_load(args.run) if getattr(args, "run", None) else None
+    if run:
+        ensure_owner(run)
     return ws, run
 
 
@@ -536,12 +868,17 @@ def _cmd_up(args) -> int:
 
 def _cmd_down(args) -> int:
     ws, _ = _load(args)
-    print(down(ws, args.repo))
+    print(down(ws, args.repo, getattr(args, "run", None), getattr(args, "force", False)))
     return 0
 
 
 def _cmd_check(args) -> int:
     ws, _ = _load(args)
+    if getattr(args, "run", None):
+        try:
+            lease_heartbeat(ws["name"], args.run)
+        except FactoryError:
+            pass
     errs = capability(ws, args.repo)
     if errs:
         print("\n".join(errs))
@@ -562,12 +899,91 @@ def _cmd_logs(args) -> int:
 def _cmd_login(args) -> int:
     ws, _ = _load(args)
     user = getattr(args, "user", None)
-    ok, text = login(ws, args.repo, user)
+    ok, text = login(ws, args.repo, user, getattr(args, "run", None))
     if text:
         print(text)
     if ok:
         print(f"storage state: {storage_state_path(ws['name'], repo_conf(ws, args.repo)['alias'], user)}")
     return 0 if ok else 1
+
+
+def _print_status(st: dict) -> None:
+    ws = st["workspace"]
+    if not st["holder"]:
+        print(f"lease {ws}: free")
+    else:
+        line = (f"lease {ws}: held by {st['holder']} (session {_session_short(st['session'])}, pid {st['pid']}) "
+                f"since {_hhmm(st['acquired_at'])}, age {_dur(st['age_s'])}, "
+                f"heartbeat {_dur(st['heartbeat_age_s'])} ago (ttl {st['ttl_s']}s)")
+        print(line + (f" STALE: {st['stale']}" if st["stale"] else ""))
+    for i, w in enumerate(st["queue"], 1):
+        print(f"  {i}. {w['run']} waiting {_dur(w['wait_s'])} (session {_session_short(w['session'])})")
+
+
+def _cmd_lease(args) -> int:
+    workspace = workspace_load(args.workspace)
+    ws = workspace["name"]
+    _, ttl = lease_conf(workspace)
+    if args.action == "status":
+        st = lease_status(ws, ttl)
+        if args.json:
+            print(json.dumps(st, indent=2))
+        else:
+            _print_status(st)
+        return 0
+    if not args.run:
+        raise FactoryError(f"env lease {args.action} needs --run <run>")
+    run = run_load(args.run)
+    ensure_owner(run)
+    if run.get("workspace") != ws:
+        raise FactoryError(f"run {args.run} belongs to workspace {run.get('workspace')!r}, not {ws!r}")
+    if args.action == "release":
+        msg = lease_release(ws, args.run, args.force)
+        _record(args.run, "env_lease", action="release", workspace=ws, result=msg)
+        print(json.dumps({"released": True, "message": msg}) if args.json else msg)
+        return 0
+    deadline = time.monotonic() + args.timeout if args.timeout is not None else None
+    last = None
+    try:
+        while True:
+            res = lease_try(ws, args.run, ttl, wait=args.wait)
+            for old, reason in res["reclaimed"]:
+                print(f"reclaimed stale lease of {old}: {reason}")
+                _record(old, "env_lease", action="reclaimed", workspace=ws, by=args.run, reason=reason)
+            lease = res["lease"]
+            if res["granted"]:
+                if res["fresh"]:
+                    _record(args.run, "env_lease", action="acquire", workspace=ws)
+                if args.json:
+                    print(json.dumps({"granted": True, "run": args.run, "lease": lease}, indent=2))
+                else:
+                    print(f"lease {ws}: acquired by {args.run}" + ("" if res["fresh"] else " (already held; heartbeat refreshed)"))
+                return 0
+            if lease.get("run"):
+                line = f"held by {lease['run']} since {_hhmm(lease.get('acquired_at'))}"
+            else:
+                line = f"free, but {lease['queue'][0]['run']} is ahead in the queue"
+            if not args.wait:
+                if args.json:
+                    print(json.dumps({"granted": False, "run": args.run, "lease": lease}, indent=2))
+                else:
+                    print(f"lease {ws}: {line}; not acquired (use --wait to queue)")
+                return 1
+            line = f"waiting: position {res['position']} in queue for {ws}, {line}"
+            if line != last and not args.json:
+                print(line, flush=True)
+                last = line
+            if deadline is not None and time.monotonic() > deadline:
+                _leave_queue(ws, args.run)
+                if args.json:
+                    print(json.dumps({"granted": False, "run": args.run, "timeout": True, "lease": lease}, indent=2))
+                else:
+                    print(f"lease {ws}: timed out after {args.timeout:g}s; left the queue")
+                return 1
+            time.sleep(max(0.05, args.poll))
+    except KeyboardInterrupt:
+        _leave_queue(ws, args.run)
+        raise
 
 
 def register(sub) -> None:
@@ -578,9 +994,23 @@ def register(sub) -> None:
         sp.add_argument("workspace")
         sp.add_argument("repo")
         if name in ("up", "check"):
-            sp.add_argument("--run", help="use the worktree of this run")
+            sp.add_argument("--run", help="use the worktree of this run (with env.lease on, up needs the run to hold the lease)")
+        if name == "down":
+            sp.add_argument("--run", help="the run stopping its env (must hold the env lease when one is held)")
+            sp.add_argument("--force", action="store_true", help="stop even though another run holds the env lease")
         if name == "login":
             sp.add_argument("--user", help="log in as this e-mail instead of the workspace default user")
+            sp.add_argument("--run", help="the run logging in (must hold the env lease when env.lease is on)")
         if name == "logs":
             sp.add_argument("--lines", type=int, default=40)
         sp.set_defaults(func=fn)
+    lp = esub.add_parser("lease", help="one env at a time per workspace: acquire/release/status of the env lease")
+    lp.add_argument("action", choices=("acquire", "release", "status"))
+    lp.add_argument("workspace")
+    lp.add_argument("--run", help="run that acquires/releases the lease")
+    lp.add_argument("--wait", action="store_true", help="acquire: queue (FIFO) and poll until granted")
+    lp.add_argument("--timeout", type=float, help="acquire --wait: give up after this many seconds")
+    lp.add_argument("--poll", type=float, default=LEASE_POLL_S, help="acquire --wait: poll interval in seconds")
+    lp.add_argument("--force", action="store_true", help="release: drop a lease held by another run")
+    lp.add_argument("--json", action="store_true")
+    lp.set_defaults(func=_cmd_lease)

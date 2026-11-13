@@ -9,10 +9,10 @@ from pathlib import Path
 
 from .. import integrity
 from ..collectors.test import weak_pattern_reason
-from ..core import (FactoryError, GateFailed, event, evidence_id, git, git_dirty,
+from ..core import (FactoryError, GateFailed, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
-                    run_save, run_targets, target_worktree, workspace_load)
+                    run_resync, run_save, run_targets, target_worktree, workspace_load)
 
 PHASES = ["intake", "plan", "build", "prove", "review", "ship", "feedback", "done"]
 BUG_PHASES = ["intake", "plan", "reproduce", "build", "prove", "review", "ship", "feedback", "done"]
@@ -815,6 +815,7 @@ def _review(run_id, run, ws) -> list[str]:
 
 def _ship(run_id, run, ws) -> list[str]:
     errors = proof_errors(run_id, run, ws) + _call_external("factory.commands.ship", "verify", run_id)
+    run_resync(run)  # ship.verify records its `ship` event through its own copy of the run
     return list(dict.fromkeys(errors))
 
 
@@ -1018,6 +1019,7 @@ def block(run: dict, text: str, resume: str) -> None:
 
 def cmd_gate(args) -> int:
     run = run_load(args.run)
+    ensure_owner(run)
     ws = workspace_load(run["workspace"])
     phase = args.phase
     if phase not in EVALUATORS:

@@ -41,4 +41,5 @@ Final message is only a YAML block: `status` (`done | blocked | failed`), `summa
 - `done`: verify cheaply (`git log --oneline -n`, `factory run status`, file exists, gate exit code). A report is a claim.
 - `blocked` with `questions`: merge them into the single question round; do not ask piecemeal.
 - `failed`: read the reason; re-delegate with the missing input, or block the run.
-- Relay what matters: the user does not see worker replies.
+- Summarise each worker reply in 1–2 chat lines (status, what changed, what is open): the user does not see the reply itself.
+- A question or assumption that reduces proof (`human` check, `ui`→`logic`, no `env up`, no Figma fetch) goes to the user in the question round, with the failed attempt when it claims something is inaccessible.

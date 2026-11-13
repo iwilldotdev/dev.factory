@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
                                weak_pattern_reason)
-from ..core import (SCHEMA_VERSION, Ctx, FactoryError, evidence_event, evidence_id, git,
+from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save, run_targets,
                     target_worktree, workspace_load, write_evidence, write_json)
@@ -31,6 +31,14 @@ def _rel(path: str, root: Path) -> str:
         if p.lower().startswith(r.lower() + "/"):
             return p[len(r) + 1:]
     return p
+
+
+def _scrub(text: str, root: Path) -> str:
+    out = text.replace("\\", "/")
+    for candidate in {str(root), str(root.resolve())}:
+        r = candidate.replace("\\", "/").rstrip("/")
+        out = re.sub(re.escape(r) + "/", "", out, flags=re.IGNORECASE)
+    return out
 
 
 def _json_payload(text: str):
@@ -83,7 +91,7 @@ def parse_failures(output: str, exit_code: int, root: Path, name: str = "cmd") -
                 ids.add(f"test:{_rel(m['m'], root)}")
     if not ids and exit_code != 0:
         ids.add(f"exit:{name}")
-    return sorted(ids)
+    return sorted({_scrub(i, root) for i in ids})
 
 
 def run_quality(root: Path, quality: dict, env_vars: dict | None) -> dict:
@@ -125,6 +133,7 @@ def compute_baseline(run: dict, ws: dict, alias: str, force: bool = False) -> di
 
 def cmd_baseline(args) -> int:
     run = run_load(args.run)
+    ensure_owner(run)
     ws = workspace_load(run["workspace"])
     aliases = _select_repos(run, ws, args.repo)
     done = []
@@ -328,6 +337,7 @@ def runtime_failure_error(ctype: str, check: dict, body: dict) -> str | None:
 
 def cmd_repro(args) -> int:
     run = run_load(args.run)
+    ensure_owner(run)
     ws = workspace_load(run["workspace"])
     if not gate.is_bug_run(run):
         raise FactoryError("--repro is for bug runs (run start --bug KEY)")
@@ -356,11 +366,22 @@ def cmd_repro(args) -> int:
     return 1 if bad else 0
 
 
+def _lease_heartbeat(run: dict) -> None:
+    """Keep the env lease alive while this run proves (no-op when it does not hold it)."""
+    try:
+        from .env import lease_heartbeat
+        lease_heartbeat(run["workspace"], run["id"])
+    except (FactoryError, OSError, ImportError):  # ImportError: env stubbed/unavailable -> nothing to beat
+        pass
+
+
 def cmd_prove(args) -> int:
     if getattr(args, "repro", False):
         return cmd_repro(args)
     run = run_load(args.run)
+    ensure_owner(run)
     ws = workspace_load(run["workspace"])
+    _lease_heartbeat(run)
     acs = gate.load_acs(run["id"])
     wanted_repo = repo_conf(ws, args.repo)["alias"] if args.repo else None
     checks = [c for c in acs.get("checks", []) if c.get("type") != "human"]
@@ -388,6 +409,7 @@ def cmd_prove(args) -> int:
             if wanted_repo and rule["repo"] != wanted_repo:
                 continue
             records.append(collect_one(run, ws, rule))
+    _lease_heartbeat(run)
     run_save(run)
     failed = [r for r in records if r["status"] != "pass"]
     if getattr(args, "json", False):

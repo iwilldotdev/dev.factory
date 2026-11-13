@@ -1,11 +1,12 @@
 ---
 name: factory
-description: Delivers Jira tickets and epics end to end through dev.factory (intake, plan, build, prove, review, ship, feedback) with executed evidence and CLI gates. Use when the request names a Jira ticket or epic key (e.g. ABC-123) or a Jira browse URL, or says "factory", "implement ticket", "deliver this ticket/epic", asks to resume a factory run, or asks to review merge requests ("revisar MR", "review my queue", an MR URL, "tickets em code review").
+description: Delivers Jira tickets and epics end to end through dev.factory (intake, plan, build, prove, review, ship, feedback) with executed evidence and CLI gates. Use when the request names a Jira ticket or epic key (e.g. ABC-123) or a Jira browse URL, or says "factory", "implement ticket", "deliver this ticket/epic", asks to resume a factory run, or asks to review merge requests ("revisar MR", "review my queue", an MR URL, "tickets em code review"), or is invoked as "/factory session <run-ids>" to drive runs started by a parent factory session.
+argument-hint: "<KEY|epic|MR URL> | session <run-id...>"
 ---
 
 # factory: ticket in, proven MRs out
 
-You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to the user, and do every dev.mcp **write** and every `git fetch`/`git push`. Workers read, write, and build. The CLI and its collectors are the only source of truth for progress.
+You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to the user, and do every dev.mcp **write** and every `git fetch`/`git push`. Workers read, write, and build. The CLI and its collectors are the only source of truth for progress. In child mode (`/factory session`) dev.mcp writes stay with the parent session.
 
 `factory` is the installed shim (`<profile>/bin/factory`); if it is not on PATH, call it by that full path. Exit 0 = ok, 1 = gate/check failed (the printed reasons are your to-do list), 2 = usage/config error.
 
@@ -33,6 +34,22 @@ Any file the CLI needs from Jira, GitLab, or Figma is written by the dev.mcp rea
 3. Print exactly once: `factory-run: <run-id>`. Metrics use it to find this transcript.
 
 Risk is **high** when the work touches auth, money, data, migration, concurrency, a public contract, or security. High risk: auditors and diagnosis on `model: opus`, both review rounds always.
+
+## Sessions
+
+`/factory session <run-id...>` = child mode: this session drives only those runs. A parent with `orchestration.sessions` and 2+ tickets starts one linked app session per ticket instead of hidden subagents. Parent and child rules, UI phase with the env lease, fallback: [references/sessions.md](references/sessions.md).
+
+## Progress (parent, child, single run)
+
+The user follows the run in the app, not at the end.
+- Keep the app task list with the run's phases (`intake`, `plan`, … `report`/`done`); advance it at every gate.
+- One chat line per phase start and per worker launched ("plan: author writing acs.json + checks for API").
+- Long commands (`env up`, `prove`, `baseline`, `env lease acquire --wait`) run in the background, announced in one line with what runs and a rough ETA.
+- Summarise every worker report in 1–2 chat lines (status, what changed, what is open).
+
+## Worker questions
+
+Any worker question, or any assumption that reduces proof, reaches the user in the single question round before `gate plan`. That includes marking a check `human`, downgrading an AC from `ui` to `logic`, skipping `env up`, or skipping the Figma fetch. Never proceed silently. "Inaccessible" (Figma, env, login) is only accepted with the failed attempt recorded: the `factory figma check` / `factory env up` error output in the run (`run block` or `run human`), quoted in the question.
 
 ## Phases
 
@@ -65,7 +82,7 @@ An epic is a parent run plus one child run per ticket. Each child follows the ph
 
 - Author writes `epic.json` (tickets, repos, depends_on). `factory epic plan <parent>` validates it and computes waves.
 - **One consolidated question round for the whole epic**, covering every child.
-- Run each wave's ready children (`factory epic status <parent>`) in parallel: fresh workers per child, one worktree per ticket, one writer per file set. Same-repo dependents branch from their dependency (`run branch --from-run`).
+- Run each wave's ready children (`factory epic status <parent>`) in parallel: one linked session per ticket ([references/sessions.md](references/sessions.md)), else fresh workers per child; one worktree per ticket, one writer per file set. Same-repo dependents branch from their dependency (`run branch --from-run`).
 - A blocked child does not stop independent children.
 - Parent gates: intake → plan → build (every child reviewed) → ship → done. Ship uses `factory epic ship plan|verify <parent>` for stacked MRs and the single epic Jira comment.
 - `factory epic status <parent>` is the progress view you give the user.

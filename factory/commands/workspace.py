@@ -132,6 +132,37 @@ def hotfix_config_errors(ws: dict) -> list[str]:
     return errors
 
 
+def orchestration_config_errors(ws: dict) -> list[str]:
+    """Optional `orchestration` (parallel sessions) and workspace-level `env` (lease) blocks."""
+    errors: list[str] = []
+    orch = ws.get("orchestration")
+    if orch is not None:
+        if not isinstance(orch, dict):
+            errors.append("orchestration must be an object {sessions, per}")
+        else:
+            unknown = set(orch) - {"sessions", "per"}
+            if unknown:
+                errors.append(f"orchestration: unknown key(s) {sorted(unknown)} (sessions, per)")
+            if not isinstance(orch.get("sessions", False), bool):
+                errors.append("orchestration.sessions must be true or false")
+            if orch.get("per", "ticket") not in ("ticket", "run"):
+                errors.append("orchestration.per must be ticket or run")
+    env = ws.get("env")
+    if env is not None:
+        if not isinstance(env, dict):
+            errors.append("env must be an object {lease, lease_ttl_s}")
+        else:
+            unknown = set(env) - {"lease", "lease_ttl_s"}
+            if unknown:
+                errors.append(f"env: unknown key(s) {sorted(unknown)} (lease, lease_ttl_s)")
+            if not isinstance(env.get("lease", False), bool):
+                errors.append("env.lease must be true or false")
+            ttl = env.get("lease_ttl_s", 900)
+            if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 60:
+                errors.append("env.lease_ttl_s must be an integer >= 60")
+    return errors
+
+
 def check_workspace(ws: dict) -> list[str]:
     missing: list[str] = []
     root = ws.get("worktree_root")
@@ -165,6 +196,7 @@ def check_workspace(ws: dict) -> list[str]:
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):
         missing.append("autonomy.ship must be ask or draft-auto")
     missing.extend(hotfix_config_errors(ws))
+    missing.extend(orchestration_config_errors(ws))
     for rule in ws.get("rules", []):
         if not rule.get("id") or not isinstance(rule.get("check"), dict):
             missing.append(f"rule needs id and check: {rule}")

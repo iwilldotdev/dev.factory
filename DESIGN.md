@@ -367,3 +367,39 @@ Only when the user asks for a hotfix (homolog + pack in one go). One run, bug se
 ## 10. Non-goals (v0.1)
 
 Queue pulling from Jira boards, autonomy levels beyond `ask`/`draft-auto`, CI auto-fix without the orchestrator, non-Claude hosts.
+
+## 11. Sessions and env lease
+
+Batches (epics, review batches) can run each ticket in its **own visible host session**: the user opens, reads and steers each one, instead of watching a single orchestrator wait on hidden workers.
+
+- **Workspace:**
+  - `orchestration = {"sessions": true, "per": "ticket"|"run"}` (default off; `per` defaults to `ticket`, one session covering every run of that ticket);
+  - `env = {"lease": true, "lease_ttl_s": 900}` (default off).
+
+  `workspace check` validates both blocks.
+- **Parent session:**
+  - does the batch intake and the single consolidated question round;
+  - then, with `orchestration.sessions` and 2+ tickets, starts one session per ticket with the host's session tool, passing a brief with the run ids, worktrees, recorded user decisions and `/factory session <run-ids>`;
+  - after that it only coordinates: `factory batch status <parent>` after each child report, the parent gate and report, and every dev.mcp write, only with the user's ok.
+
+  Without a session tool (plain CLI) or when the host refuses, it falls back to worker subagents.
+- **Child session:**
+  - `factory run claim <run…>` records `{session, claimed_at, pid}` in `run.json.sessions` (the current owner is the last entry; the session id comes from `CLAUDE_CODE_SESSION_ID`, falling back to the other host hints);
+  - commands that advance a run (`gate`, `prove`, `env up|login --run`) refuse when another live session owns it, unless `--takeover` (recorded as an event);
+  - a process with no session id, such as a plain terminal, is not checked;
+  - children never write the parent run or dev.mcp.
+- **Run writes:**
+  - `run.json` carries a `rev` counter;
+  - `run_save` takes a per-run lock file (`run.json.lock`, `O_EXCL`), re-reads the disk copy and refuses with "changed on disk by another process" when `rev` moved since load, so a concurrent write fails loudly instead of being lost;
+  - `run_update(run_id, fn)` (load, mutate, save under the lock) is used by the short mutators (`run human|block|unblock|decide|login-user|claim`);
+  - `write_json` uses a unique temp name and retries `os.replace` on Windows sharing errors.
+- **Env lease** (one env per workspace, because ports are fixed):
+  - **State:** `env lease acquire|release|status <ws> --run <id> [--wait] [--timeout S]` keeps `FACTORY_HOME/env/<ws>/lease.json` (holder run, session, pid, acquired_at, heartbeat, FIFO queue) under an `O_EXCL` lock file. A lease is stale when its heartbeat is older than `lease_ttl_s` or its run is `done`/`blocked`; a stale lease can be reclaimed.
+  - **Enforcement:** with `env.lease`, `env up --run` and `env login --run` require the lease, and the read-record → spawn → pid-write sequence of `up` runs under the lock. `env down` refuses when another run holds the lease unless `--force` is passed. `prove` and `env check` renew the heartbeat.
+  - **Without `env.lease`:** behaviour is unchanged.
+- **Visibility:**
+  - `batch status <parent> [--json]` covers epic and review-batch parents. Per child it shows ticket, phase, next gate, open blockers, open `human` checks, owner session and the lease holder. `epic status` uses the same rows.
+  - `run log <run> [--tail N] [--since ISO] [--json]` prints `run.json` events as a timeline.
+  - `metrics` attributes child-session transcripts (marker `factory-run: <child>`) to the parent too.
+- **Exploration is not proof.** In the UI phase a child may drive the host's built-in browser against the local env and the Figma frames, to find gaps and write Playwright specs with real selectors. Only collectors write evidence; nothing seen in that browser is a PASS.
+

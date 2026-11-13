@@ -31,6 +31,10 @@ def find_transcripts(run: dict) -> list[Path]:
     found: dict[Path, None] = {}
     roots = claude_roots()
     for s in run.get("sessions") or []:
+        if isinstance(s, dict):  # ownership claim ({session, claimed_at, pid})
+            s = s.get("session")
+        if not s:
+            continue
         p = Path(s)
         if p.suffix == ".jsonl" and p.is_file():
             found[p] = None
@@ -40,7 +44,8 @@ def find_transcripts(run: dict) -> list[Path]:
                 found[hit] = None
     created = _ts(run.get("created"))
     since = created.timestamp() if created else 0
-    needle = (RUN_MARKER + run["id"]).encode()
+    # a parent run (epic / review-batch) also owns the transcripts marked with any of its children
+    needles = [(RUN_MARKER + rid).encode() for rid in [run["id"], *(run.get("children") or [])]]
     for root in roots:
         for f in root.glob("*/*.jsonl"):
             if f in found:
@@ -48,7 +53,8 @@ def find_transcripts(run: dict) -> list[Path]:
             try:
                 if f.stat().st_mtime < since:
                     continue
-                if needle in f.read_bytes():
+                data = f.read_bytes()
+                if any(n in data for n in needles):
                     found[f] = None
             except OSError:
                 continue

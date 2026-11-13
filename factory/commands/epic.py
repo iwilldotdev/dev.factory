@@ -186,25 +186,9 @@ def cmd_plan(args) -> int:
 
 # ---------- status ----------
 
-def _mr_readbacks(run_id: str) -> list[str]:
-    d = run_dir(run_id) / "remote"
-    return sorted(p.name for p in d.glob("mr-*.json") if not p.name.endswith("-discussions.json")) if d.is_dir() else []
-
-
 def child_rows(parent: dict) -> list[dict]:
-    children = _children(parent)
-    phase_of = {c["tickets"][0]["key"]: c["phase"] for c in children}
-    rows = []
-    for c in children:
-        tk = c["tickets"][0]
-        deps = tk.get("depends_on") or []
-        open_blockers = [b for b in c.get("blockers", []) if not b.get("resolved")]
-        deps_done = all(phase_of.get(d) in FINISHED for d in deps)
-        ready = deps_done and c["phase"] not in FINISHED and c["phase"] != "blocked"
-        rows.append({"id": c["id"], "key": tk["key"], "phase": c["phase"], "wave": c.get("wave"),
-                     "loops": dict(c.get("loops", {})), "open_blockers": len(open_blockers),
-                     "depends_on": deps, "mrs": _mr_readbacks(c["id"]), "ready": ready})
-    return rows
+    from . import batch  # shared row builder (also serves `factory batch status`)
+    return batch.base_rows(parent)
 
 
 def cmd_status(args) -> int:

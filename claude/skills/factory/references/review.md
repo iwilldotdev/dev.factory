@@ -21,7 +21,7 @@ Triggers: "revisar MR", "review my queue", an MR URL, "tickets em code review".
 
 - **Author writes `acs.json` from the ticket (and Figma), not from the diff.** The diff is reviewed against those ACs. Checks follow the usual rules (UI needs `visual` and `style`; bugs need `red-green` where the fix commit is identifiable).
 - Bring env up from the MR worktree (`factory env up <ws> <repo> --run <child>`), then `factory gate <child> plan`, `factory prove <child>`, `factory gate <child> prove`. Evidence binds to the MR head sha; moving the worktree HEAD invalidates it.
-- Children are independent: run them in parallel, one fresh author per child. A blocked child does not stop the others.
+- Children are independent: run them in parallel, one linked session per ticket when `orchestration.sessions` is on (sessions.md), else one fresh author per child here. Env up and browser/visual proof take the env lease one run at a time. A blocked child does not stop the others.
 
 ## 4. Review and report
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Parallel sessions (DESIGN §11). Workspace `orchestration: {sessions, per}` lets a batch run one visible host session per ticket. The parent coordinates with `factory batch status`, and children claim their runs (`factory run claim [--takeover]`). Skill: `references/sessions.md`, plus Progress and Worker-questions rules (every phase is narrated; a worker assumption that reduces proof reaches the user).
+- Env lease. Workspace `env: {lease, lease_ttl_s}` adds `factory env lease acquire|release|status`: a FIFO queue for the one local env. `env up|login --run` need the lease, `env down` refuses a non-owner unless `--force`, and `prove`/`env check` renew the heartbeat. `up` is atomic under a lock file.
+- Safe run writes. `run.json` carries a `rev` counter, a per-run lock is held while saving, and a concurrent change is refused instead of lost. `run_update` is used for the short mutators, and `write_json` uses unique temp files and retries on Windows sharing errors.
+- `factory run log <run>` prints a run's event timeline. `metrics` attributes child-session transcripts to the parent.
+- Quality delta: absolute worktree paths are scrubbed from failure ids, so typecheck errors in the baseline worktree no longer count as new in the run worktree.
+
 - dev.mcp `save_to` integration: gates and commands that miss a remote file (`gate intake|plan`, `figma check`, `ship verify`, `feedback ingest`, `review start|queue`) print the exact dev.mcp call with an absolute, forward-slash `save_to` and `overwrite=true` (`FETCH ...` lines; `fetch: [{tool, args}]` with `--json`; `<fileKey>`/`<iid>` placeholders when unknown). Skill, references, and agents now say "call the tool with `save_to`" instead of writing responses by hand.
 - Pack and readback readers accept the raw tool output: `figma/meta-<fileKey>.json` per file, `{merge_request: ...}` readbacks, MR notes plus `pipeline-<repo>-<target>-jobs.json` for feedback.
 - `protect.js` denies any `mcp__*` call whose `save_to` targets `run.json`, `metrics.json`, `ship-plan.json`, `review-report.json|md`, `evidence/`, `reviews/`, `baseline/`; `review-report.json|md` are now protected for file tools and shell too. The installed matcher adds `mcp__.*`.

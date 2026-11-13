@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
 
 from ..collectors.test import prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, event, factory_home,
+from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, current_owner, event, factory_home,
                     git, git_dirty, git_head, now, repo_conf, run_dir, run_load,
-                    run_save, workspace_load, write_json)
+                    run_save, run_update, session_id, session_short, workspace_load, write_json)
 from .. import integrity
 from . import gate
 
@@ -122,12 +124,17 @@ def cmd_status(args) -> int:
     except FactoryError as err:
         action, errors = f"cannot evaluate: {err}", []
     if getattr(args, "json", False):
+        owner = current_owner(run)
         print(json.dumps({"id": run["id"], "phase": run["phase"], "loops": run["loops"],
+                          "owner": owner["session"] if owner else None,
                           "blockers": [dict(b, n=i) for i, b in open_blockers],
                           "next": action, "missing": errors}, indent=2))
         return 0
     print(f"{run['id']}  phase={run['phase']}  risk={run.get('risk')}  "
           f"loops build={run['loops'].get('build', 0)} review={run['loops'].get('review', 0)}")
+    owner = current_owner(run)
+    if owner:
+        print(f"owner: session {session_short(owner['session'])} since {owner.get('claimed_at')}")
     for i, b in open_blockers:
         print(f"blocker #{i} [{b['kind']}] {b['text']}")
     print(f"next: {action}")
@@ -310,40 +317,45 @@ def cmd_mirror(args) -> int:
 
 def cmd_decide(args) -> int:
     """`--by user` only for a decision the user actually stated in chat; `--user-said` keeps the gist of that message."""
-    run = run_load(args.run)
     said = (getattr(args, "user_said", None) or "").strip()
     if args.by == "user" and not said:
         raise FactoryError("--by user needs --user-said \"<gist of the user's chat message>\": record only decisions "
                            "the user actually stated")
-    rec = {"at": now(), "phase": run["phase"], "text": args.text, "by": args.by}
-    if said:
-        rec["user_said"] = said
-    run["decisions"].append(rec)
-    run_save(run)
+
+    def mutate(run: dict) -> None:
+        rec = {"at": now(), "phase": run["phase"], "text": args.text, "by": args.by}
+        if said:
+            rec["user_said"] = said
+        run["decisions"].append(rec)
+
+    run = run_update(args.run, mutate)
     _emit(args, {"decisions": len(run["decisions"])}, f"decision #{len(run['decisions']) - 1} recorded")
     return 0
 
 
 def cmd_block(args) -> int:
-    run = run_load(args.run)
-    run["blockers"].append({"at": now(), "kind": args.kind, "text": args.text, "resolved": False})
-    run_save(run)
+    def mutate(run: dict) -> None:
+        run["blockers"].append({"at": now(), "kind": args.kind, "text": args.text, "resolved": False})
+        event(run, "block", blocker_kind=args.kind, text=args.text, n=len(run["blockers"]) - 1)
+
+    run = run_update(args.run, mutate)
     _emit(args, {"blocker": len(run["blockers"]) - 1}, f"blocker #{len(run['blockers']) - 1} recorded")
     return 0
 
 
 def cmd_unblock(args) -> int:
-    run = run_load(args.run)
-    if not 0 <= args.n < len(run["blockers"]):
-        raise FactoryError(f"no blocker #{args.n}")
-    run["blockers"][args.n]["resolved"] = True
-    run["blockers"][args.n]["resolved_at"] = now()
-    if run["phase"] == "blocked" and not any(not b.get("resolved") for b in run["blockers"]):
-        prev = next((e["data"].get("resume") or e["data"].get("from") for e in reversed(run["events"])
-                     if e["kind"] == "phase" and e["data"].get("to") == "blocked"), None) or "build"
-        event(run, "phase", **{"from": "blocked", "to": prev})
-        run["phase"] = prev
-    run_save(run)
+    def mutate(run: dict) -> None:
+        if not 0 <= args.n < len(run["blockers"]):
+            raise FactoryError(f"no blocker #{args.n}")
+        run["blockers"][args.n]["resolved"] = True
+        run["blockers"][args.n]["resolved_at"] = now()
+        if run["phase"] == "blocked" and not any(not b.get("resolved") for b in run["blockers"]):
+            prev = next((e["data"].get("resume") or e["data"].get("from") for e in reversed(run["events"])
+                         if e["kind"] == "phase" and e["data"].get("to") == "blocked"), None) or "build"
+            event(run, "phase", **{"from": "blocked", "to": prev})
+            run["phase"] = prev
+
+    run = run_update(args.run, mutate)
     _emit(args, {"phase": run["phase"]}, f"blocker #{args.n} resolved; phase {run['phase']}")
     return 0
 
@@ -434,23 +446,129 @@ def cmd_rewind(args) -> int:
 
 def cmd_login_user(args) -> int:
     """Per-run login e-mail for the runtime collectors; allowed until `gate prove` has passed."""
-    run = run_load(args.run)
-    if any(e["kind"] == "gate_pass" and e["data"].get("phase") == "prove" for e in run.get("events", [])):
-        raise FactoryError("gate prove already passed; login-user can no longer change (rewind to prove first)")
-    previous = run.get("login_user")
-    run["login_user"] = args.email
-    event(run, "login_user", user=args.email, previous=previous, phase=run["phase"])
-    run_save(run)
+    def mutate(run: dict) -> None:
+        if any(e["kind"] == "gate_pass" and e["data"].get("phase") == "prove" for e in run.get("events", [])):
+            raise FactoryError("gate prove already passed; login-user can no longer change (rewind to prove first)")
+        previous = run.get("login_user")
+        run["login_user"] = args.email
+        event(run, "login_user", user=args.email, previous=previous, phase=run["phase"])
+
+    run = run_update(args.run, mutate)
     _emit(args, {"login_user": args.email},
           f"login user {args.email}; then `factory env login {run['workspace']} <repo> --user {args.email}`")
     return 0
 
 
 def cmd_human(args) -> int:
-    run = run_load(args.run)
-    event(run, "human", note=args.note, phase=run["phase"])
-    run_save(run)
+    run_update(args.run, lambda run: event(run, "human", note=args.note, phase=run["phase"]))
     _emit(args, {"ok": True}, "human intervention recorded")
+    return 0
+
+
+# ---------- claim / log ----------
+
+def cmd_claim(args) -> int:
+    sid = session_id()
+    if not sid:
+        raise FactoryError("no session id in the environment (CLAUDE_CODE_SESSION_ID); claim from a Claude session")
+    out = []
+    for rid in args.runs:
+        def mutate(run: dict, rid=rid) -> None:
+            owner = current_owner(run)
+            if owner and owner["session"] == sid:
+                out.append({"run": rid, "owner": sid, "already": True})
+                return
+            if owner and claim_is_recent(owner) and not args.takeover:
+                raise FactoryError(f"run {rid} is claimed by session {session_short(owner['session'])} "
+                                   f"(since {owner.get('claimed_at')}); use --takeover to take it over")
+            run.setdefault("sessions", []).append({"session": sid, "claimed_at": now(), "pid": os.getpid()})
+            event(run, "claim", session=sid, takeover=bool(args.takeover and owner),
+                  previous=owner["session"] if owner else None)
+            out.append({"run": rid, "owner": sid, "takeover": bool(args.takeover and owner)})
+        run_update(rid, mutate)
+    lines = []
+    for o in out:
+        what = ("already owned by this session" if o.get("already")
+                else f"claimed by {session_short(sid)}" + (" (takeover)" if o.get("takeover") else ""))
+        lines.append(f"{o['run']}: {what}")
+    _emit(args, out, "\n".join(lines))
+    return 0
+
+
+def _local_time(at) -> str:
+    try:
+        d = _dt.datetime.fromisoformat(str(at))
+    except ValueError:
+        return str(at)[:8].ljust(8)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.timezone.utc)
+    return d.astimezone().strftime("%H:%M:%S")
+
+
+def _kv(data: dict) -> str:
+    parts = []
+    for k, v in data.items():
+        if v is None or v == [] or v == "":
+            continue
+        text = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)
+        parts.append(f"{k}={text if len(text) <= 80 else text[:77] + '...'}")
+    return " ".join(parts)
+
+
+def event_summary(e: dict) -> str:
+    kind, d = e.get("kind"), e.get("data") or {}
+    if kind == "gate_pass":
+        return f"gate {d.get('phase') or d.get('gate')} passed"
+    if kind == "gate_fail":
+        reasons = d.get("reasons") or []
+        more = f" (+{len(reasons) - 1} more)" if len(reasons) > 1 else ""
+        return f"gate {d.get('phase') or d.get('gate')} failed: {reasons[0] if reasons else '?'}{more}"
+    if kind == "evidence":
+        return f"{d.get('check')} {d.get('status')}"
+    if kind == "review":
+        return f"{d.get('review_kind')} review round {d.get('round')}: {d.get('verdict')} ({d.get('findings')} findings)"
+    if kind == "human":
+        return f"human intervention: {d.get('note')}"
+    if kind == "block":
+        return f"blocker #{d.get('n')} [{d.get('blocker_kind')}] {d.get('text')}"
+    if kind == "phase":
+        return f"phase {d.get('from')} -> {d.get('to')}"
+    if kind == "replan":
+        return f"replan from {d.get('from')}: {d.get('reason')}"
+    if kind == "rewind":
+        return f"rewind {d.get('from')} -> {d.get('to')}: {d.get('reason')}"
+    if kind == "claim":
+        return f"claimed by {session_short(d.get('session'))}" + (" (takeover)" if d.get("takeover") else "")
+    return _kv(d)
+
+
+def cmd_log(args) -> int:
+    run = run_load(args.run)
+    events = list(run.get("events") or [])
+    if args.since:
+        try:
+            since = _dt.datetime.fromisoformat(args.since)
+        except ValueError as err:
+            raise FactoryError(f"--since must be an ISO date/time: {err}") from err
+        if since.tzinfo is None:
+            since = since.astimezone()  # naive = local time
+
+        def after(e) -> bool:
+            try:
+                at = _dt.datetime.fromisoformat(str(e.get("at")))
+            except ValueError:
+                return True
+            return (at if at.tzinfo else at.replace(tzinfo=_dt.timezone.utc)) >= since
+        events = [e for e in events if after(e)]
+    if args.tail:
+        events = events[-args.tail:]
+    if getattr(args, "json", False):
+        print(json.dumps(events, indent=2, ensure_ascii=False))
+        return 0
+    for e in events:
+        print(f"{_local_time(e.get('at'))}  {e.get('kind')}  {event_summary(e)}".rstrip())
+    if not events:
+        print("no events")
     return 0
 
 
@@ -511,6 +629,15 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("email")
     p.set_defaults(func=cmd_login_user)
+    p = rs.add_parser("claim", help="record this Claude session as the owner of run(s) (parallel sessions)")
+    p.add_argument("runs", nargs="+", metavar="run")
+    p.add_argument("--takeover", action="store_true", help="take over a run claimed by another recent session")
+    p.set_defaults(func=cmd_claim)
+    p = rs.add_parser("log", help="readable timeline of run events")
+    p.add_argument("run")
+    p.add_argument("--tail", type=int, help="only the last N events")
+    p.add_argument("--since", help="ISO date/time (naive = local)")
+    p.set_defaults(func=cmd_log)
     p = rs.add_parser("replan", help="back to plan to change acs.json/checks/figma/diagnosis (clears the plan lock)")
     p.add_argument("run")
     p.add_argument("reason")

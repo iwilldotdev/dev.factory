@@ -5,12 +5,15 @@ Every command module and collector imports from here; keep this API stable.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
 import os
 import re
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -106,11 +109,25 @@ def read_json(path: Path) -> Any:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """Atomic write: unique tmp name (safe across processes), retried replace (Windows sharing violations)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 7:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 # ---------- workspace ----------
@@ -131,16 +148,163 @@ def repo_conf(workspace: dict, alias: str) -> dict:
 
 # ---------- runs ----------
 
+LOCK_TIMEOUT_S = 10.0
+LOCK_STALE_S = 60.0
+_SAVED_HERE: dict[str, int] = {}  # run id -> revision this process wrote last
+_HELD: set[str] = set()  # run ids whose lock this process already holds (run_update -> run_save)
+
+
+@contextlib.contextmanager
+def _run_lock(run_id: str):
+    """Exclusive per-run lock (`run.json.lock`, O_EXCL). Re-entrant inside one process; stale locks are reclaimed."""
+    if run_id in _HELD:
+        yield
+        return
+    path = run_dir(run_id) / "run.json.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + LOCK_TIMEOUT_S
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, f"{os.getpid()}\n".encode())
+            finally:
+                os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > LOCK_STALE_S:
+                    path.unlink()
+                    continue
+            except OSError:
+                pass
+        except PermissionError:
+            pass  # Windows: lock being deleted by its owner
+        if time.monotonic() > deadline:
+            raise FactoryError(f"run {run_id} is locked by another process ({path}); retry, or delete the lock if stale")
+        time.sleep(0.02)
+    _HELD.add(run_id)
+    try:
+        yield
+    finally:
+        _HELD.discard(run_id)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def run_load(run_id: str) -> dict:
     data = read_json(run_dir(run_id) / "run.json")
     if data.get("schemaVersion") != SCHEMA_VERSION:
         raise FactoryError(f"run {run_id}: schemaVersion must be {SCHEMA_VERSION}")
+    rev = data.get("rev", 0)
+    data["_loaded_rev"] = rev if isinstance(rev, int) else 0  # non-persisted: optimistic concurrency token
     return data
 
 
 def run_save(run: dict) -> None:
-    run["updated"] = now()
-    write_json(run_dir(run["id"]) / "run.json", run)
+    """Locked, optimistic save: refuses to overwrite a run.json that changed on disk since `run_load`."""
+    path = run_dir(run["id"]) / "run.json"
+    with _run_lock(run["id"]):
+        disk_rev = 0
+        if path.is_file():
+            try:
+                disk = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                disk = None
+            if isinstance(disk, dict):
+                disk_rev = disk.get("rev", 0) if isinstance(disk.get("rev", 0), int) else 0
+                if "_loaded_rev" in run and disk_rev != run["_loaded_rev"]:
+                    raise FactoryError(f"run {run['id']} changed on disk by another process since it was loaded; "
+                                       "re-run the command")
+        run["updated"] = now()
+        run["rev"] = disk_rev + 1
+        run["_loaded_rev"] = run["rev"]
+        write_json(path, {k: v for k, v in run.items() if k != "_loaded_rev"})
+        _SAVED_HERE[run["id"]] = run["rev"]
+
+
+def run_resync(run: dict) -> None:
+    """Adopt a write made by this same process through a nested copy (a helper that loaded and saved the run
+    while the caller held its own copy): merge the events it appended and take its revision. Writes by other
+    processes are left alone, so they still surface as a conflict at save time."""
+    path = run_dir(run["id"]) / "run.json"
+    try:
+        disk = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    rev = disk.get("rev", 0)
+    if rev == run.get("_loaded_rev") or _SAVED_HERE.get(run["id"]) != rev:
+        return
+    mine = run.setdefault("events", [])
+    mine.extend(e for e in disk.get("events") or [] if e not in mine)
+    run["_loaded_rev"] = rev
+
+
+def run_update(run_id: str, fn) -> dict:
+    """Load under the lock, `fn(run)`, save, return the run: no conflict with other processes is possible."""
+    with _run_lock(run_id):
+        run = run_load(run_id)
+        fn(run)
+        run_save(run)
+        return run
+
+
+# ---------- sessions ----------
+
+# Best-effort hint of which Claude session/agent ran a command (whatever the host exports; omitted if none).
+SESSION_HINT_VARS = ("CLAUDE_AGENT_ID", "CLAUDE_CODE_AGENT_ID", "CLAUDE_SUBAGENT_ID", "CLAUDE_SESSION_ID",
+                     "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT")
+# Ownership uses only session ids (not agent ids: subagents of one session share its runs).
+SESSION_ID_VARS = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
+CLAIM_FRESH_S = 12 * 3600
+
+
+def session_hint() -> dict:
+    return {k: os.environ[k] for k in SESSION_HINT_VARS if os.environ.get(k)}
+
+
+def session_id() -> str | None:
+    for k in SESSION_ID_VARS:
+        if os.environ.get(k):
+            return os.environ[k]
+    return None
+
+
+def session_short(sid: str | None) -> str:
+    return (sid or "")[:8]
+
+
+def claims(run: dict) -> list[dict]:
+    """Claim records in run["sessions"] (that list may also hold plain transcript ids/paths for metrics)."""
+    return [s for s in run.get("sessions") or [] if isinstance(s, dict) and s.get("session")]
+
+
+def current_owner(run: dict) -> dict | None:
+    c = claims(run)
+    return c[-1] if c else None
+
+
+def claim_is_recent(claim: dict) -> bool:
+    try:
+        at = _dt.datetime.fromisoformat(str(claim.get("claimed_at")))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=_dt.timezone.utc)
+    return (_dt.datetime.now(_dt.timezone.utc) - at).total_seconds() < CLAIM_FRESH_S
+
+
+def ensure_owner(run: dict) -> None:
+    """Refuse when another session with a recent claim owns the run. No-op without a session id or a claim."""
+    sid = session_id()
+    owner = current_owner(run)
+    if not sid or not owner or owner["session"] == sid or not claim_is_recent(owner):
+        return
+    raise FactoryError(f"run {run['id']} is claimed by session {session_short(owner['session'])} "
+                       f"(since {owner.get('claimed_at')}); this is session {session_short(sid)}. "
+                       f"Take it over with `factory run claim {run['id']} --takeover` if that is intended")
 
 
 def event(run: dict, kind: str, **data: Any) -> None:

@@ -13,7 +13,7 @@ An epic is a **parent run** (`<ws>-<epic-key>`, `kind: epic`) that coordinates *
 
 ## Build in waves
 
-- `factory epic status <parent>` lists the **ready** children: every dependency in phase ship or done. Run all ready children of the wave **in parallel**. Each child gets fresh workers (builder → prove → two fresh auditors). Keep one writer per file set: two children touching the same files in the same repo run one after the other, never concurrently.
+- `factory epic status <parent>` lists the **ready** children: every dependency in phase ship or done. Run all ready children of the wave **in parallel**: one linked session per ticket when `orchestration.sessions` is on (sessions.md), otherwise in this session where each child gets fresh workers (builder → prove → two fresh auditors). Keep one writer per file set: two children touching the same files in the same repo run one after the other, never concurrently.
 - Each child goes build → prove → review with its own gates and loop caps, exactly as a single ticket does.
 - **A blocked child does not stop independent ones.** Record its blocker (`factory run block <child> …`), keep the other ready children moving, and batch the questions of all blocked children into one message when no unblocked work is left or at a natural pause.
 - After each child passes review, re-run `factory epic status <parent>`. Newly ready children form the next wave.
@@ -30,5 +30,5 @@ An epic is a **parent run** (`<ws>-<epic-key>`, `kind: epic`) that coordinates *
 ## Feedback and finish
 
 - Feedback runs per child (feedback.md). A child sent back to build does not reopen the others unless they depend on it **and** its fix changes their base branch. In that case, rebase the dependents through a builder, `factory run rewind <child> prove "rebased"`, and re-prove them.
-- Progress to the user is the `factory epic status <parent>` matrix, condensed to a few lines (children per phase, blocked children and why, MRs shipped). Do not narrate per worker.
+- Progress follows the Progress rule in SKILL.md: task list per phase, one chat line per phase or worker, 1–2 line worker summaries, long commands in the background with an ETA. At each wave or session note, show the `factory batch status <parent>` matrix condensed to a few lines (children per phase, blocked children and why, lease holder, MRs shipped).
 - Finish: `factory metrics <parent>` (and per child when asked), plus a short epic report.

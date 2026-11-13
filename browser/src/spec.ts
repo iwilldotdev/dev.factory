@@ -31,7 +31,10 @@ export function summariseReport(report: { suites?: Suite[] }): Summary {
   };
 }
 
-export async function runSpec(o: { spec: string; baseUrl: string; storageState?: string; outDir: string }): Promise<Summary> {
+export const SCREENSHOT_MODES = ["only-on-failure", "on", "off"];
+export type ScreenshotMode = "only-on-failure" | "on" | "off";
+
+export async function runSpec(o: { spec: string; baseUrl: string; storageState?: string; outDir: string; screenshot?: ScreenshotMode }): Promise<Summary> {
   await mkdir(o.outDir, { recursive: true });
   const spec = path.resolve(o.spec);
   const outDir = path.resolve(o.outDir);
@@ -48,7 +51,7 @@ export async function runSpec(o: { spec: string; baseUrl: string; storageState?:
     baseURL: ${JSON.stringify(o.baseUrl)},
     ${o.storageState ? `storageState: ${JSON.stringify(path.resolve(o.storageState))},` : ""}
     trace: "off",
-    screenshot: "only-on-failure",
+    screenshot: ${JSON.stringify(o.screenshot ?? "only-on-failure")},
   },
 };
 `;

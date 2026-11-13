@@ -185,6 +185,8 @@ def check_workspace(ws: dict) -> list[str]:
             missing.append(f"{alias}: path is not a git repository: {path}")
         if not repo.get("quality"):
             missing.append(f"{alias}: quality commands are missing")
+        if "ui" in repo and not isinstance(repo["ui"], bool):
+            missing.append(f"{alias}: ui must be true or false (UI repo: visual-evidence question)")
         env = repo.get("env") or {}
         if not env:
             missing.append(f"{alias}: env block is missing")

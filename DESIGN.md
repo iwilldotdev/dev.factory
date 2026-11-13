@@ -172,7 +172,8 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
     {"id": "CHK-4", "type": "style", "repo": "React", "node": "3544:5710", "path": "/obras/1/tarefas", "map": "checks/style/drawer.json", "wait_for": "[data-testid=drawer]"},
     {"id": "CHK-5", "type": "api", "repo": "API", "method": "POST", "path": "/v2/campos", "body": {}, "expect": {"status": 201, "json": {"$.id": "exists"}}},
     {"id": "CHK-6", "type": "red-green", "repo": "API", "cmd": "dotnet test --filter X", "fix_commit": "<sha or HEAD>"},
-    {"id": "CHK-7", "type": "human", "text": "Native screen picker cannot be automated", "reason": "…"}
+    {"id": "CHK-7", "type": "human", "text": "Native screen picker cannot be automated", "reason": "…"},
+    {"id": "CHK-8", "type": "screenshot", "repo": "React", "title": "Tarefas drawer", "spec": "checks/shots/drawer.spec.ts"}
   ]
 }
 ```
@@ -246,6 +247,7 @@ QA review must state, for every AC, whether its checks actually exercise the AC 
 | `run start … --hotfix` / `run mirror <run> <repo> --to <target>` | `commands/run.py` | hotfix run and cherry-pick mirror worktree (§9) |
 | `run branch <run> <repo> --base <ref> --for-target <target> [--name …]` | `commands/run.py` | for a repo already branched: create a second branch (default `<branch>-<target>`) from `<ref>` and record it in `repos[alias].branches[target]`; `ship plan` uses it as that target's MR source |
 | `run decide <run> "<text>" [--by user --user-said "<gist>"]` / `run block <run> <kind> "<text>"` / `run unblock <run> <n>` | `commands/run.py` | append decision/blocker; `--by user` only for a decision the user stated in chat, and it requires `--user-said` (the gist of that message) |
+| `run decide <run> "<text>" --by user --user-said "<gist>" --visual yes\|no` | `commands/run.py` | the user's answer to the visual-evidence question (§12), stored as `visual` on the decision; `--visual` needs `--by user` |
 | `run login-user <run> EMAIL` | `commands/run.py` | set run.json `login_user` (event `login_user`); refused once `gate prove` has passed |
 | `run human <run> "<note>"` | `commands/run.py` | record a human intervention (orchestrator calls it for every user message that steers the run) |
 | `run replan <run> "<reason>" [--decision <n>]` | `commands/run.py` | back to plan to change acs.json/checks/figma/diagnosis: clears the plan lock, `replan` event, `loops.replan += 1`; without a user decision counts against `autonomy.max_replans` (default 2) and blocks past it (§2.6) |
@@ -292,6 +294,7 @@ Phase exit criteria (`gate`):
 | `api` | env must be up; urllib request to `base_url + path`; status + simple JSONPath (`$.a.b`, `exists`/literal) |
 | `browser` | `node browser/dist/cli.js run-spec --spec … --base-url … --storage-state … --out …` (Playwright test runner, JSON reporter) |
 | `visual` | `node browser/dist/cli.js capture …` then `compare --figma figma/<node>.png …` (pixelmatch; copy check; masks) |
+| `screenshot` | `path`: `capture` only (no compare); `spec`: `run-spec … --screenshot on`, every PNG under `artifacts/` is an artifact. Pass = images captured (and, at HEAD, the steps passed). Visual evidence the user asked for (§12), never an assertion |
 | `style` | `node browser/dist/cli.js style-probe --url … --map … --out …`: getComputedStyle + bounding box per selector vs expected values with tolerance (px ±1 default, colors exact after normalisation) |
 
 The Python wrappers for `browser|visual|style` live in `factory/collectors/` and shell out to Node; they never decide pass/fail themselves beyond reading the Node result file.
@@ -404,3 +407,18 @@ Batches (epics, review batches) can run each ticket in its **own visible host se
   - `metrics` attributes child-session transcripts (marker `factory-run: <child>`) to the parent too.
 - **Exploration is not proof.** In the UI phase a child may drive the host's built-in browser against the local env and the Figma frames, to find gaps and write Playwright specs with real selectors. Only collectors write evidence; nothing seen in that browser is a PASS.
 
+## 12. Visual evidence on request
+
+Screenshots of a change are something the user may want to see, and the factory used to take them only when asked at ship (outside `prove`, with no before image). Now the user is asked once, and a yes is enforced by gates.
+
+- **UI run.** A ticket run touches UI when a touched repo is a UI repo (workspace repo `ui: true`; when `ui` is unset, a repo whose `env` has a browser `login` block), an AC is `kind: ui`, or `acs.json` has `browser`/`visual`/`style`/`screenshot` checks. `ui: false` opts a repo out. Review, epic-parent and batch runs are not asked.
+- **The question.** For a UI run, `gate plan` fails until a user decision carries `visual: yes|no`: `factory run decide <run> "<answer>" --by user --user-said "<gist>" --visual yes|no`. The latest such decision wins. The skill asks in the single question round: for a bug, before/after screenshots of the fix (merge-base vs fixed HEAD, same steps); for a feature, screenshots of the implemented screens. The default is yes.
+- **`screenshot` check** (author-written): `{"id", "type": "screenshot", "repo", "title"?, "path" | "spec", "viewport"?, "wait_for"?, "selector"?, "settle_ms"?}`. It has exactly one of `path` (one capture of the page) or `spec` (a Playwright spec with the steps that reach the state, run with `--screenshot on`: each test ends with a screenshot, and `page.screenshot({path: testInfo.outputPath(...)})` adds named ones). It is a runtime check: it needs the repo env and env binding like `browser`. It must be referenced by an AC like every check. It is documentation, not an assertion: it never counts as a reproduction or as a `bug`/`ui` AC's proof, and `--repro` never treats it as a REPRO check.
+- **With `visual: yes`:**
+  - `gate plan` needs ≥1 `screenshot` check per touched UI repo (≥1 overall when the run has no UI repo).
+  - Feature runs: the after image is the check's normal evidence at HEAD, so the prove gate requires it like any check.
+  - Bug runs: `factory prove <run> --repro --assume-env` also runs every `screenshot` check against the env serving the clean run worktree at the merge-base. Like runtime repro checks, it runs before any fix commit, and the same env-binding rule applies. It writes `evidence/BEFORE-<id>.json` (`kind: before`, `git_sha` = merge-base; `pass` = images captured, and a failed step on the unfixed base is tolerated). `gate reproduce` and `gate prove` require a `BEFORE-<id>` with status `pass`, a matching digest event, and `git_sha` equal to the current merge-base. Hotfix runs capture it on the base target only.
+  - A yes recorded after the plan lock, with no screenshot checks yet, fails `gate prove` with the replan command (`run replan … --decision <n>`).
+  - Because `proof_errors` re-runs the prove criteria, the review gate, `ship plan`, `ship verify` and `gate ship` re-check all of this.
+- **Ship.** `ship-plan.json` carries `visual_evidence: [{check, repo, acs, screen, before[], after[], before_sha, after_sha, files[]}]`: run-relative artifacts plus absolute `files` for the briefing. The epic ship plan concatenates the children's, with `child`. Each MR description gets a `## Visual evidence` table (check, ACs, screen, before and after file names). At Gate S the orchestrator sends the `files` to the user next to the briefing. dev.mcp has no GitLab upload tool, so the images are not attached to the MR: the table names them, and the files stay in the run's `evidence/`.
+- **With `visual: no`:** nothing changes. Browser/visual/style evidence is still required as before.

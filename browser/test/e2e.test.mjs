@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -111,6 +111,25 @@ test("run-spec", async (t) => {
   p = await run("run-spec", "--spec", empty, "--base-url", base, "--out", out3);
   assert.equal(p.status, 1);
   assert.equal((await result(out3)).status, "error");
+});
+
+test("run-spec --screenshot on keeps an end-of-test screenshot of a passing spec", async (t) => {
+  if (skipReason) return t.skip(skipReason);
+  const dir = await tmp();
+  const spec = path.join(dir, "shot.spec.ts");
+  await writeFile(spec, `import { test, expect } from "@playwright/test";\ntest("shows", async ({ page }) => { await page.goto("/"); await expect(page.locator("#m")).toHaveText("Pay now"); });\n`);
+  const out = path.join(dir, "out");
+  let p = await run("run-spec", "--spec", spec, "--base-url", base, "--out", out, "--screenshot", "on");
+  assert.equal(p.status, 0, p.stdout + p.stderr);
+  const files = await readdir(path.join(out, "artifacts"), { recursive: true });
+  assert.ok(files.some((f) => String(f).endsWith(".png")), files.join(","));
+  const off = path.join(dir, "off");
+  p = await run("run-spec", "--spec", spec, "--base-url", base, "--out", off);
+  assert.equal(p.status, 0, p.stdout + p.stderr);
+  const none = await readdir(path.join(off, "artifacts"), { recursive: true }).catch(() => []);
+  assert.ok(!none.some((f) => String(f).endsWith(".png")), none.join(","));
+  p = await run("run-spec", "--spec", spec, "--base-url", base, "--out", path.join(dir, "bad"), "--screenshot", "always");
+  assert.equal(p.status, 1);
 });
 
 test("login saves storage state without leaking credentials", async (t) => {

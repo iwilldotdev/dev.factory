@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .. import shots
 from ..core import (
     FactoryError,
     GateFailed,
@@ -205,6 +206,7 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
             lines.append(f"- {h['id']}: {h.get('text', '')}" + (f" ({h['reason']})" if h.get("reason") else ""))
     else:
         lines.append("None.")
+    lines += shots.description_lines(run, alias, target if run.get("hotfix") else None)
     lines += ["", "## Baseline", "", _baseline_summary(run["id"], alias)]
     if cross:
         lines += ["", "## Hotfix mirror", ""] + cross
@@ -313,7 +315,8 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
         actions.append({"type": "jira_transition", "issues": keys, "name": transition,
                         "needs_user": _needs_user(mode, "jira_transition")})
 
-    plan = {"schemaVersion": 1, "run": run_id, "autonomy": mode, "mrs": mrs, "jira_comment": jira, "actions": actions}
+    plan = {"schemaVersion": 1, "run": run_id, "autonomy": mode, "mrs": mrs, "jira_comment": jira, "actions": actions,
+            "visual_evidence": shots.gallery(run_id, run)}
     write_json(run_dir(run_id) / "ship-plan.json", plan)
     return plan
 
@@ -389,6 +392,10 @@ def _cmd_plan(args) -> int:
     for i, a in enumerate(plan["actions"], 1):
         who = "ASK" if a["needs_user"] else "auto"
         print(f"{i}. [{who}] {a['type']} {a.get('repo', '')} {a.get('target', '')}".rstrip())
+    for item in plan["visual_evidence"]:  # Gate S briefing shows these images (DESIGN section 12)
+        print(f"visual {item['check']} {item['repo']}: before {len(item['before'])}, after {len(item['after'])}")
+        for f in item["files"]:
+            print(f"  {f}")
     return 0
 
 

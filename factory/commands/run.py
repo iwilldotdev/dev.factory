@@ -325,11 +325,16 @@ def cmd_decide(args) -> int:
     if args.by == "user" and not said:
         raise FactoryError("--by user needs --user-said \"<gist of the user's chat message>\": record only decisions "
                            "the user actually stated")
+    visual = getattr(args, "visual", None)
+    if visual and args.by != "user":
+        raise FactoryError("--visual records the user's answer to the visual-evidence question: needs --by user")
 
     def mutate(run: dict) -> None:
         rec = {"at": now(), "phase": run["phase"], "text": args.text, "by": args.by}
         if said:
             rec["user_said"] = said
+        if visual:
+            rec["visual"] = visual
         run["decisions"].append(rec)
 
     run = run_update(args.run, mutate)
@@ -677,6 +682,8 @@ def register(sub) -> None:
     p.add_argument("--by", choices=["agent", "user"], default="agent",
                    help="user: only for a decision the user actually stated in chat (needs --user-said)")
     p.add_argument("--user-said", help="gist of the user's chat message behind a --by user decision")
+    p.add_argument("--visual", choices=["yes", "no"],
+                   help="the user's answer to the visual-evidence question (screenshot checks; DESIGN section 12)")
     p.set_defaults(func=cmd_decide)
     p = rs.add_parser("block")
     p.add_argument("run")

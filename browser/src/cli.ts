@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 import { captureSurface } from "./capture.js";
 import { comparePng, type Mask } from "./compare.js";
 import { compareStyles, type Expect } from "./probe.js";
-import { runSpec } from "./spec.js";
+import { runSpec, SCREENSHOT_MODES, type ScreenshotMode } from "./spec.js";
 
 type Status = "pass" | "fail" | "error";
 type Result = { status: Status; summary: string; artifacts: string[]; details: Record<string, unknown> };
@@ -33,7 +33,9 @@ async function main(): Promise<void> {
     case "style-probe":
       return finish(out, await doProbe(out));
     case "run-spec": {
-      const r = await runSpec({ spec: required("--spec"), baseUrl: required("--base-url"), storageState: optional("--storage-state"), outDir: out });
+      const shot = optional("--screenshot") ?? "only-on-failure";
+      if (!SCREENSHOT_MODES.includes(shot)) throw new Error(`--screenshot must be one of ${SCREENSHOT_MODES.join("|")}`);
+      const r = await runSpec({ spec: required("--spec"), baseUrl: required("--base-url"), storageState: optional("--storage-state"), outDir: out, screenshot: shot as ScreenshotMode });
       const arts = ["report.json", "run.log"];
       return finish(out, { ...r, artifacts: arts });
     }

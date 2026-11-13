@@ -99,6 +99,7 @@ class PlanGateTests(FactoryCase):
         self.write_style_map(self.NODE, {"fontSize": 12, "color": "#333333", "fontWeight": 600})
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}],
                        self.ui_checks())
+        cli("run", "decide", self.run_id, "no screenshots", "--by", "user", "--user-said", "no", "--visual", "no")
         rc, out = self.plan()
         self.assertEqual(rc, 0, out)
         self.assertEqual(core.run_load(self.run_id)["phase"], "build")
@@ -152,6 +153,7 @@ class PlanGateTests(FactoryCase):
                                          "borderColor": "rgb(255, 0, 0)"})
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}],
                        self.ui_checks())
+        cli("run", "decide", self.run_id, "no screenshots", "--by", "user", "--user-said", "no", "--visual", "no")
         rc, out = self.plan()
         self.assertEqual(rc, 0, out)
 

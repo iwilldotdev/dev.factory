@@ -304,7 +304,8 @@ def build_epic_plan(parent_id: str, allow_behind: bool = False) -> dict:
                         "needs_user": ship._needs_user(mode, "jira_transition")})
 
     plan = {"schemaVersion": 1, "epic": parent_id, "run": parent_id, "autonomy": mode, "waves": parent["waves"],
-            "children": list(plans), "mrs": mrs, "jira_comment": jira, "actions": actions}
+            "children": list(plans), "mrs": mrs, "jira_comment": jira, "actions": actions,
+            "visual_evidence": [dict(v, child=cid) for cid, p in plans.items() for v in p.get("visual_evidence") or []]}
     write_json(run_dir(parent_id) / "ship-plan.json", plan)
     return plan
 

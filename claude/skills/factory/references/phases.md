@@ -18,14 +18,15 @@
 - [ ] Author writes `R/acs.json` + `R/checks/**`: every AC ≥1 check that can fail; UI → `visual` + `style` (maps from `factory figma expect`); bug → `red-green`; api → `api`; `human` only with a reason.
 - [ ] Figma pack complete: `factory figma check <run>`.
 - [ ] `factory baseline <run>` (quality failures on merge-base, computed once).
-- [ ] **Question round (one message):** env gaps from the gate/env check, credential keys to add to `secrets/<ws>.env` (names only), targets (which branches), product unknowns, and anything blocked at intake. Number the questions; give a default for each so the user can answer "defaults ok".
-- [ ] After answers: `factory run human`, `factory run unblock`, `factory run decide … --by user --user-said "<gist>"` (only what the user stated in chat).
+- [ ] **Question round (one message):** env gaps from the gate/env check, credential keys to add to `secrets/<ws>.env` (names only), targets (which branches), product unknowns, and anything blocked at intake. When the run touches UI (the plan gate says so): the visual evidence question (bug: before/after screenshots of the fix; feature: screenshots of the implemented screens; default yes). Number the questions; give a default for each so the user can answer "defaults ok".
+- [ ] After answers: `factory run human`, `factory run unblock`, `factory run decide … --by user --user-said "<gist>"` (only what the user stated in chat). Visual evidence answer: add `--visual yes|no`.
+- [ ] Visual yes: author adds one `screenshot` check per touched UI repo (`path` + `wait_for`, or `spec` = Playwright steps that end on the changed state; `title` names the screen), referenced by the AC it illustrates.
 - [ ] `factory gate <run> plan`. It locks `acs.json`, `checks/**`, `figma/**` (and `diagnosis.md` if present): later gates, `ship plan` and `ship verify` refuse any change. `workspace.json` is locked too. To change them later: `factory run replan <run> "<reason>" [--decision <n>]` (without a user decision it counts against `autonomy.max_replans`), edit, pass `gate plan` again, then prove and review again.
 
 ## reproduce (bug runs only)
 
 - [ ] Repro checks were written in plan (test/api/browser, runnable on the base; `test` checks with `expect_fail_pattern` = the failing test name or assertion), plus a `red-green` check (`cmd` or `of: CHK-n` of a test check; optional for UI bugs on the runtime path). Author writes `R/diagnosis.md` now with non-empty `## Root cause`, `## Evidence`, `## Ruled out` (the only plan file that may change in reproduce).
-- [ ] `factory prove <run> --repro` (api/browser: `factory env up <ws> <repo> --run <run>` on the unmodified worktree, add `--assume-env`). Every check must print REPRODUCED. NOT-REPRODUCED or ERROR ("could not reproduce: setup failure" = it failed for another reason) means the check, its setup (`quality.setup`) or the diagnosis is wrong: `factory run replan`, author fixes the check, `gate plan`, repro again. No builder.
+- [ ] `factory prove <run> --repro` (api/browser/screenshot: `factory env up <ws> <repo> --run <run>` on the unmodified worktree, add `--assume-env`). Every check must print REPRODUCED; `BEFORE-<check>` screenshots print PASS (the unfixed screen, kept for the MR). NOT-REPRODUCED or ERROR ("could not reproduce: setup failure" = it failed for another reason) means the check, its setup (`quality.setup`) or the diagnosis is wrong: `factory run replan`, author fixes the check, `gate plan`, repro again. No builder.
 - [ ] `factory gate <run> reproduce` (also lists the consolidated env gaps for runtime repro checks).
 
 ## build

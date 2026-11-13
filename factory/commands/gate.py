@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from .. import integrity
+from .. import integrity, shots
 from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
@@ -21,7 +21,7 @@ DIAGNOSIS_SECTIONS = ("Root cause", "Evidence", "Ruled out")
 REVIEW_PHASES = ["intake", "plan", "prove", "review", "report", "done"]  # kind review: no build, no ship
 BATCH_PHASES = ["intake", "report", "done"]  # kind review-batch parent
 RUNTIME_TYPES = {"browser", "visual", "style", "api"}
-CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human"}
+CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human", shots.SHOT_TYPE}
 AC_KINDS = {"ui", "api", "logic", "data", "bug"}
 LOCAL_REPRO_TYPES = {"test"}  # reproducible in a temp worktree; the only types required on mirror targets
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -66,7 +66,7 @@ def repro_checks(run_id: str) -> list[dict]:
             continue
         for cid in ac.get("checks") or []:
             chk = by_id.get(cid)
-            if chk and chk.get("type") not in ("red-green", "human"):
+            if chk and chk.get("type") not in ("red-green", "human", shots.SHOT_TYPE):
                 out[cid] = chk
     return list(out.values())
 
@@ -538,7 +538,7 @@ def _intake(run_id, run, ws) -> list[str]:
 def env_errors(ws: dict, checks: list[dict]) -> list[str]:
     """Consolidated env gaps for runtime checks (shared by plan and reproduce)."""
     errors = []
-    runtime = sorted({c["repo"] for c in checks if c.get("type") in RUNTIME_TYPES and c.get("repo")})
+    runtime = sorted({c["repo"] for c in checks if c.get("type") in RUNTIME_TYPES | {shots.SHOT_TYPE} and c.get("repo")})
     for alias in runtime:
         env = (repo_conf(ws, alias).get("env") if any(r.get("alias") == alias for r in ws.get("repos", [])) else None)
         if not env:
@@ -566,6 +566,7 @@ def _plan(run_id, run, ws) -> list[str]:
         elif not Path(rec.get("worktree", "")).is_dir():
             errors.append(f"{alias}: worktree missing on disk: {rec.get('worktree')}")
     errors.extend(env_errors(ws, checks))
+    errors.extend(shots.plan_errors(run_id, run, ws))
     return list(dict.fromkeys(errors))
 
 
@@ -582,7 +583,7 @@ def _reproduce(run_id, run, ws) -> list[str]:
     for ac in bug_acs:
         aid = ac.get("id", "?")
         cands = [by_id[c] for c in ac.get("checks") or []
-                 if c in by_id and by_id[c].get("type") not in ("red-green", "human")]
+                 if c in by_id and by_id[c].get("type") not in ("red-green", "human", shots.SHOT_TYPE)]
         if not cands:
             errors.append(f"{aid}: bug AC has no reproducible check (test/browser/api/...) besides red-green")
             continue
@@ -594,6 +595,7 @@ def _reproduce(run_id, run, ws) -> list[str]:
             errors.extend(_repro_target_errors(run_id, run, ws, aid, tcands, target))
     errors.extend(diagnosis_errors(run_id))
     errors.extend(env_errors(ws, repro_checks(run_id)))
+    errors.extend(shots.before_errors(run_id, run, ws))
     errors.extend(integrity.lock_errors(run, ignore=("diagnosis.md",)))
     return list(dict.fromkeys(errors))
 
@@ -741,6 +743,7 @@ def _prove(run_id, run, ws) -> list[str]:
                     continue  # reported once above
                 errors.extend(_evidence_errors(run_id, run, ws, chk, target))
     errors.extend(_bug_runtime_errors(run_id, run, ws))
+    errors.extend(shots.prove_errors(run_id, run, ws))
     for alias in touched_repos(run):
         if repo_conf(ws, alias).get("quality"):
             errors.extend(_evidence_errors(run_id, run, ws, {"id": quality_id(alias), "repo": alias}))

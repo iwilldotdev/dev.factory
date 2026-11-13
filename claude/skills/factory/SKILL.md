@@ -49,7 +49,9 @@ The user follows the run in the app, not at the end.
 
 ## Worker questions
 
-Any worker question, or any assumption that reduces proof, reaches the user in the single question round before `gate plan`. That includes marking a check `human`, downgrading an AC from `ui` to `logic`, skipping `env up`, or skipping the Figma fetch. Never proceed silently. "Inaccessible" (Figma, env, login) is only accepted with the failed attempt recorded: the `factory figma check` / `factory env up` error output in the run (`run block` or `run human`), quoted in the question.
+Any worker question, or any assumption that reduces proof, reaches the user in the single question round before `gate plan`. That includes marking a check `human`, downgrading an AC from `ui` to `logic`, skipping `env up`, or skipping the Figma fetch. Never proceed silently.
+
+**Visual evidence question.** When the run touches UI (a UI repo, a `ui` AC, or browser/visual/style checks), the question round always asks: bug → "Do you want before/after screenshots of the fix (base vs fixed HEAD, same steps)?"; feature → "Do you want screenshots of the implemented screens?". Default yes. Record the answer with `factory run decide <run> "<answer>" --by user --user-said "<gist>" --visual yes|no`. `gate plan` fails until it is recorded. A yes makes the author add a `screenshot` check per UI repo, and the gates then require the images (Rules by work type). "Inaccessible" (Figma, env, login) is only accepted with the failed attempt recorded: the `factory figma check` / `factory env up` error output in the run (`run block` or `run human`), quoted in the question.
 
 ## Phases
 
@@ -72,6 +74,7 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 
 - **UI ACs** need a `visual` check and a `style` check against a packed Figma node. Style expectations come from `factory figma expect`, never from the model. A generic Modal/Drawer or hug/fill stand-in does not close a fixed-size or absolute-position gap.
 - **Bugs** (`--bug`): phase `reproduce` follows plan. Author writes reproduction checks that fail on the base (`test` checks carry `expect_fail_pattern`: a failure without it is a setup error, not a reproduction), a `red-green` check (`cmd` or `of: CHK-n`; `fix_commit` = the commit with the fix), and `diagnosis.md` (`## Root cause`, `## Evidence`, `## Ruled out`). You run `factory prove <run> --repro` (api/browser need `--assume-env`) then `gate reproduce`; no builder before it passes. UI bugs (no unit-testable cause): the author writes a `browser` spec instead of `red-green`; you bring the env up from the clean run worktree before any build and run `prove --repro --assume-env`; `gate prove` then requires that check `reproduced` on base and passing at HEAD. The builder fixes the named cause; the code auditor states whether the fix addresses the root cause. Never patch without a reproduction.
+- **Visual evidence (user said yes):** one `screenshot` check per touched UI repo (`path`, or a Playwright `spec` with the steps to reach the state: hover, click, open). Feature: the after image is its evidence at HEAD. Bug: `prove --repro --assume-env` on the clean base also captures `BEFORE-<check>` with the same steps, before any fix commit; `gate reproduce` and `gate prove` require it. At Gate S, send the before/after images listed in `ship-plan.json` `visual_evidence` to the user (`SendUserFile`) next to the briefing. A screenshot is documentation, not an assertion: it never satisfies a `bug` or `ui` AC.
 - **Small, low-risk tickets** still go through prove and review: the gate is the point. They may skip review round 2.
 - **Runtime checks** (`browser`, `visual`, `style`, `api`) need the repo `env` block. Bring env up at plan time, not at prove time. A missing env goes in the question round as one consolidated list (the plan gate prints it).
 - **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice.
@@ -101,7 +104,7 @@ Stop and ask only when a gate fails for a reason only the user can fix: credenti
 
 ## Ship authority
 
-`ship-plan.json` lists remote actions with `needs_user`. When `needs_user` is true, show the Gate S briefing (MRs with target/draft/title, ACs × evidence, `human` checks, Jira comment and transition) and wait for an explicit yes for those actions. `autonomy.ship: draft-auto` pre-authorises only push plus draft MR create/update. Approving the spec or plan never authorises a push.
+`ship-plan.json` lists remote actions with `needs_user`. When `needs_user` is true, show the Gate S briefing (MRs with target/draft/title, ACs × evidence, `human` checks, before/after images from `visual_evidence`, Jira comment and transition) and wait for an explicit yes for those actions. `autonomy.ship: draft-auto` pre-authorises only push plus draft MR create/update. Approving the spec or plan never authorises a push.
 
 ## Finish
 

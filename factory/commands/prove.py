@@ -15,6 +15,7 @@ from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, evidence_ev
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save, run_targets,
                     target_worktree, workspace_load, write_evidence, write_json)
+from .. import shots
 from . import gate
 
 TSC_RE = re.compile(r"^(?P<p>.+?)\((?P<l>\d+),(?P<c>\d+)\):\s*error\s+(?P<code>[A-Za-z]+\d+):\s*(?P<m>.*?)(?:\s*\[[^\]]*\])?$")
@@ -191,7 +192,7 @@ def collect_one(run: dict, ws: dict, check: dict, target: str | None = None) -> 
     ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path, env=env, out_dir=out_dir)
     started, t0 = now(), time.monotonic()
     bound = None
-    if check.get("type") in gate.RUNTIME_TYPES and alias and repo_path:
+    if check.get("type") in gate.RUNTIME_TYPES | {shots.SHOT_TYPE} and alias and repo_path:
         bound = env_binding(ws, alias, repo_path, git_head(repo_path))
     body = {"status": "error", "summary": bound} if bound else dispatch(check, ctx)
     record = write_evidence(run["id"], check, body, repo_path, started, time.monotonic() - t0)
@@ -306,6 +307,46 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
     return record
 
 
+def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
+    """Screenshot check on the unfixed base (bug runs): evidence/BEFORE-<id>.json, `pass` when images were captured.
+    Same env rule as runtime repro checks: --assume-env, run worktree clean and at the merge-base, env bound to it."""
+    alias = repo_conf(ws, check["repo"])["alias"]
+    wt = repo_path_for_run(run, ws, alias)
+    target = run_targets(run)[0]
+    mb = gate.merge_base_for(run, ws, alias, target)
+    bid = shots.before_id(evidence_id(run, check["id"], target))
+    env = dict(repo_conf(ws, alias).get("env") or {})
+    if not env.get("base_url"):
+        try:
+            from .env import base_url as env_base_url
+            env["base_url"] = env_base_url(ws, alias)
+        except (ImportError, FactoryError):
+            pass
+    started, t0 = now(), time.monotonic()
+    if not assume_env:
+        body = {"status": "error", "summary": "screenshot on base needs the env serving the base: rerun with "
+                "--assume-env once the env is up on the unmodified run worktree"}
+    elif git_head(wt) != mb or git_dirty(wt):
+        body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
+                "(before screenshots show the unfixed code)"}
+    elif (bound := env_binding(ws, alias, wt, mb)):
+        body = {"status": "error", "summary": bound}
+    else:
+        ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
+                  out_dir=run_dir(run["id"]) / "evidence" / bid)
+        body = dispatch(dict(check, id=bid, before=True), ctx)
+    status = body.get("status") if body.get("status") in ("pass", "fail", "error") else "error"
+    record = {
+        "schemaVersion": SCHEMA_VERSION, "check_id": bid, "of": check["id"], "type": check.get("type"), "kind": "before",
+        "status": status, "repo": alias, "git_sha": mb, "merge_base": mb, "dirty": False,
+        "collector": "factory/before screenshot", "started": started, "duration_s": round(time.monotonic() - t0, 2),
+        "summary": body.get("summary", ""), "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
+    }
+    write_json(run_dir(run["id"]) / "evidence" / f"{bid}.json", record)
+    evidence_event(run, record)
+    return record
+
+
 ASSERTION_RE = re.compile(r"expect\(|AssertionError|\bto(?:Be|Equal|Have|Contain|Match)\w*")
 
 
@@ -342,9 +383,11 @@ def cmd_repro(args) -> int:
     if not gate.is_bug_run(run):
         raise FactoryError("--repro is for bug runs (run start --bug KEY)")
     checks = gate.repro_checks(run["id"])
+    shot_checks = shots.shot_checks(shots.acs_of(run["id"]))
     if args.check:
         checks = [c for c in checks if c["id"] == args.check]
-    if not checks:
+        shot_checks = [c for c in shot_checks if c["id"] == args.check]
+    if not checks and not shot_checks:
         raise FactoryError("no reproducible checks (kind: bug ACs need a test/api/browser check)")
     records = []
     hf = hotfix_of(run)
@@ -355,14 +398,18 @@ def cmd_repro(args) -> int:
             if hf and target != hf["base"] and chk.get("type") not in LOCAL_TYPES:
                 continue  # runtime checks are reproduced on the base target only (env serves one worktree)
             records.append(repro_one(run, ws, chk, args.assume_env, target))
+    for chk in shot_checks:  # before images (DESIGN §12): same env, same steps as the after capture at HEAD
+        if not chk.get("repo"):
+            raise FactoryError(f"{chk['id']}: repo is required")
+        records.append(before_one(run, ws, chk, args.assume_env))
     run_save(run)
-    bad = [r for r in records if r["status"] != "reproduced"]
+    bad = [r for r in records if r["status"] != ("pass" if r.get("kind") == "before" else "reproduced")]
     if getattr(args, "json", False):
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha")} for r in records], indent=2))
     else:
         for r in records:
             print(f"{r['status'].upper():14} {r['check_id']}  {r['summary']}")
-        print(f"{len(records) - len(bad)}/{len(records)} reproduced")
+        print(f"{len(records) - len(bad)}/{len(records)} " + ("ok (REPRO reproduced, BEFORE captured)" if shot_checks else "reproduced"))
     return 1 if bad else 0
 
 

@@ -20,3 +20,5 @@ Never un-draft, merge, or close an MR without an explicit user request for that 
 ## Hotfix runs
 
 `ship plan` orders MRs base target first (homolog), then mirrors (pack). Descriptions end with `Mirrored to {mr_url:<repo>:<mirror>}` (base MR) and `Mirror of {mr_url:<repo>:<base>}` (mirror MR): after creating both MRs, replace the placeholders with `!N`/URLs in the descriptions (update the first MR once the second exists). Post one Jira comment listing both MRs. Push and create the base MR first.
+
+A repo may map a logical target to another branch (`target_branches` in its workspace entry, e.g. `{"pack": "dev"}` in the API while React keeps `pack`). The plan keeps the logical target for ordering and names, but each MR's `target_branch` is the repo's mapped branch (read it from `ship-plan.json`, never assume the target name), and `ship verify` compares the readback against it. `run mirror` for that repo branches from the mapped branch.

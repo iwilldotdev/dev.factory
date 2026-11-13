@@ -15,7 +15,7 @@ from pathlib import Path
 from ..collectors.test import prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home,
-                    git, git_dirty, git_head, now, repo_conf, run_dir, run_load,
+                    git, git_dirty, git_head, now, repo_conf, run_dir, target_branch, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
 from .. import integrity
 from . import gate
@@ -168,7 +168,7 @@ def cmd_list(args) -> int:
 
 # ---------- branch ----------
 
-def _for_target(args, run: dict, conf: dict, main: Path) -> int:
+def _for_target(args, run: dict, ws: dict, conf: dict, main: Path) -> int:
     """Record a per-target source branch (branches[target]) created from --base in the main repo."""
     alias = conf["alias"]
     rec = run["repos"].get(alias)
@@ -176,7 +176,7 @@ def _for_target(args, run: dict, conf: dict, main: Path) -> int:
         raise FactoryError(f"repo {alias} has no branch in run {run['id']}; create the main branch first")
     target = args.for_target
     name = args.name or f"{rec['branch']}-{target}"
-    base = gate.resolve_base(main, args.base)
+    base = gate.resolve_base(main, target_branch(ws, alias, args.base))
     if not git(main, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False):
         raise FactoryError(f"base ref {base} not found in {main}")
     if git(main, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}", check=False):
@@ -202,7 +202,7 @@ def cmd_branch(args) -> int:
     if not args.base:
         raise FactoryError("--base is required (or --mr <iid> for a review run)")
     if args.for_target:
-        return _for_target(args, run, conf, main)
+        return _for_target(args, run, ws, conf, main)
     if alias in run["repos"]:
         raise FactoryError(f"repo {alias} already has a branch in run {run['id']}")
     root = ws.get("worktree_root")
@@ -221,7 +221,7 @@ def cmd_branch(args) -> int:
         base_branch = parent_rec["branch"]
         base = base_branch
     else:
-        base = gate.resolve_base(main, args.base)
+        base = gate.resolve_base(main, target_branch(ws, alias, args.base))
     if not git(main, "rev-parse", "--verify", "--quiet", base + "^{commit}", check=False):
         raise FactoryError(f"base ref {base} not found in {main}")
     worktree.parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +274,7 @@ def cmd_mirror(args) -> int:
     if git_dirty(base_wt):
         raise GateFailed([f"{alias}: {hf['base']} worktree has uncommitted changes; commit before mirroring"])
     main = Path(conf.get("path") or "")
-    base_ref = gate.resolve_base(base_wt, rec.get("base", hf["base"]))
+    base_ref = gate.resolve_base(base_wt, target_branch(ws, alias, rec.get("base", hf["base"])))
     mb = git(base_wt, "merge-base", "HEAD", base_ref)
     shas = git(base_wt, "rev-list", "--reverse", f"{mb}..{rec['branch']}").split()
     if not shas:
@@ -284,7 +284,7 @@ def cmd_mirror(args) -> int:
     if worktree.exists():
         raise FactoryError(f"worktree path already exists: {worktree}")
     name = args.name or branch_name(run, ws, alias, target, mirror=True)
-    start = gate.resolve_base(main, target)
+    start = gate.resolve_base(main, target_branch(ws, alias, target))
     if not git(main, "rev-parse", "--verify", "--quiet", start + "^{commit}", check=False):
         raise FactoryError(f"base ref {start} not found in {main}")
     worktree.parent.mkdir(parents=True, exist_ok=True)

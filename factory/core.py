@@ -331,6 +331,23 @@ def run_targets(run: dict) -> list[str | None]:
     return [hf["base"], *(hf.get("mirror") or [])] if hf else [None]
 
 
+def target_branch(workspace: dict, alias: str, target: str | None) -> str | None:
+    """Git branch behind a logical target for one repo (`target_branches` in the repo entry); the target itself when unmapped."""
+    if not target:
+        return target
+    try:
+        mapped = (repo_conf(workspace, alias).get("target_branches") or {}).get(target)
+    except FactoryError:
+        return target
+    return mapped if isinstance(mapped, str) and mapped else target
+
+
+def run_base_branch(run: dict, workspace: dict, alias: str) -> str:
+    """Git branch the run's repo was branched from. `base` holds a logical target, except in review runs (a real MR branch)."""
+    base = (run.get("repos") or {}).get(alias, {}).get("base", "main")
+    return base if run.get("kind", "ticket") == "review" else target_branch(workspace, alias, base)
+
+
 def evidence_id(run: dict, check_id: str, target: str | None) -> str:
     """`CHK-1@homolog` for hotfix runs, plain `CHK-1` otherwise."""
     return f"{check_id}@{target}" if target and hotfix_of(run) else check_id

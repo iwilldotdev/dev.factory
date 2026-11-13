@@ -185,5 +185,161 @@ class ShipPlan(HotfixCase):
         self.assertEqual(len(plan["jira_comment"]["adf"]["content"]), 2)
 
 
+API_CHECK = "import os, sys\nif not os.path.exists('api.txt'):\n    print('ASSERT api.txt')\n    sys.exit(1)\n"
+
+
+class TargetBranchesBase(HotfixCase):
+    """API's `pack` target lives on branch `dev`; React keeps `pack` (per-repo target_branches)."""
+
+    repos = ("API", "React")
+
+    def setUp(self) -> None:
+        super().setUp()
+        api = self.repo_dirs["API"]
+        commit_file(api, "check_api.py", API_CHECK, "[Area] - api check")
+        sh("git", "update-ref", "refs/remotes/origin/main", "main", cwd=api)
+        sh("git", "branch", "homolog", cwd=api)
+        sh("git", "checkout", "-q", "-b", "dev", cwd=api)
+        commit_file(api, "dev.txt", "dev\n", "[Area] - dev only")
+        sh("git", "checkout", "-q", "main", cwd=api)
+        for t in ("homolog", "dev"):
+            sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=api)
+        self.ws["repos"][0]["target_branches"] = {"pack": "dev"}
+        self.save_ws()
+
+    def start(self):
+        super().start()
+        self.ok("run", "branch", self.rid, "API", "--base", "homolog")
+        self.api_wt = core.Path(core.run_load(self.rid)["repos"]["API"]["worktree"])
+
+    def fix(self, content="v = 2\n"):
+        super().fix(content)
+        commit_file(self.api_wt, "api.txt", "fix\n", "[Area] - api fix")
+
+    def acs(self):
+        super().acs()
+        data = core.read_json(core.run_dir(self.rid) / "acs.json")
+        data["acs"][0]["checks"].append("CHK-3")
+        data["checks"].append({"id": "CHK-3", "type": "test", "repo": "API", "cmd": f"{PY} check_api.py",
+                               "expect_fail_pattern": "ASSERT api.txt"})
+        core.write_json(core.run_dir(self.rid) / "acs.json", data)
+
+    def mirror_both(self):
+        self.through_build()
+        self.ok("run", "mirror", self.rid, "API", "--to", "pack")
+        self.ok("run", "mirror", self.rid, "React", "--to", "pack")
+
+
+class TargetBranches(TargetBranchesBase):
+    def test_mirror_branches_api_from_dev(self):
+        self.mirror_both()
+        rec = core.run_load(self.rid)["repos"]
+        api_wt = core.Path(rec["API"]["worktrees"]["pack"])
+        self.assertTrue((api_wt / "dev.txt").exists())
+        self.assertEqual(sh("git", "log", "--format=%s", "origin/dev..HEAD", cwd=api_wt).splitlines(), ["[Area] - api fix"])
+        react_wt = core.Path(rec["React"]["worktrees"]["pack"])
+        self.assertEqual(sh("git", "merge-base", "HEAD", "origin/pack", cwd=react_wt), sh("git", "rev-parse", "origin/pack", cwd=react_wt))
+        self.assertEqual(rec["API"]["branches"]["pack"], "hotfix/REL_9/BUG-1-PACK")  # naming keeps the logical target
+
+    def test_gate_prove_accepts_mapped_mirror(self):
+        self.mirror_both()
+        self.ok("prove", self.rid)
+        self.ok("gate", self.rid, "prove")
+        # the API mirror repro is bound to the tip of dev (not of a non-existent pack branch)
+        repro = core.load_evidence(self.rid, "REPRO-CHK-3@pack")
+        self.assertEqual(repro["status"], "reproduced")
+        self.assertEqual(repro["git_sha"], sh("git", "rev-parse", "origin/dev", cwd=self.repo_dirs["API"]))
+        self.assertEqual(core.load_evidence(self.rid, "CHK-3@pack")["status"], "pass")
+
+    def test_ship_plan_target_branches(self):
+        import json
+        self.mirror_both()
+        self.ok("prove", self.rid)
+        rc, out = cli("--json", "ship", "plan", self.rid)
+        self.assertEqual(rc, 0, out)
+        got = {(m["repo"], m["target"]): m["target_branch"] for m in json.loads(out)["mrs"]}
+        self.assertEqual(got, {("API", "homolog"): "homolog", ("API", "pack"): "dev",
+                               ("React", "homolog"): "homolog", ("React", "pack"): "pack"})
+
+    def test_ship_verify_compares_mapped_target_branch(self):
+        import json
+        self.mirror_both()
+        self.ok("prove", self.rid)
+        self.ok("ship", "plan", self.rid)
+        plan = json.loads((core.run_dir(self.rid) / "ship-plan.json").read_text(encoding="utf-8"))
+        mr = next(m for m in plan["mrs"] if (m["repo"], m["target"]) == ("API", "pack"))
+        rb = {"source_branch": mr["source_branch"], "target_branch": "pack", "title": mr["title"], "draft": True,
+              "sha": mr["head_sha"], "web_url": "u", "iid": 1}
+        from factory.commands import ship
+        for m in plan["mrs"]:
+            core.write_json(core.run_dir(self.rid) / m["readback"], dict(rb, source_branch=m["source_branch"], title=m["title"],
+                                                                        sha=m["head_sha"], target_branch=m["target_branch"]))
+        core.write_json(core.run_dir(self.rid) / mr["readback"], dict(rb, source_branch=mr["source_branch"]))
+        errs = ship.verify(self.rid)
+        self.assertTrue(any("target_branch 'pack' != planned 'dev'" in e for e in errs), errs)
+
+    def test_unmapped_workspace_unchanged(self):
+        del self.ws["repos"][0]["target_branches"]
+        self.save_ws()
+        self.assertEqual(core.target_branch(self.ws, "API", "pack"), "pack")
+        self.assertEqual(core.target_branch(self.ws, "API", None), None)
+        self.assertEqual(core.target_branch(self.ws, "Nope", "pack"), "pack")
+        sh("git", "branch", "pack", cwd=self.repo_dirs["API"])
+        sh("git", "update-ref", "refs/remotes/origin/pack", "pack", cwd=self.repo_dirs["API"])
+        self.through_build()
+        self.ok("run", "mirror", self.rid, "API", "--to", "pack")
+        api_wt = core.Path(core.run_load(self.rid)["repos"]["API"]["worktrees"]["pack"])
+        self.assertFalse((api_wt / "dev.txt").exists())
+
+    def test_workspace_check_rejects_invalid_mapping(self):
+        from factory.commands.workspace import target_branches_errors
+        self.assertEqual(target_branches_errors(self.ws), [])
+        for bad in ({"nope": "dev"}, {"pack": ""}, {"pack": 3}, ["pack"], {"pack": " dev "}, {"pack": "de v"}):
+            self.ws["repos"][0]["target_branches"] = bad
+            self.assertTrue(target_branches_errors(self.ws), bad)
+        self.save_ws()
+        rc, out = cli("workspace", "check", "ws")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("target_branches", out)
+
+    def test_workspace_check_tolerates_unhashable_targets(self):
+        from factory.commands.workspace import target_branches_errors
+        self.ws["ship"]["hotfix"] = {"base": ["homolog"], "mirror": [["pack"], "pack"]}
+        self.ws["ship"]["targets"] = [["x"], "pack"]
+        self.assertEqual(target_branches_errors(self.ws), [])
+
+
+class MappedBase(TargetBranchesBase):
+    """The base target itself is mapped (homolog -> release; API has no homolog branch)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        api = self.repo_dirs["API"]
+        sh("git", "branch", "-D", "homolog", cwd=api)
+        sh("git", "update-ref", "-d", "refs/remotes/origin/homolog", cwd=api)
+        sh("git", "checkout", "-q", "-b", "release", cwd=api)
+        commit_file(api, "release.txt", "r\n", "[Area] - release only")
+        sh("git", "checkout", "-q", "main", cwd=api)
+        sh("git", "update-ref", "refs/remotes/origin/release", "release", cwd=api)
+        self.ws["repos"][0]["target_branches"] = {"pack": "dev", "homolog": "release"}
+        self.ws["repos"][0]["quality"] = {"test": f'{PY} -c "pass"'}
+        self.save_ws()
+
+    def test_base_branch_resolves_through_mapping(self):
+        self.through_build()  # run branch (--base homolog), repro, gate build (ahead of origin/release)
+        rec = core.run_load(self.rid)["repos"]["API"]
+        self.assertEqual(rec["base"], "homolog")
+        self.assertEqual(rec["base_ref"], "origin/release")
+        self.assertTrue((core.Path(rec["worktree"]) / "release.txt").exists())
+        self.ok("baseline", self.rid, "--repo", "API")
+        base = core.read_json(core.run_dir(self.rid) / "baseline" / "API.json")
+        self.assertEqual(base["base_ref"], "origin/release")
+        self.assertEqual(base["merge_base"], sh("git", "rev-parse", "origin/release", cwd=self.repo_dirs["API"]))
+        self.ok("run", "mirror", self.rid, "API", "--to", "pack")
+        self.ok("run", "mirror", self.rid, "React", "--to", "pack")
+        self.ok("prove", self.rid)
+        self.ok("gate", self.rid, "prove")
+
+
 if __name__ == "__main__":
     unittest.main()

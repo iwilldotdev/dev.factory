@@ -13,6 +13,7 @@ from ..core import (
     read_json,
     repo_conf,
     repo_path_for_run,
+    target_branch,
     target_worktree,
     run_dir,
     run_load,
@@ -249,12 +250,12 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
                 errors.append(f"{alias}: no worktree for target {target} (factory run mirror {run_id} {alias} --to {target})")
                 continue
             try:
-                n = behind_count(wt, target)
+                n = behind_count(wt, target_branch(workspace, alias, target))
             except FactoryError as err:
                 errors.append(str(err))
                 continue
             if n > 0 and not allow_behind:
-                errors.append(f"{alias}: HEAD is {n} commit(s) behind origin/{target}; rebase/merge via a builder, then "
+                errors.append(f"{alias}: HEAD is {n} commit(s) behind origin/{target_branch(workspace, alias, target)}; rebase/merge via a builder, then "
                               f"`factory run rewind {run_id} prove \"rebased on {target}\"` (prove + review again), "
                               "or --allow-behind with the user's explicit yes")
     if errors:
@@ -280,7 +281,7 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
             "target": target,
             "source_branch": src,
             "head_sha": branch_head(run, workspace, alias, target, src),
-            "target_branch": target,
+            "target_branch": target_branch(workspace, alias, target),
             "title": (DRAFT_PREFIX + base_title) if draft else base_title,
             "draft": draft,
             "behind": 0,

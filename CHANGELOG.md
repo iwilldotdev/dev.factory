@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Per-repo target branches: a workspace repo may set `target_branches: {"<target>": "<git branch>"}` (e.g. `pack` is `dev` in the API, `pack` in React). Targets stay logical in run.json, evidence ids and gates; `core.target_branch` translates them for `run branch`, `run mirror`, merge-base/baseline/repro, the build gate, the ship behind-count and the MR `target_branch` (`ship plan`, `ship verify`). `workspace check` validates the field. Unset keeps the old behaviour.
+
 - `factory run delete <run...> --yes [--force]`: zips each run into `FACTORY_HOME/archive/runs/`, verifies the archive and only then removes the run folder. It refuses unfinished runs (only `done`/`report`/`blocked` without `--force`), a parent whose children are not deleted in the same call, and runs claimed by another session. Worktrees are listed, not removed. Workers cannot run it (`worker-guard.js` also blocks `run claim`).
 
 - Parallel sessions (DESIGN §11). Workspace `orchestration: {sessions, per}` lets a batch run one visible host session per ticket. The parent coordinates with `factory batch status`, and children claim their runs (`factory run claim [--takeover]`). Skill: `references/sessions.md`, plus Progress and Worker-questions rules (every phase is narrated; a worker assumption that reduces proof reaches the user).

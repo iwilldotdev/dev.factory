@@ -132,6 +132,33 @@ def hotfix_config_errors(ws: dict) -> list[str]:
     return errors
 
 
+def target_branches_errors(ws: dict) -> list[str]:
+    """Optional per-repo `target_branches`: {logical target: git branch}; keys must be known targets."""
+    ship = ws.get("ship") or {}
+    hf = ship.get("hotfix") if isinstance(ship.get("hotfix"), dict) else {}
+    targets = ship.get("targets")
+    mirror = hf.get("mirror")
+    known = {t for t in (targets if isinstance(targets, list) else []) if isinstance(t, str)}
+    if isinstance(hf.get("base"), str):
+        known.add(hf["base"])
+    known.update(t for t in (mirror if isinstance(mirror, list) else []) if isinstance(t, str))
+    errors = []
+    for repo in ws.get("repos", []):
+        alias = repo.get("alias") or "?"
+        tb = repo.get("target_branches")
+        if tb is None:
+            continue
+        if not isinstance(tb, dict):
+            errors.append(f"{alias}: target_branches must be an object {{target: git branch}}")
+            continue
+        for key, branch in tb.items():
+            if key not in known:
+                errors.append(f"{alias}: target_branches key {key!r} is not a known target ({sorted(known)})")
+            if not isinstance(branch, str) or not branch or any(c.isspace() for c in branch):
+                errors.append(f"{alias}: target_branches[{key!r}] must be a non-empty string without whitespace")
+    return errors
+
+
 def orchestration_config_errors(ws: dict) -> list[str]:
     """Optional `orchestration` (parallel sessions) and workspace-level `env` (lease) blocks."""
     errors: list[str] = []
@@ -196,6 +223,7 @@ def check_workspace(ws: dict) -> list[str]:
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):
         missing.append("autonomy.ship must be ask or draft-auto")
     missing.extend(hotfix_config_errors(ws))
+    missing.extend(target_branches_errors(ws))
     missing.extend(orchestration_config_errors(ws))
     for rule in ws.get("rules", []):
         if not rule.get("id") or not isinstance(rule.get("check"), dict):

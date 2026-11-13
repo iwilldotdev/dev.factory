@@ -13,7 +13,7 @@ from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setu
                                weak_pattern_reason)
 from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
-                    repo_path_for_run, run_dir, run_load, run_save, run_targets,
+                    repo_path_for_run, run_base_branch, run_dir, run_load, run_save, run_targets,
                     target_worktree, workspace_load, write_evidence, write_json)
 from . import gate
 
@@ -113,7 +113,7 @@ def compute_baseline(run: dict, ws: dict, alias: str, force: bool = False) -> di
     conf = repo_conf(ws, alias)
     quality = conf.get("quality") or {}
     wt = repo_path_for_run(run, ws, alias)
-    base = gate.resolve_base(wt, run["repos"][alias].get("base", "main"))
+    base = gate.resolve_base(wt, run_base_branch(run, ws, alias))
     merge_base = git(wt, "merge-base", "HEAD", base)
     main = Path(conf.get("path") or wt)
     env_vars = (conf.get("env") or {}).get("env_vars")

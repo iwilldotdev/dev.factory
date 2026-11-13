@@ -12,7 +12,7 @@ from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
-                    run_resync, run_save, run_targets, target_worktree, workspace_load)
+                    run_base_branch, run_resync, run_save, run_targets, target_branch, target_worktree, workspace_load)
 
 PHASES = ["intake", "plan", "build", "prove", "review", "ship", "feedback", "done"]
 BUG_PHASES = ["intake", "plan", "reproduce", "build", "prove", "review", "ship", "feedback", "done"]
@@ -76,9 +76,9 @@ def merge_base_for(run: dict, ws: dict, alias: str, target: str | None = None) -
     if hf and target and target != hf["base"]:
         # mirror target: nothing is cherry-picked yet at reproduce time, so the merge-base is the target tip
         main = Path(repo_conf(ws, alias).get("path") or repo_path_for_run(run, ws, alias))
-        return git(main, "rev-parse", resolve_base(main, target) + "^{commit}")
+        return git(main, "rev-parse", resolve_base(main, target_branch(ws, alias, target)) + "^{commit}")
     wt = repo_path_for_run(run, ws, alias)
-    base = resolve_base(wt, run["repos"][alias].get("base", "main"))
+    base = resolve_base(wt, run_base_branch(run, ws, alias))
     return git(wt, "merge-base", "HEAD", base)
 
 
@@ -662,7 +662,7 @@ def _build(run_id, run, ws) -> list[str]:
             continue
         if git_dirty(path):
             errors.append(f"{alias}: worktree has uncommitted changes")
-        base = resolve_base(path, rec.get("base", "main"))
+        base = resolve_base(path, run_base_branch(run, ws, alias))
         ahead = git(path, "rev-list", "--count", f"{base}..HEAD", check=False)
         if not ahead.isdigit() or int(ahead) == 0:
             errors.append(f"{alias}: no commits ahead of {base}")

@@ -400,6 +400,7 @@ Batches (epics, review batches) can run each ticket in its **own visible host se
 - **Visibility:**
   - `batch status <parent> [--json]` covers epic and review-batch parents. Per child it shows ticket, phase, next gate, open blockers, open `human` checks, owner session and the lease holder. `epic status` uses the same rows.
   - `run log <run> [--tail N] [--since ISO] [--json]` prints `run.json` events as a timeline.
+  - `run delete <run...> --yes [--force]` zips each run into `archive/runs/`, verifies the zip, then removes the folder. Without `--force` only `done`, `report` or `blocked` runs are deleted. A parent must be deleted together with its children. A run claimed by another session is refused. Worktrees are listed, never removed. The command is reserved for the main session.
   - `metrics` attributes child-session transcripts (marker `factory-run: <child>`) to the parent too.
 - **Exploration is not proof.** In the UI phase a child may drive the host's built-in browser against the local env and the Figma frames, to find gaps and write Playwright specs with real selectors. Only collectors write evidence; nothing seen in that browser is a PASS.
 

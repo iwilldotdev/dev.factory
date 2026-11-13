@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `factory run delete <run...> --yes [--force]`: zips each run into `FACTORY_HOME/archive/runs/`, verifies the archive and only then removes the run folder. It refuses unfinished runs (only `done`/`report`/`blocked` without `--force`), a parent whose children are not deleted in the same call, and runs claimed by another session. Worktrees are listed, not removed. Workers cannot run it (`worker-guard.js` also blocks `run claim`).
+
 - Parallel sessions (DESIGN §11). Workspace `orchestration: {sessions, per}` lets a batch run one visible host session per ticket. The parent coordinates with `factory batch status`, and children claim their runs (`factory run claim [--takeover]`). Skill: `references/sessions.md`, plus Progress and Worker-questions rules (every phase is narrated; a worker assumption that reduces proof reaches the user).
 - Env lease. Workspace `env: {lease, lease_ttl_s}` adds `factory env lease acquire|release|status`: a FIFO queue for the one local env. `env up|login --run` need the lease, `env down` refuses a non-owner unless `--force`, and `prove`/`env check` renew the heartbeat. `up` is atomic under a lock file.
 - Safe run writes. `run.json` carries a `rev` counter, a per-run lock is held while saving, and a concurrent change is refused instead of lost. `run_update` is used for the short mutators, and `write_json` uses unique temp files and retries on Windows sharing errors.

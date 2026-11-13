@@ -6,11 +6,15 @@ import datetime as _dt
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
+import zipfile
 from pathlib import Path
 
 from ..collectors.test import prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, current_owner, event, factory_home,
+from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
+                    factory_home,
                     git, git_dirty, git_head, now, repo_conf, run_dir, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
 from .. import integrity
@@ -542,6 +546,68 @@ def event_summary(e: dict) -> str:
     return _kv(d)
 
 
+DELETABLE_PHASES = ("done", "report", "blocked")
+
+
+def _archive_run(rid: str) -> Path:
+    """Zip the run folder into FACTORY_HOME/archive/runs/ and verify the archive before anything is removed."""
+    src = run_dir(rid)
+    dest_dir = factory_home() / "archive" / "runs"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    zip_path = dest_dir / f"{rid}-{stamp}.zip"
+    files = [p for p in src.rglob("*") if p.is_file()]
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in files:
+            zf.write(p, Path(rid) / p.relative_to(src))
+    with zipfile.ZipFile(zip_path) as zf:
+        bad = zf.testzip()
+        count = len(zf.namelist())
+    if bad or count != len(files):
+        raise FactoryError(f"archive of {rid} failed verification ({bad or f'{count}/{len(files)} files'}); nothing removed")
+    return zip_path
+
+
+def _rmtree(path: Path) -> None:
+    def onerror(func, p, _exc):  # read-only files on Windows
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onerror=onerror)
+
+
+def cmd_delete(args) -> int:
+    if not args.yes:
+        raise FactoryError("run delete is permanent (an archive zip is kept); pass --yes to confirm")
+    ids = list(dict.fromkeys(args.runs))
+    runs = {rid: run_load(rid) for rid in ids}
+    problems = []
+    for rid, run in runs.items():
+        ensure_owner(run)
+        if run.get("phase") not in DELETABLE_PHASES and not args.force:
+            problems.append(f"{rid}: phase {run.get('phase')} is not finished ({', '.join(DELETABLE_PHASES)}); "
+                            f"add --force to delete it anyway")
+        left = [c for c in run.get("children") or [] if c not in runs and run_dir(c).is_dir()]
+        if left:
+            problems.append(f"{rid}: children would be orphaned: {', '.join(left)}; delete them in the same call")
+    if problems:
+        raise FactoryError("refused, nothing deleted:\n  " + "\n  ".join(problems))
+    out = []
+    for rid, run in runs.items():
+        zip_path = _archive_run(rid)
+        _rmtree(run_dir(rid))
+        worktrees = sorted({str(r.get("worktree")) for r in (run.get("repos") or {}).values()
+                            if isinstance(r, dict) and r.get("worktree")})
+        out.append({"run": rid, "archive": str(zip_path), "worktrees_left": worktrees})
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+        return 0
+    for o in out:
+        print(f"deleted {o['run']} (archive: {o['archive']})")
+        for wt in o["worktrees_left"]:
+            print(f"  worktree kept: {wt} (remove with `git worktree remove` when no longer needed)")
+    return 0
+
+
 def cmd_log(args) -> int:
     run = run_load(args.run)
     events = list(run.get("events") or [])
@@ -633,6 +699,12 @@ def register(sub) -> None:
     p.add_argument("runs", nargs="+", metavar="run")
     p.add_argument("--takeover", action="store_true", help="take over a run claimed by another recent session")
     p.set_defaults(func=cmd_claim)
+    p = rs.add_parser("delete", help="archive run(s) to FACTORY_HOME/archive/runs as zip, then remove the run folder")
+    p.add_argument("runs", nargs="+", metavar="run")
+    p.add_argument("--yes", action="store_true", help="confirm the deletion")
+    p.add_argument("--force", action="store_true", help="also delete runs that are not done/report/blocked")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_delete)
     p = rs.add_parser("log", help="readable timeline of run events")
     p.add_argument("run")
     p.add_argument("--tail", type=int, help="only the last N events")

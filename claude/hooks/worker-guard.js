@@ -42,7 +42,7 @@ const ORCHESTRATOR_ONLY = [
   [factory(String.raw`gate\b`), 'gates are run by the main session'],
   [factory(String.raw`ship\b`), 'ship belongs to the main session'],
   [factory(String.raw`feedback\b`), 'feedback ingest belongs to the main session'],
-  [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human|replan|rewind)\b`), 'run state changes (incl. replan/rewind/decide/unblock) belong to the main session'],
+  [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human|replan|rewind|delete|claim)\b`), 'run state changes (incl. replan/rewind/decide/unblock/delete/claim) belong to the main session'],
   [factory(String.raw`workspace\s+(?:init|import)\b`), 'workspace changes belong to the main session'],
 ];
 const REVIEW_RECORD = factory(String.raw`review\s+record\b`);

@@ -52,6 +52,7 @@ class UiBugCase(RealCase):
         mb = sh("git", "merge-base", "HEAD", "origin/main", cwd=self.wt)
         commit_file(self.wt, "mod.py", "v = 2\n", "[Area] - fix")
         head = sh("git", "rev-parse", "HEAD", cwd=self.wt)
+        self.ok("run", "decide", self.rid, "visual evidence: no", "--by", "user", "--user-said", "no", "--visual", "no")
         from factory import integrity
         run = core.run_load(self.rid)
         integrity.lock_plan(run, "test fixture")

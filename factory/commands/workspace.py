@@ -190,6 +190,13 @@ def orchestration_config_errors(ws: dict) -> list[str]:
     return errors
 
 
+def workspace_warnings(ws: dict) -> list[str]:
+    """Non-fatal: a repo with an env block and no explicit boolean `ui` relies on guessing for the visual-evidence question."""
+    return [f"{r.get('alias') or '?'}: has an env block but no explicit `ui: true|false` (visual-evidence question falls "
+            "back to UI files in the diff)"
+            for r in ws.get("repos", []) if r.get("env") and not isinstance(r.get("ui"), bool)]
+
+
 def check_workspace(ws: dict) -> list[str]:
     missing: list[str] = []
     root = ws.get("worktree_root")
@@ -212,6 +219,8 @@ def check_workspace(ws: dict) -> list[str]:
             missing.append(f"{alias}: path is not a git repository: {path}")
         if not repo.get("quality"):
             missing.append(f"{alias}: quality commands are missing")
+        if "ui" in repo and not isinstance(repo["ui"], bool):
+            missing.append(f"{alias}: ui must be true or false (UI repo: visual-evidence question)")
         env = repo.get("env") or {}
         if not env:
             missing.append(f"{alias}: env block is missing")
@@ -236,7 +245,9 @@ def cmd_check(args) -> int:
     missing = check_workspace(ws)
     if missing:
         raise GateFailed(missing)
-    _out(args, {"workspace": args.name, "ok": True}, f"OK workspace {args.name}")
+    warnings = workspace_warnings(ws)
+    text = "\n".join([f"OK workspace {args.name}"] + [f"warning: {w}" for w in warnings])
+    _out(args, {"workspace": args.name, "ok": True, "warnings": warnings}, text)
     return 0
 
 

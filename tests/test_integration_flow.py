@@ -67,6 +67,7 @@ class TestIntegrationFlow(RealCase):
             "checks": [{"id": "CHK-1", "type": "test", "repo": "React", "cmd": py},
                        {"id": "CHK-2", "type": "style", "repo": "React", "node": "1:2", "path": "/x",
                         "map": "checks/style.json"}]})
+        self.ok("run", "decide", rid, "no screenshots", "--by", "user", "--user-said", "no", "--visual", "no")
         self.ok("gate", rid, "plan")
 
         commit_file(wt, "src/a.txt", "x")

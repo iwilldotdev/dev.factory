@@ -74,7 +74,7 @@ Fill what `workspace check` reports:
 | Key | What |
 |---|---|
 | `worktree_root` | Where run worktrees are created, for example `C:/Code/wt` |
-| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors) |
+| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors), optional `ui` (`true`/`false`: is this a UI repo, for the visual-evidence question; set it explicitly on every repo with an `env` block, `workspace check` warns otherwise and fails if it is not a boolean) |
 | `ship` | `targets` (branches MRs go to), `draft_default`, Jira transition, optional `hotfix: {base, mirror}` |
 | `branch_format`, `commit.header_regex` | Branch names and commit header rule |
 | `autonomy` | `ship: ask` or `draft-auto`, loop caps |
@@ -112,9 +112,9 @@ review runs: intake → plan → prove → review → report → done
 
 It stops for you at four points only:
 
-1. **The question round, before the plan gate**, as a single message. It covers missing env or credentials, targets, product decisions, and any worker assumption that would weaken the proof, such as a check left to a human, a UI AC without a visual check, or a skipped Figma fetch or `env up`. "Inaccessible" comes with the failed attempt quoted.
+1. **The question round, before the plan gate**, as a single message. It covers missing env or credentials, targets, product decisions, and any worker assumption that would weaken the proof, such as a check left to a human, a UI AC without a visual check, or a skipped Figma fetch or `env up`. "Inaccessible" comes with the failed attempt quoted. When the run touches UI, it also asks whether you want **visual evidence**: before/after screenshots of a fix (the base and the fixed HEAD, same steps), or screenshots of the implemented screens for a feature. A yes is enforced. The gates require the screenshots, and Gate S shows them to you.
 2. **Blockers** that only you can clear: access, an env that will not start, an exceeded loop cap.
-3. **Gate S, before ship.** You see the MRs, ACs against evidence, the remaining `human` checks, and the Jira comment and transition. Nothing is pushed until you say yes. `autonomy.ship: draft-auto` pre-authorises only push plus draft MRs.
+3. **Gate S, before ship.** You see the MRs, ACs against evidence, the remaining `human` checks, the before/after screenshots you asked for, and the Jira comment and transition. Nothing is pushed until you say yes. `autonomy.ship: draft-auto` pre-authorises only push plus draft MRs.
 4. **Review runs never post.** The verdict stays local until you ask for an MR or Jira comment.
 
 Anything you say while it runs counts as steering. It is recorded with `factory run human` and acted on. Changing the ACs or the workspace after the plan gate needs a replan, and the skill handles it.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Style probe (browser `style-probe`) now measures `fontFamily`, `text`, `borderColor` and `borderWidth`, so the `factory figma expect` expectations for them no longer fail as "unknown property". This came from the "[Tarefas | Personalização de campos]" session; it landed in 72ac634 and was audited afterwards.
+  - `fontFamily` compares the first family only, unquoted and case-insensitive.
+  - `text` compares the trimmed `innerText` exactly.
+  - `borderColor` is a normalized color, taken from the first side with width > 0, else the top side.
+  - `borderWidth` is in px, with the default tolerance.
+  - Known limits (audit, minor):
+    - An empty expected `text` passes against an empty element.
+    - `borderWidth`'s 1 px tolerance accepts a 0 px (missing) border when 1 px is expected.
+    - Multi-line text, and text changed by `text-transform`, fail, because Figma line breaks and case are not normalized.
+    - Hashed font names (e.g. next/font `__Inter_abc123`) fail.
+
 Fail fast and recovery (DESIGN §13), driven by the findings of real runs since 13/11 (Handoffs/ and run transcripts):
 
 - prove: per-check wall-clock caps (`timeout_s`, `limits.check_timeout_s`, 120 s UI / 60 s api) kill the process tree. An env-kind failure skips the repo's remaining runtime checks and exits 3. Two identical failures stop the batch. New `PROVE-FAIL`/`ENV-FAIL` lines. A stale env is restarted once. prove no longer overwrites run.json (`run_update`). `--check` accepts `QUALITY-*` and `RULE-*`.

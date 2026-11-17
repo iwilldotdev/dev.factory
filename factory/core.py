@@ -320,6 +320,47 @@ def repo_path_for_run(run: dict, workspace: dict, alias: str) -> Path:
     return Path(repo_conf(workspace, alias)["path"])
 
 
+def _dep_run_ids(run: dict, workspace: dict) -> list[str]:
+    ws = str(workspace.get("name", "")).lower()
+    keys: list[str] = []
+    for t in run.get("tickets") or []:
+        keys += [str(d) for d in t.get("depends_on") or []]
+    parent = run.get("parent")
+    if parent:
+        try:
+            epic = read_json(run_dir(parent) / "epic.json")
+        except (FactoryError, OSError, ValueError):
+            epic = {}
+        mine = {str(t.get("key", "")).upper() for t in run.get("tickets") or []}
+        for t in epic.get("tickets") or []:
+            if str(t.get("key", "")).upper() in mine:
+                keys += [str(d) for d in t.get("depends_on") or []]
+    return [f"{ws}-{k.lower()}" for k in dict.fromkeys(keys)]
+
+
+def repo_path_for_env(run: dict, workspace: dict, alias: str) -> Path:
+    """Like repo_path_for_run, but an epic child without a worktree for `alias` uses the nearest dependency run's worktree."""
+    rec = (run.get("repos") or {}).get(alias) or {}
+    if rec.get("worktree") or not run.get("parent"):
+        return repo_path_for_run(run, workspace, alias)
+    seen = {run.get("id")}
+    queue = _dep_run_ids(run, workspace)
+    while queue:
+        rid = queue.pop(0)
+        if rid in seen:
+            continue
+        seen.add(rid)
+        try:
+            dep = run_load(rid)
+        except (FactoryError, OSError, ValueError):
+            continue
+        wt = ((dep.get("repos") or {}).get(alias) or {}).get("worktree")
+        if wt:
+            return Path(wt)
+        queue += _dep_run_ids(dep, workspace)
+    return repo_path_for_run(run, workspace, alias)
+
+
 def hotfix_of(run: dict) -> dict | None:
     hf = run.get("hotfix")
     return hf if isinstance(hf, dict) and hf.get("base") else None

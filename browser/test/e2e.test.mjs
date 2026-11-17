@@ -15,6 +15,8 @@ const PAGE = `<!doctype html><meta charset="utf-8"><title>T</title>
 <style>html,body{margin:0;background:#fff}
 main{width:320px;height:180px;color:#112233;font:600 16px/24px sans-serif;padding:8px;background:#eeeeee;border-radius:4px}</style>
 <main id="m">Pay now</main>`;
+const DRAWER = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0}#d{width:200px;height:100px;font:16px/20px sans-serif}</style>
+<button id="open" onclick="const d=document.createElement('aside');d.id='d';d.textContent='Drawer';document.body.append(d)">open</button>`;
 const LOGIN = `<!doctype html><form onsubmit="event.preventDefault();location.href='/app?ok=1'">
 <input id="u"><input id="p" type="password"><button type="submit">go</button></form>`;
 
@@ -33,7 +35,7 @@ test.before(async () => {
   }
   server = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
-    res.end(req.url.startsWith("/login") ? LOGIN : req.url.startsWith("/app") ? "<title>app</title><p>in</p>" : PAGE);
+    res.end(req.url.startsWith("/login") ? LOGIN : req.url.startsWith("/app") ? "<title>app</title><p>in</p>" : req.url.startsWith("/drawer") ? DRAWER : PAGE);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -88,6 +90,30 @@ test("capture, compare, style-probe", async (t) => {
   const rb = await result(bad);
   assert.equal(rb.status, "fail");
   assert.equal(rb.details.entries[1].note, "element not found");
+});
+
+test("capture and style-probe run the adapter before wait_for", async (t) => {
+  if (skipReason) return t.skip(skipReason);
+  const dir = await tmp();
+  const adapter = path.join(dir, "adapter.json");
+  await writeFile(adapter, JSON.stringify({ actions: [{ type: "click", selector: "#open" }, { type: "wait", selector: "#d" }] }));
+  const cap = path.join(dir, "cap");
+  let p = await run("capture", "--url", `${base}/drawer`, "--out", cap, "--viewport", "400x300", "--selector", "#d", "--wait-for", "#d", "--adapter", adapter);
+  assert.equal(p.status, 0, p.stdout + p.stderr);
+  assert.equal((await readFile(path.join(cap, "text.txt"), "utf8")).trim(), "Drawer");
+
+  const map = path.join(dir, "map.json");
+  await writeFile(map, JSON.stringify({ node: "1:2", entries: [{ id: "d", selector: "#d", expect: { width: 200, height: 100, fontSize: 16 } }] }));
+  const probe = path.join(dir, "probe");
+  p = await run("style-probe", "--url", `${base}/drawer`, "--map", map, "--out", probe, "--viewport", "400x300", "--wait-for", "#d", "--adapter", adapter);
+  assert.equal(p.status, 0, p.stdout + p.stderr);
+  assert.equal((await result(probe)).status, "pass");
+
+  const evil = path.join(dir, "evil.json");
+  await writeFile(evil, JSON.stringify({ actions: [{ type: "evaluate", selector: "x" }] }));
+  p = await run("style-probe", "--url", `${base}/drawer`, "--map", map, "--out", path.join(dir, "evil"), "--adapter", evil);
+  assert.equal(p.status, 1);
+  assert.equal((await result(path.join(dir, "evil"))).status, "error");
 });
 
 test("run-spec", async (t) => {

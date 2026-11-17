@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { captureSurface } from "./capture.js";
+import { captureSurface, runAdapter } from "./capture.js";
 import { comparePng, type Mask } from "./compare.js";
 import { compareStyles, type Expect } from "./probe.js";
 import { runSpec, SCREENSHOT_MODES, type ScreenshotMode } from "./spec.js";
@@ -118,6 +118,8 @@ async function doProbe(out: string): Promise<Result> {
     const page = await context.newPage();
     await page.goto(required("--url"), { waitUntil: "load" });
     await page.evaluate(() => document.fonts.ready);
+    const adapterPath = optional("--adapter");
+    if (adapterPath) await runAdapter(page, adapterPath, required("--url"));
     const waitFor = optional("--wait-for");
     if (waitFor) await page.locator(waitFor).first().waitFor({ timeout: 30000 });
     if (optional("--settle-ms")) await page.waitForTimeout(optionalNumber("--settle-ms") ?? 0);

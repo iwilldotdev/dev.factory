@@ -65,10 +65,52 @@ class UiCollectorTests(unittest.TestCase):
         masks = json.loads(Path(cmp[cmp.index("--masks") + 1]).read_text())
         self.assertEqual(masks[0]["reason"], "clock")
 
+    def test_visual_compares_against_cropped_figma_when_export_has_shadow_margin(self):
+        from tests.test_pngcrop import make_png, shadow_node
+        (self.run_dir / "figma" / "3544-5710.json").write_text(json.dumps(shadow_node(w=4, h=3, radius=2, oy=1)))
+        (self.run_dir / "figma" / "3544-5710.png").write_bytes(make_png(8, 6, lambda x, y: (1, 2, 3, 255)))
+        shadow_node_id = json.loads((self.run_dir / "figma" / "3544-5710.json").read_text())
+        shadow_node_id["nodes"][0]["id"] = "3544:5710"
+        (self.run_dir / "figma" / "3544-5710.json").write_text(json.dumps(shadow_node_id))
+        res = visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/x"}, self.ctx)
+        self.assertEqual(res["status"], "pass")
+        cmp = self.argv("compare")
+        self.assertTrue(cmp[cmp.index("--figma") + 1].endswith("figma-cropped.png"))
+
     def test_visual_missing_figma_png_errors(self):
         (self.run_dir / "figma" / "3544-5710.png").unlink()
         res = visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/"}, self.ctx)
         self.assertEqual(res["status"], "error")
+
+    def test_visual_and_style_pass_adapter(self):
+        (self.run_dir / "checks" / "adapter").mkdir()
+        (self.run_dir / "checks" / "adapter" / "open.json").write_text('{"actions": []}')
+        expected = self.run_dir / "checks" / "adapter" / "open.json"
+        res = visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/x",
+                              "wait_for": "#d", "adapter": "checks/adapter/open.json"}, self.ctx)
+        self.assertEqual(res["status"], "pass")
+        cap = self.argv("capture")
+        self.assertEqual(Path(cap[cap.index("--adapter") + 1]), expected.resolve())
+        self.assertNotIn("--adapter", self.argv("compare"))
+        res = style.collect({"id": "CHK-1", "type": "style", "path": "/", "map": "checks/map.json",
+                             "adapter": "checks/adapter/open.json"}, self.ctx)
+        self.assertEqual(res["status"], "pass")
+        a = self.argv("style-probe")
+        self.assertEqual(Path(a[a.index("--adapter") + 1]), expected.resolve())
+
+    def test_url_only_checks_send_no_adapter(self):
+        visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/x"}, self.ctx)
+        style.collect({"id": "CHK-1", "type": "style", "path": "/", "map": "checks/map.json"}, self.ctx)
+        self.assertNotIn("--adapter", self.argv("capture"))
+        self.assertNotIn("--adapter", self.argv("style-probe"))
+
+    def test_adapter_missing_or_outside_run_dir_errors(self):
+        for rel, msg in (("checks/adapter/none.json", "adapter not found"), ("../x.json", "inside the run dir")):
+            for mod, chk in ((visual, {"type": "visual", "node": "3544:5710"}), (style, {"type": "style", "map": "checks/map.json"})):
+                res = mod.collect({"id": "CHK-1", "path": "/", "adapter": rel, **chk}, self.ctx)
+                self.assertEqual(res["status"], "error")
+                self.assertIn(msg, res["summary"])
+        self.assertFalse((self.out / "argv-capture.json").exists())
 
     def test_browser_runs_spec_relative_to_run_dir(self):
         res = browser.collect({"id": "CHK-1", "type": "browser", "spec": "checks/a.spec.ts"}, self.ctx)

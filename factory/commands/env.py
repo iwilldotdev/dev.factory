@@ -26,7 +26,7 @@ from ..core import (ensure_owner,
     now,
     read_json,
     repo_conf,
-    repo_path_for_run,
+    repo_path_for_env,
     run_dir,
     run_load,
     run_update,
@@ -605,7 +605,7 @@ def lease_status(ws: str, ttl: int) -> dict:
 
 def _cwd_for(workspace: dict, run: dict | None, alias: str) -> Path:
     repo = repo_conf(workspace, alias)
-    base = repo_path_for_run(run, workspace, alias) if run else Path(repo["path"])
+    base = repo_path_for_env(run, workspace, alias) if run else Path(repo["path"])
     return (base / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
 
 

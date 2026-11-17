@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .. import integrity, shots
 from ..collectors.test import weak_pattern_reason
@@ -203,6 +203,13 @@ def _walk_colors(node, out: set) -> None:
         c = _expected_color(node)
         if c:
             out.add(c)
+
+
+def _run_relative(value) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    win = PureWindowsPath(value)
+    return not win.anchor and not PurePosixPath(value).anchor and ".." not in win.parts
 
 
 def _is_num(v) -> bool:
@@ -415,6 +422,12 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             errors.append(f"{cid}: node is required")
         if ctype == "style" and not chk.get("map"):
             errors.append(f"{cid}: map is required")
+        if chk.get("adapter") is not None:
+            adapter = chk["adapter"]
+            if ctype not in ("visual", "style"):
+                errors.append(f"{cid}: adapter applies only to visual and style checks")
+            elif not _run_relative(adapter):
+                errors.append(f"{cid}: adapter must be a path relative to the run dir (e.g. checks/adapter/open.json)")
         if ctype == "visual" and chk.get("max_diff_ratio") is not None:
             ratio = chk["max_diff_ratio"]
             if not _is_num(ratio) or ratio < 0:
@@ -635,12 +648,23 @@ def load_evidence_file(run_id: str, name: str) -> dict | None:
     return load_evidence(run_id, name)
 
 
-def commits_errors(path: Path, base_ref: str, ws: dict, alias: str) -> list[str]:
+def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str | None = None) -> list[str]:
     commit = ws.get("commit") or {}
     regex = re.compile(commit["header_regex"]) if commit.get("header_regex") else None
     forbidden = [t.lower() for t in commit.get("forbidden_trailers") or []]
     errors = []
-    log = git(path, "log", "--format=%H%x1f%B%x1e", f"{base_ref}..HEAD")
+    span = [f"{base_ref}..HEAD"]
+    if git(path, "for-each-ref", "--count=1", "refs/remotes", check=False):
+        keep = ["--not"]
+        if branch:
+            keep.append(f"--exclude=*/{branch}")
+        keep.append("--remotes")
+        span += keep
+        total = git(path, "rev-list", "--count", f"{base_ref}..HEAD", check=False)
+        kept = git(path, "rev-list", "--count", *span, check=False)
+        if total.isdigit() and kept.isdigit() and int(total) > int(kept):
+            print(f"{alias}: {int(total) - int(kept)} inherited commits on other remote branches skipped")
+    log = git(path, "log", "--format=%H%x1f%B%x1e", *span)
     for rec in filter(None, (r.strip() for r in log.split("\x1e"))):
         sha, _, msg = rec.partition("\x1f")
         header = msg.strip().splitlines()[0] if msg.strip() else ""
@@ -669,7 +693,7 @@ def _build(run_id, run, ws) -> list[str]:
         if not ahead.isdigit() or int(ahead) == 0:
             errors.append(f"{alias}: no commits ahead of {base}")
         else:
-            errors.extend(commits_errors(path, base, ws, alias))
+            errors.extend(commits_errors(path, base, ws, alias, rec.get("branch")))
     return errors
 
 

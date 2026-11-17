@@ -53,7 +53,7 @@ class FamilyTests(unittest.TestCase):
 class CeilingTests(IntegrityCase):
     NODE = "1:2"
 
-    def ui(self, max_diff_ratio=None, tol=1, check_tol=None):
+    def ui(self, max_diff_ratio=None, tol=1, check_tol=None, adapter=None):
         fig = self.rd / "figma"
         core.write_json(fig / "1-2.json", PACK)
         (fig / "1-2.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
@@ -66,6 +66,8 @@ class CeilingTests(IntegrityCase):
         style = {"id": "CHK-2", "type": "style", "repo": "React", "node": self.NODE, "path": "/x", "map": "checks/s.json"}
         if check_tol is not None:
             style["tolerance_px"] = check_tol
+        if adapter is not None:
+            visual["adapter"] = style["adapter"] = adapter
         self.acs([visual, style], [{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}])
         return gate.validate_acs(self.rid, core.run_load(self.rid), core.workspace_load("ws"))
 
@@ -75,6 +77,13 @@ class CeilingTests(IntegrityCase):
         self.assertTrue(any("exceeds limits.max_diff_ratio 0.03" in e for e in self.ui(max_diff_ratio=0.2)))
         self.assertTrue(any("exceeds limits.max_tolerance_px 2" in e for e in self.ui(tol=5)))
         self.assertTrue(any("tolerance_px" in e for e in self.ui(check_tol=9)))
+
+    def test_adapter_must_be_run_relative(self):
+        self.start()
+        self.assertEqual(self.ui(adapter="checks/adapter/open.json"), [])
+        for bad in ("../x.json", "/etc/x.json", "C:/x.json", r"C:\x.json", r"checks\..\..\x.json", "", 3):
+            errors = self.ui(adapter=bad)
+            self.assertTrue(any("adapter must be a path relative" in e for e in errors), (bad, errors))
 
     def test_workspace_limits_override(self):
         self.ws["limits"] = {"max_diff_ratio": 0.25, "max_tolerance_px": 6}

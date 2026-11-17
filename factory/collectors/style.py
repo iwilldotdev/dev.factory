@@ -13,8 +13,11 @@ def collect(check: dict, ctx: Ctx) -> dict:
     map_file = ctx.run_dir / check["map"]
     if not map_file.is_file():
         return b._error(f"style map not found: {check['map']}")
+    adapter = b.adapter_args(check, ctx)
+    if isinstance(adapter, dict):
+        return adapter
     out = b.out_dir(ctx)
-    argv = ["style-probe", "--url", url, "--map", str(map_file), "--out", str(out)]
+    argv = ["style-probe", "--url", url, "--map", str(map_file), "--out", str(out), *adapter]
     vp = check.get("viewport")
     if vp:
         argv += ["--viewport", f"{vp[0]}x{vp[1]}"]

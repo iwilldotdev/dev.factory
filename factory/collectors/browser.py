@@ -66,6 +66,22 @@ def storage_state(check: dict, ctx: Ctx) -> str | dict | None:
     return None
 
 
+def adapter_args(check: dict, ctx: Ctx) -> list[str] | dict:
+    """`--adapter <file>` for a check's `adapter` (run-relative JSON of goto/click/fill/wait actions run after the
+    page loads and before `wait_for`), [] without one, or an error body."""
+    rel = check.get("adapter")
+    if not rel:
+        return []
+    path = (ctx.run_dir / rel).resolve()
+    try:
+        path.relative_to(ctx.run_dir.resolve())
+    except ValueError:
+        return _error(f"adapter must stay inside the run dir: {rel}")
+    if not path.is_file():
+        return _error(f"adapter not found: {rel}")
+    return ["--adapter", str(path)]
+
+
 def out_dir(ctx: Ctx) -> Path:
     out = ctx.out_dir or (ctx.run_dir / "evidence" / "tmp")
     out.mkdir(parents=True, exist_ok=True)

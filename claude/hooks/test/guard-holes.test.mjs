@@ -187,3 +187,22 @@ test('F8d: state files older than the max age are pruned on every run', () => {
   assert.equal(fs.existsSync(fresh), true);
   fs.unlinkSync(fresh);
 });
+
+// ---- temp script created by the same command (heredoc) ----
+test('a temp script written inline by the same command is judged by its inline body', () => {
+  const tdir = TMP.replace(/\\/g, '/');
+  const mk = (body, name) => `cat > ${tdir}/${name} <<'EOF'\n${body}\nEOF\npython ${tdir}/${name}`;
+  // read-only bodies mentioning FACTORY_HOME/.factory-like text pass although the file does not exist yet
+  for (const [name, body] of [
+    ['ff-new-read1.py', 'import json\nprint(open("x").read())\nPAT = r"dev\\.factory"  # ~/.factory'],
+    ['ff-new-read2.py', 'import os\nprint(os.environ.get("FACTORY_HOME"))'],
+  ]) {
+    assert.ok(!denied(protect(mk(body, name))), name);
+  }
+  // a body that writes a run file stays denied
+  assert.ok(denied(protect(mk('import os\nopen(os.environ["FACTORY_HOME"]+"/runs/r/run.json","w").write("1")', 'ff-new-write.py'))));
+  // a temp script copied in (its body is not in the command) stays denied while the command references the factory home
+  const r = protect(`cp /work/evil.py ${tdir}/ff-copied.py && python ${tdir}/ff-copied.py # ~/.factory`);
+  assert.ok(denied(r));
+  assert.match(JSON.stringify(r), /not written inline/);
+});

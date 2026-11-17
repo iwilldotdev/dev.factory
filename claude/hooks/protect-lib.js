@@ -353,6 +353,13 @@ function scriptWritesRun(code) {
 }
 
 /** Content of a script file inside the temp dir (the session scratchpad is one), else null. */
+/** True when `command` writes `file` from inline text (`> f`, `>> f`, `tee f`, Out-File/Set-Content f), so the body is in the command. */
+function writtenInline(command, file) {
+  const esc = String(file).replace(/^['"]|['"]$/g, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\//g, '[\\\\/]');
+  const re = new RegExp(`(?:>>?|\\btee\\s+(?:-a\\s+)?|\\b(?:Out-File|Set-Content|Add-Content)\\s+(?:-(?:Path|FilePath)\\s+)?)\\s*['"]?${esc}['"]?(?:\\s|$)`, 'i');
+  return re.test(command);
+}
+
 function readScript(file, ctx) {
   const p = normPath(file, ctx.cwd);
   if (!inTemp(p)) return null;
@@ -401,7 +408,12 @@ function broadReason(command, ctx) {
     for (const f of files) {
       const body = readScript(f, ctx);
       if (body !== null && scriptWritesRun(body)) return `${cmd} script ${f} writes run files`;
-      if (body === null && refs) return `${cmd} script ${f} outside the temp dir while the command references FACTORY_HOME or .factory`;
+      // A temp script that does not exist yet is written by this same command (`cat > f.py <<EOF … ; python f.py`):
+      // its body is in the command text, already judged above by scriptWritesRun(command).
+      if (body === null && refs && !(inTemp(normPath(f, ctx.cwd)) && writtenInline(command, f))) {
+        const where = inTemp(normPath(f, ctx.cwd)) ? 'not readable and not written inline by this command' : 'outside the temp dir';
+        return `${cmd} script ${f} ${where} while the command references FACTORY_HOME or .factory`;
+      }
     }
   }
   // Inline interpreter code nested in another shell (`bash -c "python -c \"...\""`) that the tokenizer cannot split.

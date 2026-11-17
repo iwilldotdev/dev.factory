@@ -5,6 +5,11 @@ from __future__ import annotations
 import sys
 import unittest
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
+
 from real_support import RealCase, cli, commit_file, core, sh
 
 PY = f'"{sys.executable}"'
@@ -180,7 +185,8 @@ class ShipPlan(HotfixCase):
         self.assertIn("Mirrored to {mr_url:React:pack}", base["description"])
         self.assertIn("Mirror of {mr_url:React:homolog}", mirror["description"])
         self.assertEqual(base["depends_on"], [])
-        self.assertIn("evidence/CHK-1@pack/", mirror["description"])
+        self.assertIn("CHK-1", mirror["description"])  # checks table; no local artifact links (F-28)
+        self.assertNotIn("](evidence/", mirror["description"])
         self.assertEqual(sum(1 for a in plan["actions"] if a["type"] == "jira_comment"), 1)
         self.assertEqual(len(plan["jira_comment"]["adf"]["content"]), 2)
 

@@ -30,7 +30,7 @@ Any file the CLI needs from Jira, GitLab, or Figma is written by the dev.mcp rea
 ## Start
 
 1. Identify the workspace (`factory workspace check <ws>`; if none exists: `factory workspace init|import`, then put the missing fields in the question round).
-2. Single ticket: `factory run start <ws> <KEY> [--bug KEY] [--risk high]`. Epic: `factory epic start <ws> <EPIC> --tickets …` (see Epics). Resume: `factory run status <run>` / `factory epic status <parent>`.
+2. Single ticket: `factory run start <ws> <KEY> [--bug KEY] [--risk high]`. Jira issuetype Bug → a bug run (`--bug`); ask "hotfix?" (homolog + pack) in the question round, and `factory run retype <run> --bug|--hotfix` if the type turns out wrong. Abandoned run: `factory run close <run> --reason "..."`. Epic: `factory epic start <ws> <EPIC> --tickets …` (see Epics). Resume: `factory run status <run>` / `factory epic status <parent>`.
 3. Print exactly once: `factory-run: <run-id>`. Metrics use it to find this transcript.
 
 Risk is **high** when the work touches auth, money, data, migration, concurrency, a public contract, or security. High risk: auditors and diagnosis on `model: opus`, both review rounds always.
@@ -46,6 +46,10 @@ The user follows the run in the app, not at the end.
 - One chat line per phase start and per worker launched ("plan: author writing acs.json + checks for API").
 - Long commands (`env up`, `prove`, `baseline`, `env lease acquire --wait`) run in the background, announced in one line with what runs and a rough ETA.
 - Summarise every worker report in 1–2 chat lines (status, what changed, what is open).
+
+## Workers and infrastructure
+
+Before delegating any worker that needs a running env, run `factory env check <ws> <repo> --run <run>` yourself and pass the result as `env_preflight` in the request, with a `budget`. Workers do not restart an env they did not start and hand back `blocked` with `infra_signal` after the first failed self-repair (blocked contract in [references/workers.md](references/workers.md)). `sleep` is denied for workers: `factory wait` is the bounded replacement. At plan, the author dry-runs each new browser/api check against the live env before `gate plan` (phases.md). A `human` check the user confirms in chat is recorded by you with `factory run verify-human <run> <CHK-id> --note "<what the user confirmed>" --by user --user-said "<gist of the user's words>"`, only after the user confirmed it in chat, main session only.
 
 ## Worker questions
 

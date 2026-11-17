@@ -112,6 +112,11 @@ class InstallTest(unittest.TestCase):
             self.assertNotIn("{{", text)
             self.assertIn(f'node "{install.fwd(p / "hooks")}/worker-guard.js" {role}', text)
             self.assertIn(install.fwd(self.fh), text)
+            if role != "scout":
+                self.assertEqual(text.count(f'node "{install.fwd(p / "hooks")}/failfast.js"'), 3, role)
+                for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+                    self.assertIn(f"  {event}:", text)
+        self.assertIn("failfast.js", install.HOOK_FILES)
         for name in install.HOOK_FILES:
             self.assertTrue((p / "hooks" / name).is_file())
         settings = json.loads((p / "settings.json").read_text(encoding="utf-8"))

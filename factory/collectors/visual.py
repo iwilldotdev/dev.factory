@@ -21,8 +21,9 @@ def collect(check: dict, ctx: Ctx) -> dict:
         return adapter
     out = b.out_dir(ctx)
     vp = check.get("viewport") or [1440, 900]
+    budget = b.Budget(b.check_cap(check, ctx))
 
-    cap = ["capture", "--url", url, "--out", str(out), "--viewport", f"{vp[0]}x{vp[1]}"]
+    cap = ["capture", "--url", url, "--out", str(out), "--viewport", f"{vp[0]}x{vp[1]}", *budget.cli_args(check)]
     for flag, key in (("--selector", "selector"), ("--wait-for", "wait_for")):
         if check.get(key):
             cap += [flag, check[key]]
@@ -34,7 +35,7 @@ def collect(check: dict, ctx: Ctx) -> dict:
         return state
     if state:
         cap += ["--storage-state", state]
-    captured = b.run_cli(cap, out)
+    captured = b.run_cli(cap, out, budget.remaining())
     if captured["status"] != "pass":
         return b.finish(captured, out, ctx)
 
@@ -50,4 +51,4 @@ def collect(check: dict, ctx: Ctx) -> dict:
         cmp += ["--copies", "|".join(check["copies"])]
     if check.get("fit"):
         cmp += ["--fit"]
-    return b.finish(b.run_cli(cmp, out), out, ctx)
+    return b.finish(b.run_cli(cmp, out, budget.remaining()), out, ctx)

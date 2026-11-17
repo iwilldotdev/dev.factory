@@ -2,6 +2,11 @@ import json
 import unittest
 from unittest import mock
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 from ops_helpers import FactoryCase, git, make_repo
 
 from factory.commands import ship
@@ -69,8 +74,8 @@ class PlanTests(ShipBase):
         self.assertEqual(plan["mrs"][3]["source_branch"], "feature/x-homolog")
         self.assertIn("Depends on {mr_url:API:pack}", react_pack["description"])
         self.assertIn("{mr_url:React:pack}", plan["mrs"][3]["description"])
-        self.assertIn("C1: pass", react_pack["description"])
-        self.assertIn("C2: human", react_pack["description"])
+        self.assertIn("| C1 | PASS |", react_pack["description"])
+        self.assertIn("| C2 | HUMAN |", react_pack["description"])
         self.assertIn("Native picker", react_pack["description"])
         self.assertIn("Shows \\| thing", react_pack["description"])
         self.assertTrue(all(a["needs_user"] for a in plan["actions"]))

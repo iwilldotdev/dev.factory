@@ -69,7 +69,8 @@ test('factory subcommands reserved for the main session', () => {
   }
   assert.ok(!denied(guard('builder', bash('factory prove r --check CHK-1'))));
   assert.ok(!denied(guard('author', bash('factory figma expect r 3544:5710 --selector "[data-testid=d]"'))));
-  assert.ok(!denied(guard('builder', bash('factory env up acme React --run r'))));
+  assert.ok(denied(guard('builder', bash('factory env up acme React --run r'))), 'env up is the main session');
+  assert.ok(!denied(guard('builder', bash('factory env check acme React --run r'))));
   assert.ok(!denied(guard('auditor', bash('factory run status r'))));
 });
 

@@ -17,7 +17,8 @@ def collect(check: dict, ctx: Ctx) -> dict:
     if isinstance(adapter, dict):
         return adapter
     out = b.out_dir(ctx)
-    argv = ["style-probe", "--url", url, "--map", str(map_file), "--out", str(out), *adapter]
+    budget = b.Budget(b.check_cap(check, ctx))
+    argv = ["style-probe", "--url", url, "--map", str(map_file), "--out", str(out), *adapter, *budget.cli_args(check)]
     vp = check.get("viewport")
     if vp:
         argv += ["--viewport", f"{vp[0]}x{vp[1]}"]
@@ -28,4 +29,4 @@ def collect(check: dict, ctx: Ctx) -> dict:
         return state
     if state:
         argv += ["--storage-state", state]
-    return b.finish(b.run_cli(argv, out), out, ctx)
+    return b.finish(b.run_cli(argv, out, budget.cap), out, ctx)

@@ -94,7 +94,8 @@ def cmd_record(args) -> int:
                 if p.stem.rsplit("-", 1)[1].isdigit()]
     rnd = max(existing, default=0) + 1
     lock = (run.get("plan_lock") or {}).get("digest") if isinstance(run.get("plan_lock"), dict) else None
-    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now(), plan_lock=lock)
+    out = dict(rec, schemaVersion=SCHEMA_VERSION, kind=args.kind, round=rnd, repos=shas, recorded=now(), plan_lock=lock,
+               plan_code=(run.get("plan_lock") or {}).get("code_scope") if isinstance(run.get("plan_lock"), dict) else None)
     hint = session_hint()
     if hint:
         out["recorded_by"] = hint
@@ -460,6 +461,10 @@ def _mr_report(run: dict, ws: dict, mr: dict) -> dict:
                 rows.append({"id": cid, "type": "?", "status": "missing", "summary": "unknown check"})
                 gaps.append(f"{ac.get('id')}: references unknown check {cid}")
                 counts["gap"] += 1
+            elif chk.get("type") == "human" and evidence_state(cid)[0] == "pass":
+                rows.append({"id": cid, "type": "human", "status": "pass",
+                             "summary": evidence_state(cid)[1] or chk.get("text", "")})
+                counts["done"] += 1
             elif chk.get("type") == "human":
                 rows.append({"id": cid, "type": "human", "status": "human", "summary": chk.get("text", "")})
                 if chk not in humans:
@@ -652,7 +657,9 @@ def cmd_fix(args) -> int:
         run["targets"] = [mr["target_branch"]]
     event(run, "phase", **{"from": run["phase"], "to": "build"})
     event(run, "review_fix", mrs=[f"{m['repo']}!{m['iid']}" for m in run["mrs"]])
-    run["review_origin"] = {"mrs": run.pop("mrs"), "converted": now()}
+    mrs = run.pop("mrs")
+    # MR head at conversion per repo: gate build checks only commits after it (the MR's own were reviewed already)
+    run["review_origin"] = {"mrs": mrs, "converted": now(), "head_sha": {m["repo"]: m["head_sha"] for m in mrs}}
     run["kind"] = "ticket"
     run["phase"] = "build"
     run["decisions"].append({"at": now(), "phase": "build", "text": "review fix: continuing on the MR source branch", "by": "agent"})

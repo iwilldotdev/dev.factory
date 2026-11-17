@@ -5,6 +5,11 @@ from __future__ import annotations
 import sys
 import unittest
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
+
 from real_support import RealCase, cli, commit_file, core, sh
 
 PY = f'"{sys.executable}"'

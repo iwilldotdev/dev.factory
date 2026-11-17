@@ -10,6 +10,16 @@ export type AdapterAction =
 
 const ALLOWED = new Set(["goto", "click", "fill", "wait"]);
 
+export const WAIT_UNTIL = ["load", "domcontentloaded", "networkidle", "commit"] as const;
+export type WaitUntil = (typeof WAIT_UNTIL)[number];
+export type NavOptions = { waitUntil?: WaitUntil; gotoTimeoutMs?: number };
+export const DEFAULT_GOTO_TIMEOUT_MS = 30000;
+
+/** Navigation never waits for networkidle unless the check asks, and never longer than the goto timeout. */
+export function gotoOptions(nav?: NavOptions): { waitUntil: WaitUntil; timeout: number } {
+  return { waitUntil: nav?.waitUntil ?? "load", timeout: nav?.gotoTimeoutMs ?? DEFAULT_GOTO_TIMEOUT_MS };
+}
+
 export async function captureSurface(options: {
   url: string;
   outDir: string;
@@ -20,6 +30,8 @@ export async function captureSurface(options: {
   storageState?: string;
   waitFor?: string;
   settleMs?: number;
+  waitUntil?: WaitUntil;
+  gotoTimeoutMs?: number;
 }): Promise<{ appPng: string; text: string }> {
   await mkdir(options.outDir, { recursive: true });
   const browser = await chromium.launch({ headless: true });
@@ -35,14 +47,15 @@ export async function captureSurface(options: {
     });
     const page = await context.newPage();
     await page.emulateMedia({ reducedMotion: "reduce", colorScheme: "light" });
-    await page.goto(options.url, { waitUntil: "load" });
+    page.setDefaultTimeout(options.gotoTimeoutMs ?? DEFAULT_GOTO_TIMEOUT_MS);
+    await page.goto(options.url, gotoOptions(options));
     await page.evaluate(() => document.fonts.ready);
     await freezeMotion(page);
     if (options.adapterPath) {
-      await runAdapter(page, options.adapterPath, options.url);
+      await runAdapter(page, options.adapterPath, options.url, options);
       await freezeMotion(page);
     }
-    if (options.waitFor) await page.locator(options.waitFor).first().waitFor({ timeout: 30000 });
+    if (options.waitFor) await page.locator(options.waitFor).first().waitFor({ timeout: options.gotoTimeoutMs ?? DEFAULT_GOTO_TIMEOUT_MS });
     if (options.settleMs) await page.waitForTimeout(options.settleMs);
     const target = options.selector ? page.locator(options.selector) : page;
     const appPng = path.join(options.outDir, "app.png");
@@ -64,7 +77,7 @@ async function freezeMotion(page: Page): Promise<void> {
   });
 }
 
-export async function runAdapter(page: Page, adapterPath: string, baseUrl: string): Promise<void> {
+export async function runAdapter(page: Page, adapterPath: string, baseUrl: string, nav?: NavOptions): Promise<void> {
   const payload = JSON.parse(await readFile(adapterPath, "utf8")) as { actions?: AdapterAction[] };
   for (const action of payload.actions ?? []) {
     if (!action || !ALLOWED.has(action.type)) {
@@ -73,7 +86,7 @@ export async function runAdapter(page: Page, adapterPath: string, baseUrl: strin
     if (action.type === "goto") {
       const next = new URL(action.path, baseUrl);
       if (next.origin !== new URL(baseUrl).origin) throw new Error("adapter goto cannot leave the app origin");
-      await page.goto(next.toString(), { waitUntil: "load" });
+      await page.goto(next.toString(), gotoOptions(nav));
     } else if (action.type === "click") {
       await page.locator(action.selector).click();
     } else if (action.type === "fill") {

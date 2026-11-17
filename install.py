@@ -47,7 +47,7 @@ SRC = REPO / "claude"
 MARK_START = "<!-- dev.factory:start -->"
 MARK_END = "<!-- dev.factory:end -->"
 HARNESS_SECTIONS = ("## Delegation to workers", "## dev.harness flows")
-HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js")
+HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js", "failfast.js")
 # regex: file/shell tools plus every MCP tool (protect.js checks `save_to` on mcp__* calls)
 PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
 FACTORY_DIRS = ("workspaces", "runs", "env", "secrets")

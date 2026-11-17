@@ -5,11 +5,12 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .. import integrity, shots
 from ..collectors.test import weak_pattern_reason
-from ..core import (FactoryError, GateFailed, ensure_owner, event, evidence_id, git, git_dirty,
+from ..core import (FactoryError, GateFailed, _dep_run_ids, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
                     run_base_branch, run_resync, run_save, run_targets, target_branch, target_worktree, workspace_load)
@@ -210,6 +211,17 @@ def _run_relative(value) -> bool:
         return False
     win = PureWindowsPath(value)
     return not win.anchor and not PurePosixPath(value).anchor and ".." not in win.parts
+
+
+OUTPUT_KEYS = ("out", "out_dir", "output", "output_path", "output_dir", "screenshot", "screenshot_path", "save_to")
+
+
+def _inside_run_dir(run_id: str, rel: str) -> bool:
+    rd = run_dir(run_id).resolve()
+    try:
+        return (rd / rel).resolve().is_relative_to(rd)
+    except OSError:
+        return False
 
 
 def _is_num(v) -> bool:
@@ -428,6 +440,18 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
                 errors.append(f"{cid}: adapter applies only to visual and style checks")
             elif not _run_relative(adapter):
                 errors.append(f"{cid}: adapter must be a path relative to the run dir (e.g. checks/adapter/open.json)")
+            elif not _inside_run_dir(run_id, adapter):
+                errors.append(f"{cid}: adapter {adapter!r} resolves outside the run dir (link or junction): the plan lock "
+                              "only covers files inside it")
+        for ikey, irel in integrity.check_inputs(run_id, chk):
+            if integrity.is_generated(irel):
+                errors.append(f"{cid}: {ikey} {irel!r} is inside a generated dir ({', '.join(sorted(integrity.GENERATED_DIRS))}) "
+                              "that the plan lock skips: move this input out of it (e.g. checks/specs/)")
+        for okey in OUTPUT_KEYS:
+            target = chk.get(okey)
+            if isinstance(target, str) and re.match(r"^(?:\./)?checks[\/]", target.replace("\\", "/")):
+                errors.append(f"{cid}: {okey} {target!r} points into checks/ (a locked plan dir): collectors write "
+                              "generated files under evidence/ only")
         if ctype == "visual" and chk.get("max_diff_ratio") is not None:
             ratio = chk["max_diff_ratio"]
             if not _is_num(ratio) or ratio < 0:
@@ -648,18 +672,82 @@ def load_evidence_file(run_id: str, name: str) -> dict | None:
     return load_evidence(run_id, name)
 
 
-def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str | None = None) -> list[str]:
+def _remote_branch_refs(path: Path, own: set[str], allow: set[str] | None) -> list[str]:
+    """refs/remotes/<remote>/<name> whose <name> is not one of the run's own branches and, when `allow` is
+    given, is one of the allowed branch names (targets, stacked bases, dependency and open-MR source branches)."""
+    refs = []
+    for ref in git(path, "for-each-ref", "--format=%(refname)", "refs/remotes", check=False).splitlines():
+        _remote, _, name = ref[len("refs/remotes/"):].partition("/")
+        if not name or name == "HEAD" or name in own:
+            continue
+        if allow is not None and name not in allow:
+            continue
+        refs.append(ref)
+    return refs
+
+
+def inherited_allow(run: dict, ws: dict, alias: str) -> set[str]:
+    """Remote branch names a commit may legitimately be inherited from: the run's target branches, the branch it
+    is stacked on, dependency runs' branches and the source branches of open MRs read back into remote/."""
+    rec = (run.get("repos") or {}).get(alias) or {}
+    names: set[str] = set()
+    for t in [*run_targets(run), rec.get("base")]:
+        b = target_branch(ws, alias, t) if t else None
+        if b:
+            names.add(b)
+    if rec.get("base_branch"):
+        names.add(rec["base_branch"])
+    for rid in _dep_run_ids(run, ws):
+        try:
+            dep = (run_load(rid).get("repos") or {}).get(alias) or {}
+        except (FactoryError, OSError, ValueError):
+            continue
+        for b in [dep.get("branch"), *(dep.get("branches") or {}).values()]:
+            if b:
+                names.add(b)
+    remote = run_dir(run["id"]) / "remote"
+    for p in sorted(remote.glob("mr-*.json")) if remote.is_dir() else []:
+        if p.name.endswith("-discussions.json"):
+            continue
+        try:
+            data = read_json(p)
+        except FactoryError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
+            data = data["merge_request"]
+        if isinstance(data, dict) and data.get("source_branch") and data.get("state") in (None, "opened"):
+            names.add(data["source_branch"])
+    return names
+
+
+def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str | None = None, *,
+                   own: tuple[str, ...] = (), origin_head: str | None = None,
+                   allow: set[str] | None = None) -> list[str]:
+    """Commit header/trailer rules over the commits the run added.
+
+    `origin_head` (a review-fix run: the MR head recorded at conversion) limits the span to
+    `<origin_head>..HEAD` without merges: the MR's own earlier commits are not this run's. Otherwise
+    `<base>..HEAD`, skipping commits already reachable from another remote branch: every remote branch when
+    `allow` is None, else only the `allow` names; the run's own branches (`branch`, `own`) never excuse a commit."""
     commit = ws.get("commit") or {}
     regex = re.compile(commit["header_regex"]) if commit.get("header_regex") else None
     forbidden = [t.lower() for t in commit.get("forbidden_trailers") or []]
     errors = []
     span = [f"{base_ref}..HEAD"]
-    if git(path, "for-each-ref", "--count=1", "refs/remotes", check=False):
-        keep = ["--not"]
-        if branch:
-            keep.append(f"--exclude=*/{branch}")
-        keep.append("--remotes")
-        span += keep
+    if origin_head and git(path, "rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}", check=False):
+        proc = subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", origin_head, "HEAD"],
+                              capture_output=True, text=True)
+        if proc.returncode == 0:
+            span = ["--no-merges", f"{origin_head}..HEAD"]
+        else:
+            print(f"{alias}: MR head {origin_head[:8]} is not an ancestor of HEAD (history rewritten); "
+                  f"checking {base_ref}..HEAD")
+            origin_head = None
+    else:
+        origin_head = None
+    refs = [] if origin_head else _remote_branch_refs(path, {b for b in (branch, *own) if b}, allow)
+    if refs:
+        span += ["--not", *refs]
         total = git(path, "rev-list", "--count", f"{base_ref}..HEAD", check=False)
         kept = git(path, "rev-list", "--count", *span, check=False)
         if total.isdigit() and kept.isdigit() and int(total) > int(kept):
@@ -693,7 +781,10 @@ def _build(run_id, run, ws) -> list[str]:
         if not ahead.isdigit() or int(ahead) == 0:
             errors.append(f"{alias}: no commits ahead of {base}")
         else:
-            errors.extend(commits_errors(path, base, ws, alias, rec.get("branch")))
+            origin = ((run.get("review_origin") or {}).get("head_sha") or {}).get(alias)
+            own = tuple(v for v in (rec.get("branches") or {}).values() if v)
+            errors.extend(commits_errors(path, base, ws, alias, rec.get("branch"), own=own, origin_head=origin,
+                                         allow=inherited_allow(run, ws, alias)))
     return errors
 
 
@@ -797,11 +888,56 @@ def review_rounds(run_id: str) -> int:
     return max((latest_review(run_id, k) or {}).get("round", 0) or 0 for k in ("code", "qa"))
 
 
+def human_checks(run_id: str) -> list[dict]:
+    try:
+        return [c for c in load_acs(run_id).get("checks") or [] if c.get("type") == "human" and c.get("id")]
+    except FactoryError:
+        return []
+
+
+def human_pending(run_id: str, run: dict) -> list[dict]:
+    """Human checks without the user's pass evidence (`factory run verify-human`)."""
+    out = []
+    try:
+        ws = workspace_load(run["workspace"])
+    except FactoryError:
+        ws = None
+    for chk in human_checks(run_id):
+        ev = load_evidence(run_id, chk["id"])
+        if ev is None or ev.get("status") != "pass" or integrity.evidence_error(run, chk["id"])                 or _human_stale(run, ws, ev):
+            out.append(chk)
+    return out
+
+
+def _human_stale(run: dict, ws: dict | None, ev: dict) -> bool:
+    """The user's confirmation is about a worktree state: a later commit or a dirty tree voids it."""
+    if ev.get("dirty"):
+        return True
+    alias = ev.get("repo")
+    if not alias or ws is None:
+        return False
+    try:
+        path = repo_path_for_run(run, ws, alias)
+        return not path.is_dir() or ev.get("git_sha") != git_head(path) or git_dirty(path)
+    except (FactoryError, KeyError):
+        return True
+
+
+def _human_finding(f: dict, human_ids: set[str]) -> bool:
+    return f.get("severity") in ("blocker", "major") and (f.get("check") in human_ids or f.get("human") is True)
+
+
 def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
     """Returns (plain_errors, change_errors). change_errors send the run back to build.
 
-    A blocker/major finding always counts: `resolved` flags are ignored (resolution = a later round)."""
+    A blocker/major finding always counts: `resolved` flags are ignored (resolution = a later round).
+    A qa review that is CHANGES only because of `human` checks (blocker/major findings with `check: <human id>`
+    or `human: true`, or no finding at all while a human check is pending) is not a change request: the pending
+    human checks go to plain_errors (ask the user; `factory run verify-human`) and no review loop is counted."""
     plain, changes = [], []
+    humans = {c["id"] for c in human_checks(run_id)}
+    pending = {c["id"]: c for c in human_pending(run_id, run)}
+    waiting_on_human = False
     for kind in ("code", "qa"):
         rec, path = latest_review_file(run_id, kind)
         if rec is None:
@@ -818,11 +954,24 @@ def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
                 head = None
             if (rec.get("repos") or {}).get(alias) != head:
                 plain.append(f"{kind} review round {rec.get('round')} is stale for {alias}; re-review HEAD")
-        if rec.get("verdict") != "APPROVE":
+        blocking = [f for f in rec.get("findings") or [] if f.get("severity") in ("blocker", "major")]
+        comp = rec.get("completeness") if isinstance(rec.get("completeness"), dict) else {}
+        comp_clean = comp.get("gap") == 0 and comp.get("not_checked") == 0
+        human_only = (kind == "qa" and rec.get("verdict") != "APPROVE" and bool(humans) and comp_clean
+                      and all(_human_finding(f, humans) for f in blocking)
+                      and (bool(pending) or any(_human_finding(f, humans) for f in blocking)))
+        if human_only:
+            waiting_on_human = waiting_on_human or bool(pending)
+        elif rec.get("verdict") != "APPROVE":
             changes.append(f"{kind} review round {rec.get('round')} verdict {rec.get('verdict')}")
-        for f in rec.get("findings") or []:
-            if f.get("severity") in ("blocker", "major"):
-                changes.append(f"{kind} {f.get('id')} [{f['severity']}] {f.get('file', '')} {f.get('text', '')}".strip())
+        for f in blocking:
+            if human_only and _human_finding(f, humans):
+                continue
+            changes.append(f"{kind} {f.get('id')} [{f['severity']}] {f.get('file', '')} {f.get('text', '')}".strip())
+    if waiting_on_human:
+        for cid, chk in pending.items():
+            plain.append(f"{cid}: human check pending: {chk.get('text')} (ask the user, then `factory run verify-human "
+                         f"{run_id} {cid} --note \"<what the user confirmed>\" --by user --user-said \"<gist>\"`)")
     return plain, changes
 
 

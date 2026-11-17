@@ -7,12 +7,49 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from factory.core import Ctx
 
 FACTORY_ROOT = Path(__file__).resolve().parents[2]
-TIMEOUT_S = 600
+TIMEOUT_S = 600  # last-resort cap for callers that pass none
+DEFAULT_CAP_S = {"browser": 120, "visual": 120, "style": 120, "screenshot": 120, "api": 60}
+GOTO_TIMEOUT_MS = 30000
+CLI_MARGIN_S = 3  # the CLI stops itself this long before the cap, so it can still write result.json
+
+
+def check_cap(check: dict, ctx: Ctx | None = None) -> float:
+    """Wall-clock cap (seconds) of one check: its `timeout_s`, else workspace `limits.check_timeout_s`, else the
+    default of its type (browser/visual/style/screenshot 120, api 60)."""
+    def num(v):
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+    cap = num(check.get("timeout_s"))
+    if cap is None and ctx is not None:
+        limits = (ctx.workspace or {}).get("limits")
+        cap = num(limits.get("check_timeout_s")) if isinstance(limits, dict) else None
+    return cap if cap is not None else float(DEFAULT_CAP_S.get(check.get("type"), 120))
+
+
+class Budget:
+    """Wall-clock budget shared by the CLI calls of one check (visual: capture then compare)."""
+
+    def __init__(self, cap: float):
+        self.cap = float(cap)
+        self.t0 = time.monotonic()
+
+    def remaining(self) -> float:
+        return max(1.0, self.cap - (time.monotonic() - self.t0))
+
+    def cli_args(self, check: dict) -> list[str]:
+        """`--timeout-ms` (CLI watchdog and Playwright per-test/global cap, below the Python cap),
+        `--goto-timeout-ms`, and `--wait-until` when the check asks for it."""
+        left = self.remaining()
+        total_ms = int(max(1.0, left - CLI_MARGIN_S) * 1000)
+        argv = ["--timeout-ms", str(total_ms), "--goto-timeout-ms", str(min(GOTO_TIMEOUT_MS, total_ms))]
+        if check.get("wait_until") in ("load", "domcontentloaded", "networkidle", "commit"):
+            argv += ["--wait-until", check["wait_until"]]
+        return argv
 
 
 def _error(summary: str, **details) -> dict:
@@ -88,8 +125,47 @@ def out_dir(ctx: Ctx) -> Path:
     return out
 
 
-def run_cli(argv: list[str], out: Path, timeout: int = TIMEOUT_S) -> dict:
-    """Run the CLI, return its result.json (or an error body). Never decides pass/fail itself."""
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill `proc` and everything it spawned (Playwright browsers outlive a plain kill)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (OSError, subprocess.TimeoutExpired, ProcessLookupError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def run_capped(cmd: list[str], timeout: float) -> tuple[int | None, str, str, bool]:
+    """Run `cmd` in its own process group; past `timeout` seconds kill the whole tree.
+    Returns (returncode, stdout, stderr, timed_out)."""
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace", **kwargs)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+        return proc.returncode, out or "", err or "", False
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        return proc.returncode, out or "", err or "", True
+
+
+def run_cli(argv: list[str], out: Path, timeout: float = TIMEOUT_S) -> dict:
+    """Run the CLI (killed with its children past `timeout`), return its result.json (or an error body).
+    Never decides pass/fail itself."""
     prefix = node_command()
     if isinstance(prefix, dict):
         return prefix
@@ -97,16 +173,16 @@ def run_cli(argv: list[str], out: Path, timeout: int = TIMEOUT_S) -> dict:
     if result_file.exists():
         result_file.unlink()
     try:
-        proc = subprocess.run(
-            [*prefix, *argv], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout
-        )
-    except subprocess.TimeoutExpired:
-        return _error(f"browser CLI timed out after {timeout}s")
+        rc, stdout, stderr, timed_out = run_capped([*prefix, *argv], timeout)
     except OSError as err:
         return _error(f"cannot run browser CLI: {err}")
+    if timed_out and not result_file.is_file():
+        tail = (stderr or stdout or "").strip()[-800:]
+        return _error(f"browser CLI timed out after {int(timeout)}s (check cap); process tree killed",
+                      timeout=True, output=tail)
     if not result_file.is_file():
-        tail = (proc.stderr or proc.stdout or "").strip()[-800:]
-        return _error(f"browser CLI exit {proc.returncode} without result.json", output=tail)
+        tail = (stderr or stdout or "").strip()[-800:]
+        return _error(f"browser CLI exit {rc} without result.json", output=tail)
     try:
         data = json.loads(result_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as err:
@@ -145,10 +221,11 @@ def collect(check: dict, ctx: Ctx) -> dict:
     if not spec.is_file():
         return _error(f"spec not found: {check['spec']}")
     out = out_dir(ctx)
-    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out)]
+    budget = Budget(check_cap(check, ctx))
+    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out), *budget.cli_args(check)]
     state = storage_state(check, ctx)
     if isinstance(state, dict):
         return state
     if state:
         argv += ["--storage-state", state]
-    return finish(run_cli(argv, out), out, ctx)
+    return finish(run_cli(argv, out, budget.cap), out, ctx)

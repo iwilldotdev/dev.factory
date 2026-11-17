@@ -12,6 +12,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -320,8 +321,28 @@ def repo_path_for_run(run: dict, workspace: dict, alias: str) -> Path:
     return Path(repo_conf(workspace, alias)["path"])
 
 
+def run_ids_for_ticket(workspace_name: str, key: str) -> list[str]:
+    """Run ids of `workspace_name` that carry ticket `key`, by run.json content (run ids are not assumed to be
+    `{ws}-{key}`: epic children, review-fix conversions and renamed runs differ)."""
+    guess = f"{str(workspace_name).lower()}-{key.lower()}"
+    out: list[str] = []
+    root = factory_home() / "runs"
+    if root.is_dir():
+        for p in sorted(root.glob("*/run.json")):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or str(data.get("workspace", "")).lower() != str(workspace_name).lower():
+                continue
+            if any(str(t.get("key", "")).upper() == key.upper() for t in data.get("tickets") or [] if isinstance(t, dict)):
+                out.append(p.parent.name)
+    out.sort(key=lambda rid: rid != guess)  # the conventional id first
+    return out or [guess]
+
+
 def _dep_run_ids(run: dict, workspace: dict) -> list[str]:
-    ws = str(workspace.get("name", "")).lower()
+    ws = str(workspace.get("name", ""))
     keys: list[str] = []
     for t in run.get("tickets") or []:
         keys += [str(d) for d in t.get("depends_on") or []]
@@ -335,30 +356,42 @@ def _dep_run_ids(run: dict, workspace: dict) -> list[str]:
         for t in epic.get("tickets") or []:
             if str(t.get("key", "")).upper() in mine:
                 keys += [str(d) for d in t.get("depends_on") or []]
-    return [f"{ws}-{k.lower()}" for k in dict.fromkeys(keys)]
+    ids: list[str] = []
+    for k in dict.fromkeys(keys):
+        ids += [rid for rid in run_ids_for_ticket(ws, k) if rid not in ids]
+    return ids
 
 
-def repo_path_for_env(run: dict, workspace: dict, alias: str) -> Path:
-    """Like repo_path_for_run, but an epic child without a worktree for `alias` uses the nearest dependency run's worktree."""
+def repo_path_for_env(run: dict, workspace: dict, alias: str, warn=None) -> Path:
+    """Like repo_path_for_run, but an epic child without a worktree for `alias` uses the nearest dependency run's worktree.
+
+    Falling back to the repo's MAIN checkout (no worktree anywhere) is reported through `warn` (default: stderr):
+    an env started there serves unreviewed code."""
+    if warn is None:
+        warn = lambda msg: print(msg, file=sys.stderr)  # noqa: E731
     rec = (run.get("repos") or {}).get(alias) or {}
-    if rec.get("worktree") or not run.get("parent"):
+    if rec.get("worktree"):
         return repo_path_for_run(run, workspace, alias)
-    seen = {run.get("id")}
-    queue = _dep_run_ids(run, workspace)
-    while queue:
-        rid = queue.pop(0)
-        if rid in seen:
-            continue
-        seen.add(rid)
-        try:
-            dep = run_load(rid)
-        except (FactoryError, OSError, ValueError):
-            continue
-        wt = ((dep.get("repos") or {}).get(alias) or {}).get("worktree")
-        if wt:
-            return Path(wt)
-        queue += _dep_run_ids(dep, workspace)
-    return repo_path_for_run(run, workspace, alias)
+    if run.get("parent"):
+        seen = {run.get("id")}
+        queue = _dep_run_ids(run, workspace)
+        while queue:
+            rid = queue.pop(0)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            try:
+                dep = run_load(rid)
+            except (FactoryError, OSError, ValueError):
+                continue
+            wt = ((dep.get("repos") or {}).get(alias) or {}).get("worktree")
+            if wt:
+                return Path(wt)
+            queue += _dep_run_ids(dep, workspace)
+    path = repo_path_for_run(run, workspace, alias)
+    warn(f"WARNING: run {run.get('id')} has no worktree for {alias}; using the main checkout {path} "
+         "(it may not contain the run's code)")
+    return path
 
 
 def hotfix_of(run: dict) -> dict | None:

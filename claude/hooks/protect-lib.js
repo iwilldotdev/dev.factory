@@ -14,6 +14,8 @@ const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
 // denied to builder/auditor/scout and to shell writes. The CLI's plan-lock hashes catch later edits.
 const OWNED_FILES = new Set(['acs.json', 'diagnosis.md']);
 const OWNED_DIRS = new Set(['checks', 'figma']);
+// runs/_inbox/<session>/...: scratch for scouts that have no run yet (not a run; nothing CLI-owned in it).
+const INBOX = '_inbox';
 const CONFIG = { homeRaw: '' };
 
 // ---------- paths ----------
@@ -77,7 +79,7 @@ function isAuthorOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
   const parts = rel.split('/');
-  if (parts.length < 2) return false;
+  if (parts.length < 2 || parts[0] === INBOX) return false;
   if (parts.length === 2 && OWNED_FILES.has(parts[1])) return true;
   return OWNED_DIRS.has(parts[1]);
 }
@@ -101,7 +103,7 @@ function isCliOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
   const parts = rel.split('/');
-  if (parts.length < 2) return false;
+  if (parts.length < 2 || parts[0] === INBOX) return false;
   if (parts.length === 2 && PROTECTED_FILES.has(parts[1])) return true;
   return PROTECTED_DIRS.has(parts[1]);
 }
@@ -119,6 +121,14 @@ function inRunSub(p, home, sub) {
   if (rel === null) return false;
   const parts = rel.split('/');
   return parts.length >= 3 && parts[1] === sub;
+}
+
+/** runs/_inbox/<anything>: free scratch area (scouts' notes before a run exists). */
+function inInbox(p, home) {
+  const rel = relToRuns(p, home);
+  if (rel === null) return false;
+  const parts = rel.split('/');
+  return parts.length >= 2 && parts[0] === INBOX && !parts.includes('..');
 }
 
 function inRunDir(p, home) {
@@ -231,13 +241,12 @@ function segments(tokens) {
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'nice', 'nohup', 'time', 'exec', 'builtin', '&', '.']);
 const DESTRUCTIVE = new Set(['rm', 'rmdir', 'del', 'erase', 'rd', 'unlink', 'shred', 'remove-item', 'ri',
   'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'truncate']);
-const WRITERS = new Set(['tee', 'touch', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'new-item', 'ni',
+const WRITERS = new Set(['tee', 'sponge', 'touch', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'new-item', 'ni',
   'clear-content', 'clc', 'ln', 'mklink', 'chmod', 'chown', 'export-csv', 'export-clixml']);
 const COPIERS = new Set(['cp', 'copy', 'copy-item', 'cpi', 'xcopy', 'install', 'rsync', 'scp']);
 const CHDIR = new Set(['cd', 'pushd', 'set-location', 'sl', 'chdir']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh']);
 const INTERPRETERS = new Set(['python', 'python3', 'py', 'node', 'ruby', 'perl', 'deno', 'bun']);
-const WRITE_HINT = /write|dump|unlink|remove|rename|replace|rmtree|truncate|copy|move|Set-Content|Out-File|Add-Content|appendFile|rmSync|open\([^)]*['"][wa+]/i;
 
 function baseName(word) {
   return word.replace(/\\/g, '/').split('/').pop().toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '');
@@ -270,7 +279,7 @@ function textMentionsProtected(text, ctx) {
 
 const VERB_LIST = [
   'rm', 'rmdir', 'del', 'erase', 'rd', 'unlink', 'shred', 'mv', 'move', 'ren', 'rename', 'cp', 'copy', 'xcopy',
-  'robocopy', 'rsync', 'scp', 'install', 'tee', 'touch', 'truncate', 'dd', 'ln', 'mklink', 'chmod', 'chown', 'tar',
+  'robocopy', 'rsync', 'scp', 'install', 'tee', 'sponge', 'touch', 'truncate', 'dd', 'ln', 'mklink', 'chmod', 'chown', 'tar',
   'unzip', '7z', 'expand-archive', 'certutil', 'wget', 'iwr', 'irm', 'invoke-webrequest', 'invoke-restmethod',
   'start-bitstransfer', 'bitsadmin', 'set-content', 'add-content', 'out-file', 'new-item', 'remove-item',
   'copy-item', 'move-item', 'rename-item', 'clear-content', 'export-csv', 'export-clixml', 'sc', 'ac', 'ni', 'ri',
@@ -298,22 +307,84 @@ function runsMention(text, home) {
   return /(?:^|[^\w.-])\.factory\/runs|factory_home\}?%?\/runs/.test(t) || RUN_FILE_TAIL.test(t);
 }
 
+// Commands that only read. A segment starting with one of these is exempt from the "write verb" scan:
+// `grep -rn remove runs/x/run.json` or `cat runs/x/evidence/CHK-1.json | jq .` are reads, not writes.
+// Redirections (`> run.json`) are still caught per segment, and `tee`/`cp`/`sed -i` are not in this list.
+const READONLY_CMDS = new Set(['cat', 'type', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ls', 'dir',
+  'wc', 'jq', 'stat', 'file', 'du', 'diff', 'cmp', 'basename', 'dirname', 'realpath', 'readlink', 'pwd', 'echo', 'printf',
+  'get-content', 'gc', 'select-string', 'sls', 'get-childitem', 'gci', 'get-item', 'gi', 'get-location', 'test-path',
+  'measure-object', 'format-table', 'ft', 'convertfrom-json', 'sort', 'cut', 'tr', 'nl', 'column', 'od',
+  'sha256sum', 'md5sum', 'get-filehash', 'cd', 'pushd', 'popd', 'set-location', 'sl', 'chdir', 'test', '[', 'true', 'false']);
+const FIND_WRITES = /^-(?:delete|exec|execdir|ok|okdir|fprint\w*|fls)$/;
+const READ_UNSAFE_FLAGS = /^(?:--output(?:=.*)?|-[A-Za-z]*o.*|-i|--in-place.*)$/;
+
+function readOnlySegment(words) {
+  const w = stripPrefix(words);
+  if (!w.length) return true;
+  const cmd = baseName(w[0]);
+  const args = w.slice(1);
+  if (cmd === 'find') return !args.some((a) => FIND_WRITES.test(a));
+  if (cmd === 'sort') return !args.some((a) => READ_UNSAFE_FLAGS.test(a));
+  if (cmd === 'diff') return !args.some((a) => /^--output\b/.test(a));
+  if (cmd === 'rg' || cmd === 'ag') return !args.some((a) => /^--(?:pre|hostname-bin)\b/.test(a));
+  return READONLY_CMDS.has(cmd);
+}
+
+/** `python -c "..."` / `node -e "..."`: judged by what the code does (scriptWritesRun), not by flag-like words in it. */
+function inlineInterpreter(words) {
+  const w = stripPrefix(words);
+  return w.length > 1 && INTERPRETERS.has(baseName(w[0])) && w.slice(1).some((a) => /^(?:-c|-e|--eval|-p|-pe|--print)$/.test(a));
+}
+
+// Any write call in a code blob: the "writes files" signature (combined with a protected name below).
+const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
+const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
+// The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
+const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
+
 /**
- * Coarse checks over the whole command text, skipping `factory ...` segments:
- *  1. mentions a run path (any slash style / env-var form) together with ANY write-capable verb or flag;
+ * True when the whole code blob has ANY write call AND names a protected file/folder or the factory home
+ * anywhere (not necessarily on the same line: paths can be assembled across lines). Code with no write call
+ * (read-only scripts) stays allowed.
+ */
+function scriptWritesRun(code) {
+  const text = String(code);
+  return SCRIPT_WRITE.test(text) && (PROTECTED_NAME.test(text) || HOME_NAME.test(text));
+}
+
+/** Content of a script file inside the temp dir (the session scratchpad is one), else null. */
+function readScript(file, ctx) {
+  const p = normPath(file, ctx.cwd);
+  if (!inTemp(p)) return null;
+  try {
+    const fs = require('fs');
+    const abs = /^[a-zA-Z]:|^[\\/]/.test(file) ? file : `${ctx.cwd}/${file}`;
+    const st = fs.statSync(abs);
+    return st.isFile() && st.size < 2000000 ? fs.readFileSync(abs, 'utf8') : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Coarse checks over the whole command text, skipping `factory ...` segments and read-only commands:
+ *  1. a non-read-only segment mentions a run path together with ANY write-capable verb or flag;
  *  2. runs a script interpreter on stdin / -c / -e / a script file while the command references
- *     FACTORY_HOME or .factory (the factory CLI itself is exempt).
+ *     FACTORY_HOME or .factory, and the code writes a run file (a line with a write call that names
+ *     run.json/evidence/...). Scripts that only read are allowed. A script file is inspected only inside the
+ *     temp dir (the session scratchpad is inside it); elsewhere it stays denied. The factory CLI is exempt.
  */
 function broadReason(command, ctx) {
   const segs = segments(tokenize(command)).filter((seg) => {
     const w = stripPrefix(seg.words);
     return !(w.length && isFactory(w));
   });
-  const text = segs.map((s) => s.words.join(' ')).join('\n');
+  const text = segs.filter((s) => !readOnlySegment(s.words) && !inlineInterpreter(s.words)).map((s) => s.words.join(' ')).join('\n');
   if (runsMention(text, ctx.home) && WRITE_VERBS.test(text)) {
     return 'command mentions run files together with a write-capable verb';
   }
-  if (!INTERP_REFS.test(text)) return '';
+  const all = segs.map((s) => s.words.join(' ')).join('\n');
+  const refs = INTERP_REFS.test(all);
   const piped = /<<|\|\s*(?:python3?|py|node|deno|bun|ruby|perl)\b/i.test(command);
   for (const seg of segs) {
     const words = stripPrefix(seg.words);
@@ -324,9 +395,18 @@ function broadReason(command, ctx) {
     if (args[0] === '-m') continue;
     const stdin = args.length === 0 || args.includes('-') || piped;
     const inline = args.some((a) => /^(?:-c|-e|--eval|-p|-pe|--print)$/.test(a));
-    const file = args.some((a) => !a.startsWith('-') && SCRIPT_FILE.test(a));
-    if (stdin || inline || file) return `${cmd} script/inline code while the command references FACTORY_HOME or .factory`;
+    const files = args.filter((a) => !a.startsWith('-') && SCRIPT_FILE.test(a));
+    if (!(stdin || inline || files.length)) continue;
+    if (refs && scriptWritesRun(command)) return `${cmd} script/inline code writing run files`;
+    for (const f of files) {
+      const body = readScript(f, ctx);
+      if (body !== null && scriptWritesRun(body)) return `${cmd} script ${f} writes run files`;
+      if (body === null && refs) return `${cmd} script ${f} outside the temp dir while the command references FACTORY_HOME or .factory`;
+    }
   }
+  // Inline interpreter code nested in another shell (`bash -c "python -c \"...\""`) that the tokenizer cannot split.
+  const nested = /\b(?:python3?|py|node|deno|bun|ruby|perl)(?:\.exe)?\s+(?:-[A-Za-z]+\s+)*(?:-c|-e|--eval|-pe?|--print)\b/i.test(command);
+  if (nested && INTERP_REFS.test(command) && scriptWritesRun(command)) return 'interpreter inline code writing run files';
   return '';
 }
 
@@ -336,10 +416,36 @@ function setsFactoryRole(command) {
     && /FACTORY_ROLE["']?\s*(?:=|,)|\b(?:set|export|setx|setenv|env)\b[^;&|\n]*FACTORY_ROLE|SetEnvironmentVariable|putenv|environ|process\.env/i.test(command);
 }
 
+/**
+ * Bodies of `factory wait --cmd <body>` (quoted, unquoted, `--cmd=`): `factory wait` runs them with
+ * shell=True, so they are judged exactly like a `bash -c` body.
+ */
+function waitCmdBodies(command) {
+  const hasWait = segments(tokenize(command)).some((s) => {
+    const w = stripPrefix(s.words);
+    return w.length && isFactory(w) && w.includes('wait');
+  });
+  if (!hasWait) return [];
+  const bodies = [];
+  const re = /--cmd(?:=|\s+)("(?:\\[\s\S]|[^"\\])*"|'[^']*'|[^\s;&|]+)/g;
+  let m;
+  while ((m = re.exec(command))) {
+    let v = m[1];
+    if (v[0] === '"') v = v.slice(1, -1).replace(/\\(["\\$`])/g, '$1');
+    else if (v[0] === "'") v = v.slice(1, -1);
+    bodies.push(v);
+  }
+  return bodies;
+}
+
 /** Returns a reason string when the shell command writes a protected path, else ''. */
 function bashWriteReason(command, ctxIn, depth = 0) {
   let ctx = ctxIn;
   if (depth > 3) return textMentionsProtected(command, ctx) ? 'nested command touching run files' : '';
+  for (const body of waitCmdBodies(command)) {
+    const r = bashWriteReason(body, ctx, depth + 1);
+    if (r) return `factory wait --cmd: ${r}`;
+  }
   // Command substitutions are analysed as commands of their own.
   const subs = [];
   const flat = command.replace(/\$\(([^()]*)\)|`([^`]*)`/g, (_, a, b) => { subs.push(a ?? b); return ' SUBST '; });
@@ -372,8 +478,8 @@ function bashWriteReason(command, ctxIn, depth = 0) {
         || COPIERS.has(baseName(inner[0]))) && mentions) return `xargs ${inner[0]} over run files`;
       continue;
     }
-    if (cmd === 'find' && args.some((a) => a === '-delete' || a === '-exec' || a === '-execdir')) {
-      if (args.some((a) => wordProtected(a, ctx, true))) return 'find -delete/-exec over run files';
+    if (cmd === 'find' && args.some((a) => FIND_WRITES.test(a))) {
+      if (args.some((a) => wordProtected(a, ctx, true))) return 'find write/-delete/-exec over run files';
       continue;
     }
     if (SHELLS.has(cmd)) {
@@ -388,12 +494,38 @@ function bashWriteReason(command, ctxIn, depth = 0) {
       const i = args.findIndex((a) => a === '-c' || a === '-e' || a === '--eval' || a === '-p');
       if (i >= 0) {
         const code = args.slice(i + 1).join(' ');
-        if (textMentionsProtected(code, ctx) && WRITE_HINT.test(code)) return `${cmd} inline code writing run files`;
+        if (scriptWritesRun(code)) return `${cmd} inline code writing run files`;
       }
       continue;
     }
     if ((cmd === 'sed' || cmd === 'perl') && args.some((a) => /^-[a-z]*i/i.test(a) || a.startsWith('--in-place'))) {
       if (args.some((a) => !a.startsWith('-') && wordProtected(a, ctx))) return `${cmd} -i on run files`;
+      continue;
+    }
+    if (cmd === 'sort') {
+      const outs = [];
+      args.forEach((a, i) => {
+        let m;
+        if (a === '--output') outs.push(args[i + 1]);
+        else if (/^--output=/.test(a)) outs.push(a.slice(9));
+        else if (!a.startsWith('--') && (m = a.match(/^-[A-Za-z]*?o(.*)$/))) outs.push(m[1] || args[i + 1]);
+      });
+      const hit = outs.find((a) => a && wordProtected(a, ctx));
+      if (hit) return `sort -o into ${hit}`;
+      continue;
+    }
+    if (cmd === 'diff') {
+      const outs = args.filter((a) => /^--output=/.test(a)).map((a) => a.slice(9));
+      args.forEach((a, i) => { if (a === '--output') outs.push(args[i + 1]); });
+      const hit = outs.find((a) => a && wordProtected(a, ctx));
+      if (hit) return `diff --output into ${hit}`;
+      continue;
+    }
+    if (cmd === 'uniq' || cmd === 'xxd') {
+      // the 2nd positional is the OUTPUT file
+      const pos = args.filter((a) => !/^-/.test(a));
+      const hit = pos.slice(1).find((a) => wordProtected(a, ctx));
+      if (hit) return `${cmd} output into ${hit}`;
       continue;
     }
     if (cmd === 'dd') {
@@ -429,6 +561,6 @@ function bashWriteReason(command, ctxIn, depth = 0) {
 }
 
 module.exports = {
-  factoryHome, normPath, wordProtected, isProtected, isCliOwned, isAuthorOwned, setsFactoryRole, broadReason, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
-  tokenize, segments, bashWriteReason, isFactory, stripPrefix, baseName,
+  inInbox, scriptWritesRun, readOnlySegment, factoryHome, normPath, wordProtected, isProtected, isCliOwned, isAuthorOwned, setsFactoryRole, broadReason, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
+  tokenize, segments, waitCmdBodies, bashWriteReason, isFactory, stripPrefix, baseName,
 };

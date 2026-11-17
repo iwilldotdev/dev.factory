@@ -25,6 +25,14 @@ class OrchestrationConfigTest(unittest.TestCase):
         self.assertTrue(any("unknown key" in e for e in errs))
         self.assertTrue(orchestration_config_errors({"orchestration": []}))
 
+    def test_max_parallel(self):
+        ok = lambda v: orchestration_config_errors({"orchestration": {"max_parallel": v}})  # noqa: E731
+        self.assertEqual(ok(1), [])
+        self.assertEqual(ok(4), [])
+        self.assertEqual(orchestration_config_errors({"orchestration": {"sessions": True}}), [])  # optional
+        for bad in (0, -1, 1.5, "2", True, None):
+            self.assertTrue(any("max_parallel" in e for e in ok(bad)), bad)
+
     def test_bad_env(self):
         errs = orchestration_config_errors({"env": {"lease": 1, "lease_ttl_s": 10}})
         self.assertTrue(any("env.lease must be" in e for e in errs))

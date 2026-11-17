@@ -10,12 +10,73 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .core import event, evidence_file, file_sha256, now, run_dir, workspace_path
 
 LOCK_FILES = ("acs.json", "diagnosis.md")
 LOCK_DIRS = ("checks", "figma")
+
+
+# Directories under checks/ where tools drop generated output (screenshots, traces, reports): not plan.
+GENERATED_DIRS = frozenset({"out", "output", "screenshots", "artifacts", "test-results", "playwright-report"})
+
+
+def is_generated(rel: str) -> bool:
+    """Run-relative posix path of a generated artifact that must not be part of the plan lock."""
+    parts = rel.split("/")
+    return parts[0] == "checks" and any(p.lower() in GENERATED_DIRS for p in parts[1:-1])
+
+
+INPUT_KEYS = ("adapter", "map", "spec", "script")  # check keys naming a file the check reads (run-relative)
+
+
+def _rel_in_run(run_id: str, value: str, relative_ok: bool = True) -> str | None:
+    """Run-relative posix path of `value` when it resolves inside the run dir, else None."""
+    rd = run_dir(run_id)
+    try:
+        raw = value.strip().strip("\"'").replace("<run>", rd.as_posix())
+        p = Path(raw)
+        if not p.is_absolute():
+            if not relative_ok:
+                return None
+            p = rd / raw
+        return p.resolve().relative_to(rd.resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def check_inputs(run_id: str, chk: dict) -> list[tuple[str, str]]:
+    """[(key, run-relative posix path)] of the input files a check reads from inside the run dir: `adapter`, `map`,
+    `spec`, `script`, and paths in `cmd` that resolve inside the run dir (absolute or `<run>/...`)."""
+    out: list[tuple[str, str]] = []
+    for key in INPUT_KEYS:
+        val = chk.get(key)
+        if isinstance(val, str) and val.strip():
+            rel = _rel_in_run(run_id, val)
+            out.append((key, rel if rel is not None else PurePosixPath(val.replace("\\", "/")).as_posix()))
+    cmd = chk.get("cmd")
+    if isinstance(cmd, str):
+        for tok in cmd.split():
+            for part in (tok, tok.split("=", 1)[-1]):
+                rel = _rel_in_run(run_id, part, relative_ok=False)
+                if rel:
+                    out.append(("cmd", rel))
+    return out
+
+
+def referenced_files(run_id: str) -> list[str]:
+    """Run-relative paths named by acs.json checks (`adapter`, `map`, `spec`, `script`, run-dir paths in `cmd`): they are
+    plan too, wherever they live inside the run dir."""
+    try:
+        data = json.loads((run_dir(run_id) / "acs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    for chk in (data.get("checks") or []) if isinstance(data, dict) else []:
+        if isinstance(chk, dict):
+            out.extend(rel for _, rel in check_inputs(run_id, chk))
+    return out
 
 
 def plan_files(run_id: str) -> dict[str, str]:
@@ -32,7 +93,18 @@ def plan_files(run_id: str) -> dict[str, str]:
             continue
         for p in sorted(base.rglob("*")):
             if p.is_file():
-                out[p.relative_to(rd).as_posix()] = file_sha256(p) or ""
+                rel = p.relative_to(rd).as_posix()
+                if not is_generated(rel):
+                    out[rel] = file_sha256(p) or ""
+    root = rd.resolve()
+    for rel in referenced_files(run_id):  # adapter/map files wherever they live inside the run dir
+        p = rd / rel
+        try:
+            inside = p.resolve().is_relative_to(root)
+        except OSError:
+            inside = False
+        if inside and p.is_file() and rel not in out:
+            out[p.resolve().relative_to(root).as_posix()] = file_sha256(p) or ""
     return out
 
 
@@ -82,12 +154,27 @@ def _digest(files: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def code_scope(run_id: str, files: dict[str, str] | None = None) -> str:
+    """Digest of what the `code` review depends on: AC ids and text, diagnosis, figma pack and the workspace.
+    Changing only checks/ or the checks of acs.json (a replan of how things are proven) leaves it equal."""
+    rd = run_dir(run_id)
+    files = plan_files(run_id) if files is None else files
+    try:
+        data = json.loads((rd / "acs.json").read_text(encoding="utf-8"))
+        acs = [[a.get("id"), a.get("text")] for a in data.get("acs") or [] if isinstance(a, dict)]
+    except (OSError, ValueError, AttributeError):
+        acs = None
+    keep = {k: v for k, v in files.items() if k == "diagnosis.md" or k.startswith("figma/")}
+    return hashlib.sha256(json.dumps({"acs": acs, "files": keep}, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def lock_plan(run: dict, reason: str = "plan gate", keep_seq: bool = False) -> dict:
     """Record run["plan_lock"] (caller saves). `seq` = first event index evidence must come after."""
     files = plan_files(run["id"])
     old = run.get("plan_lock") if isinstance(run.get("plan_lock"), dict) else {}
     seq = old.get("seq") if keep_seq and isinstance(old.get("seq"), int) else len(run.get("events", []))
     run["plan_lock"] = {"at": now(), "seq": seq, "digest": _digest(files), "files": files,
+                        "code_scope": code_scope(run["id"], files),
                         "workspace": workspace_digest(run["workspace"]), "autonomy": _autonomy(run["workspace"])}
     event(run, "plan_lock", reason=reason, digest=run["plan_lock"]["digest"], files=len(files))
     return run["plan_lock"]
@@ -148,6 +235,8 @@ def review_error(run: dict, path: Path, kind: str, rnd) -> str | None:
 def review_lock_error(run: dict, rec: dict, kind: str) -> str | None:
     """A review counts only for the plan lock it was recorded against (a replan invalidates it)."""
     lock = run.get("plan_lock") if isinstance(run.get("plan_lock"), dict) else {}
+    if kind == "code" and rec.get("plan_code") and rec.get("plan_code") == lock.get("code_scope"):
+        return None  # only checks changed (replan of the proof): the code review is still about the same ACs
     if rec.get("plan_lock") != lock.get("digest"):
         return (f"{kind} review round {rec.get('round')} was recorded against another plan lock "
                 f"({str(rec.get('plan_lock'))[:8]} != {str(lock.get('digest'))[:8]}; replan since): re-review")

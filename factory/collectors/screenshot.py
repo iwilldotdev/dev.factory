@@ -50,7 +50,8 @@ def _collect(check: dict, ctx: Ctx, before: bool) -> dict:
     if isinstance(url, dict):
         return url
     vp = check.get("viewport") or [1440, 900]
-    cap = ["capture", "--url", url, "--out", str(out), "--viewport", f"{vp[0]}x{vp[1]}"]
+    budget = b.Budget(b.check_cap(check, ctx))
+    cap = ["capture", "--url", url, "--out", str(out), "--viewport", f"{vp[0]}x{vp[1]}", *budget.cli_args(check)]
     for flag, key in (("--selector", "selector"), ("--wait-for", "wait_for")):
         if check.get(key):
             cap += [flag, check[key]]
@@ -58,7 +59,7 @@ def _collect(check: dict, ctx: Ctx, before: bool) -> dict:
         cap += ["--settle-ms", str(check["settle_ms"])]
     if state:
         cap += ["--storage-state", state]
-    res = b.finish(b.run_cli(cap, out), out, ctx)
+    res = b.finish(b.run_cli(cap, out, budget.cap), out, ctx)
     res["artifacts"] = [a for a in res["artifacts"] if a.lower().endswith(".png")]
     if res["status"] == "pass" and not res["artifacts"]:
         return b._error("capture reported pass without a png")
@@ -73,10 +74,12 @@ def _spec(check: dict, ctx: Ctx, out, state, before: bool) -> dict:
     if not spec.is_file():
         return b._error(f"spec not found: {check['spec']}")
     shutil.rmtree(out / "artifacts", ignore_errors=True)  # stale images from an earlier run must not pass as new
-    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out), "--screenshot", "on"]
+    budget = b.Budget(b.check_cap(check, ctx))
+    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out), "--screenshot", "on",
+            *budget.cli_args(check)]
     if state:
         argv += ["--storage-state", state]
-    data = b.run_cli(argv, out)
+    data = b.run_cli(argv, out, budget.cap)
     pngs = sorted(p for p in (out / "artifacts").rglob("*.png")) if (out / "artifacts").is_dir() else []
     arts = b.relativize([str(p) for p in pngs], out, ctx)
     details = dict(data.get("details") or {}, spec_status=data.get("status"))

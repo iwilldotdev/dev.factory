@@ -14,8 +14,9 @@
 ## plan
 
 - [ ] `factory run branch <run> <repo> --base <target> [--name …]` for every touched repo (epic: per repo; the branch is shared by the epic's tickets unless the plan says otherwise).
-- [ ] `factory env check <ws> <repo>` for every repo with runtime checks; `factory env up <ws> <repo> --run <run>` now, not at prove. Read failures with `factory env logs`. If login is needed: `factory env login <ws> <repo>` (reads `secrets/<ws>.env`). If the ticket names a user e-mail for the scenario: `factory run login-user <run> <email>` and `factory env login <ws> <repo> --user <email>`; else the workspace default user.
+- [ ] `factory env check <ws> <repo> --run <run>` (preflight; exit 0 healthy, 1 unhealthy, 3 stale, 4 port/lease, 2 usage; `--auto-restart` for a stale env you started) for every repo with runtime checks; `factory env up <ws> <repo> --run <run>` now, not at prove. Read failures with `factory env logs`. If login is needed: `factory env login <ws> <repo>` (reads `secrets/<ws>.env`). If the ticket names a user e-mail for the scenario: `factory run login-user <run> <email>` and `factory env login <ws> <repo> --user <email>`; else the workspace default user.
 - [ ] Author writes `R/acs.json` + `R/checks/**`: every AC ≥1 check that can fail; UI → `visual` + `style` (maps from `factory figma expect`); bug → `red-green`; api → `api`; `human` only with a reason.
+- [ ] **Live dry-run of each new `browser`/`api` check** (when the env is up): the author runs `factory prove <run> --check CHK-n` against it before `gate plan`, so bad selectors, seeds, 307s and timeouts surface at plan, not at prove (2-7 replans per run came from this). A dry-run failing with `kind=assert|setup` is fixed in the check; `kind=env|timeout` is an infra signal (blocked contract). The evidence is a dry-run record, not the final proof: prove runs everything again after build. Env not up: say so in the question round; do not skip silently.
 - [ ] Figma pack complete: `factory figma check <run>`.
 - [ ] `factory baseline <run>` (quality failures on merge-base, computed once).
 - [ ] **Question round (one message):** env gaps from the gate/env check, credential keys to add to `secrets/<ws>.env` (names only), targets (which branches), product unknowns, and anything blocked at intake. When the run touches UI (the plan gate says so): the visual evidence question (bug: before/after screenshots of the fix; feature: screenshots of the implemented screens; default yes). Number the questions; give a default for each so the user can answer "defaults ok".
@@ -42,6 +43,7 @@
 - [ ] `factory prove <run>` (all checks, quality delta vs baseline, rules).
 - [ ] FAIL → builder with the failing check ids and `R/evidence/<CHK>.json` paths. After a fix, re-run the full `factory prove <run>` (SHAs changed). Each round trip is a build loop; respect `autonomy.max_build_loops`.
 - [ ] A wrong check (cannot pass, or tests the wrong thing) → `factory run replan <run> "<why>"`, author fixes the check, `gate plan`, build/prove again. Never loosen a check just to go green (workspace `limits` cap visual/style thresholds).
+- [ ] `human` checks the user confirms in chat: `factory run verify-human <run> <CHK-id> --note "<what the user confirmed>" --by user --user-said "<gist of the user's words>"` (you, only after the user confirmed it in chat; never a worker).
 - [ ] `factory gate <run> prove`.
 
 ## review
@@ -59,6 +61,10 @@ See ship.md. Ends with `factory ship verify <run>` and `factory gate <run> ship`
 ## feedback
 
 See feedback.md. `factory feedback ingest <run>`; findings → build loop; none → `factory gate <run> feedback` → done.
+
+## abandoned runs
+
+`factory run close <run> --reason "<why>"` for a run that will not continue (ticket cancelled, superseded): it releases the lease and env and keeps the artifacts. A wrongly typed run: `factory run retype <run> --bug|--hotfix`.
 
 ## finish
 

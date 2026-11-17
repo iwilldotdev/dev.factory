@@ -39,3 +39,13 @@ test("summariseReport: zero tests is an error", () => {
   assert.equal(r.status, "fail");
   assert.equal(r.details.failed, 1);
 });
+
+test("compareStyles: fontFamily, borderColor, text, borderWidth", () => {
+  const actual = { fontFamily: '"Inter", Arial, sans-serif', borderColor: "rgb(255, 0, 0)", borderWidth: "1px", text: "  Salvar \n" };
+  const ok = compareStyles({ fontFamily: "inter", borderColor: "#FF0000", borderWidth: 1, text: "Salvar" }, actual);
+  assert.ok(ok.every((r) => r.ok), JSON.stringify(ok));
+  assert.ok(compareStyles({ fontFamily: "'INTER', serif" }, actual)[0].ok);
+  const bad = compareStyles({ fontFamily: "Roboto", borderColor: "#00FF00", text: "Cancelar" }, actual);
+  assert.deepEqual(bad.map((r) => r.ok), [false, false, false]);
+  assert.ok(bad.every((r) => r.note !== "unknown property"));
+});

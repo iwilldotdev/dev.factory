@@ -1,8 +1,8 @@
 export const PX_PROPS = [
   "fontSize", "lineHeight", "letterSpacing", "borderRadius",
-  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "gap", "width", "height",
+  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "gap", "width", "height", "borderWidth",
 ] as const;
-export const COLOR_PROPS = ["color", "backgroundColor"] as const;
+export const COLOR_PROPS = ["color", "backgroundColor", "borderColor"] as const;
 export const NUM_PROPS = ["fontWeight", "opacity"] as const;
 
 export type Expect = Record<string, string | number>;
@@ -33,6 +33,13 @@ export function normalizeColor(input: unknown): string | null {
     return alpha >= 1 ? base : `${base}${hex2(alpha * 255)}`;
   }
   return null;
+}
+
+/** First family of a font-family list, unquoted and lowercased. */
+export function primaryFamily(input: unknown): string {
+  if (typeof input !== "string") return "";
+  const first = input.split(",")[0] ?? "";
+  return first.trim().replace(/^["']+|["']+$/g, "").trim().toLowerCase();
 }
 
 /** "16px" | 16 -> number; null for non-numeric ("normal", "auto"). */
@@ -73,6 +80,14 @@ export function compareStyles(expect: Expect, actual: Record<string, unknown>, t
       } else {
         out.push({ property: prop, expected: e, actual: a, ok: e !== null && a !== null && pxWithin(e, a, tolerancePx) });
       }
+    } else if (prop === "fontFamily") {
+      const e = primaryFamily(exp);
+      const a = primaryFamily(act);
+      out.push({ property: prop, expected: e, actual: a, ok: e !== "" && e === a });
+    } else if (prop === "text") {
+      const e = String(exp).trim();
+      const a = typeof act === "string" ? act.trim() : "";
+      out.push({ property: prop, expected: e, actual: a, ok: e === a });
     } else {
       out.push({ property: prop, expected: exp, actual: act, ok: false, note: "unknown property" });
     }

@@ -4,6 +4,7 @@
 
 1. `git -C <worktree> fetch origin` for every repo of the run.
 2. `factory ship plan <run>`. It fails when a branch is behind `origin/<target>`, a dependency MR is not merged (from `R/remote/`), a plan file changed, or the worktree moved after prove (commit, dirty file). Behind: a builder rebases/merges, then `factory run rewind <run> prove "<reason>"` and run prove → review → ship again; or ask the user (`--allow-behind` only with their explicit yes). Never commit, rebase or merge at ship without rewinding: `ship plan`, `ship verify` and `gate ship` re-check the proof against the current HEAD.
+2b. Jira handling is chosen at plan: `factory ship plan <run> --jira none|comment|transition` (`none` = no Jira action, `comment` = comment only, `transition` = comment and transition). Default `comment`; ask in the Gate S briefing when the ticket's workflow makes a transition unsafe. MR titles are `[KEY] - summary`: use the plan's `title` verbatim.
 3. Read `R/ship-plan.json`: `mrs[]` (repo, target, source/target branch, `head_sha` = the proven commit, title, draft, description, `depends_on`, readback path), `jira_comment` (ADF), and `actions[]` in order, each with `needs_user`.
 4. **Gate S** for every action with `needs_user: true`: one chat briefing listing the MRs (repo → target, draft, title, Depends on), ACs × evidence status, `human` checks, the Jira comment and the transition. When `visual_evidence` is not empty, send its `files` (before, then after, per check) to the user with `SendUserFile` in the same turn; each MR description already has a `## Visual evidence` table naming them. Wait for an explicit yes. The approval covers only the listed actions.
 5. Execute the actions in order:
@@ -14,6 +15,8 @@
    - `jira_transition`: `jira_get_transitions`, then `jira_transition_issue` to the named transition.
 6. `factory ship verify <run>` compares the readbacks with the plan, including the MR head `sha` against the proven `head_sha`; for a missing readback it prints the call (`FETCH gitlab_get_merge_request ... save_to=... overwrite=true`). Fix title/draft mismatches with another `gitlab_save_merge_request` and readback; a head mismatch means unproven commits are on the branch: rewind to prove.
 7. `factory gate <run> ship`. Then go to feedback.
+
+A run that will not ship: `factory run close <run> --reason "<why>"` (releases lease and env).
 
 Never un-draft, merge, or close an MR without an explicit user request for that MR.
 

@@ -3,6 +3,11 @@ import struct
 import unittest
 import zlib
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+
 from ops_helpers import FactoryCase
 
 from factory.commands import figma

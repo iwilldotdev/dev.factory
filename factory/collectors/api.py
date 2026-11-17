@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import urllib.error
 import urllib.request
 
@@ -37,17 +38,42 @@ def _request(method: str, url: str, body, headers: dict, timeout: float):
         return err.code, err.read()
 
 
+def _request_capped(method: str, url: str, body, headers: dict, cap: float):
+    """`_request` under a wall-clock cap (urlopen's own timeout is per socket operation). Raises TimeoutError."""
+    box: dict = {}
+
+    def work():
+        try:
+            box["ok"] = _request(method, url, body, headers, cap)
+        except BaseException as err:  # re-raised in the caller
+            box["err"] = err
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(cap)
+    if t.is_alive():
+        raise TimeoutError(f"no complete response within {cap:g}s (check cap)")
+    if "err" in box:
+        raise box["err"]
+    return box["ok"]
+
+
 def collect(check: dict, ctx) -> dict:
+    from factory.collectors.browser import check_cap
     base = check.get("base_url") or (ctx.env or {}).get("base_url")
     if not base:
         return {"status": "error", "summary": "no base_url in repo env block"}
     url = base.rstrip("/") + "/" + str(check.get("path", "")).lstrip("/")
     method = (check.get("method") or "GET").upper()
+    cap = check_cap(check, ctx)
     try:
-        status, raw = _request(method, url, check.get("body"), check.get("headers") or {},
-                               float(check.get("timeout_s") or 30))
+        status, raw = _request_capped(method, url, check.get("body"), check.get("headers") or {}, cap)
+    except TimeoutError as err:
+        return {"status": "error", "summary": f"api check timed out at {url}: {err}",
+                "details": {"timeout": True, "url": url}}
     except (urllib.error.URLError, OSError) as err:
-        return {"status": "error", "summary": f"env not reachable at {url}: {err}"}
+        return {"status": "error", "summary": f"env not reachable at {url}: {err}",
+                "details": {"fail_kind": "env", "url": url}}
     text = raw.decode("utf-8", errors="replace")
     try:
         payload = json.loads(text) if text.strip() else None
@@ -77,10 +103,11 @@ def collect(check: dict, ctx) -> dict:
         ctx.out_dir.mkdir(parents=True, exist_ok=True)
         (ctx.out_dir / "response.txt").write_text(f"HTTP {status}\n{text}", encoding="utf-8")
         artifacts.append(f"evidence/{check['id']}/response.txt")
+    env_down = bool(problems) and status in (502, 503, 504) and expect.get("status") != status
     return {
         "status": "fail" if problems else "pass",
         "summary": "; ".join(problems) if problems else f"{method} {check.get('path')} -> {status}",
         "artifacts": artifacts,
         "details": {"url": url, "method": method, "http_status": status, "problems": problems,
-                    "body_tail": text[-2000:]},
+                    "body_tail": text[-2000:], **({"fail_kind": "env"} if env_down else {})},
     }

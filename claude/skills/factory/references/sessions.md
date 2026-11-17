@@ -2,6 +2,8 @@
 
 A batch (epic or review-batch) is followed in the Claude desktop app as linked sessions: one **parent** session that coordinates, and one **child** session per **ticket** (covering that ticket's API and React runs). The user can open, read and steer each one. The Progress and Worker questions rules in SKILL.md apply to both.
 
+Parallel children are capped by `orchestration.max_parallel` (default 3): start at most that many child sessions at once and start the next as one finishes. A child that stops for any reason (usage limit, block, user stop) releases its lease and env first: `factory env down <ws> <repo> --run <id>` for envs it started, then `factory env lease release <ws> --run <id>`; a held lease of a stopped child blocks everyone else.
+
 Only one run at a time holds the workspace env (env lease). ACs, unit/api checks and code review run in parallel; `env up` plus browser/visual proof wait their turn.
 
 ## When

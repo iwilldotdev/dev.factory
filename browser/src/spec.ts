@@ -34,12 +34,22 @@ export function summariseReport(report: { suites?: Suite[] }): Summary {
 export const SCREENSHOT_MODES = ["only-on-failure", "on", "off"];
 export type ScreenshotMode = "only-on-failure" | "on" | "off";
 
-export async function runSpec(o: { spec: string; baseUrl: string; storageState?: string; outDir: string; screenshot?: ScreenshotMode }): Promise<Summary> {
+export const DEFAULT_GOTO_TIMEOUT_MS = 30000;
+
+/** Per-test and global caps: a spec cannot outlive `timeoutMs` (the check's wall-clock cap minus a margin). */
+export function timeoutConfig(timeoutMs?: number, gotoTimeoutMs?: number): { test: number; global: number; nav: number } {
+  const total = timeoutMs && timeoutMs > 0 ? Math.floor(timeoutMs) : 0;
+  const nav = Math.max(1, Math.min(gotoTimeoutMs && gotoTimeoutMs > 0 ? gotoTimeoutMs : DEFAULT_GOTO_TIMEOUT_MS, total || Infinity));
+  return { test: total ? Math.max(1, total - 1000) : 0, global: total, nav };
+}
+
+export async function runSpec(o: { spec: string; baseUrl: string; storageState?: string; outDir: string; screenshot?: ScreenshotMode; timeoutMs?: number; gotoTimeoutMs?: number }): Promise<Summary> {
   await mkdir(o.outDir, { recursive: true });
   const spec = path.resolve(o.spec);
   const outDir = path.resolve(o.outDir);
   const reportFile = path.join(outDir, "report.json");
   const configFile = path.join(outDir, "playwright.config.mjs");
+  const to = timeoutConfig(o.timeoutMs, o.gotoTimeoutMs);
   const config = `export default {
   testDir: ${JSON.stringify(path.dirname(spec))},
   testMatch: ${JSON.stringify(path.basename(spec))},
@@ -47,8 +57,12 @@ export async function runSpec(o: { spec: string; baseUrl: string; storageState?:
   reporter: [["json", { outputFile: ${JSON.stringify(reportFile)} }]],
   retries: 0,
   workers: 1,
+  ${to.test ? `timeout: ${to.test},` : ""}
+  ${to.global ? `globalTimeout: ${to.global},` : ""}
   use: {
     baseURL: ${JSON.stringify(o.baseUrl)},
+    navigationTimeout: ${to.nav},
+    actionTimeout: ${to.nav},
     ${o.storageState ? `storageState: ${JSON.stringify(path.resolve(o.storageState))},` : ""}
     trace: "off",
     screenshot: ${JSON.stringify(o.screenshot ?? "only-on-failure")},

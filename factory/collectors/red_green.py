@@ -112,6 +112,12 @@ def collect(check: dict, ctx) -> dict:
         (ctx.out_dir / "red.log").write_text(red_out, encoding="utf-8")
         (ctx.out_dir / "green.log").write_text(green_out, encoding="utf-8")
         artifacts = [f"evidence/{check['id']}/red.log", f"evidence/{check['id']}/green.log"]
+    for side, text in (("red", red_out), ("green", green_out)):
+        empty = test_collector.no_tests_marker(text)
+        if empty:  # a filter matching nothing "fails" red and "passes" green for free: never a reproduction
+            details["kind"] = "setup"
+            return {"status": "fail", "summary": f"no tests matched on the {side} side ({empty!r})",
+                    "artifacts": artifacts, "details": details}
     red_ok, green_ok = red_code != 0, green_code == 0
     if red_ok and green_ok:
         status, summary = "pass", f"red (exit {red_code}) before fix, green after"

@@ -44,7 +44,14 @@ const ORCHESTRATOR_ONLY = [
   [factory(String.raw`feedback\b`), 'feedback ingest belongs to the main session'],
   [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human|replan|rewind|delete|claim)\b`), 'run state changes (incl. replan/rewind/decide/unblock/delete/claim) belong to the main session'],
   [factory(String.raw`workspace\s+(?:init|import)\b`), 'workspace changes belong to the main session'],
+  [factory(String.raw`run\s+(?:verify-human|retype|close)\b`), 'recording human checks, retyping and closing runs belong to the main session'],
+  [factory(String.raw`env\s+lease\b[^;&|\n]*\b(?:release|acquire)\b`), 'env lease changes belong to the main session'],
+  [factory(String.raw`env\s+down\b`), 'env lifecycle (down) belongs to the main session'],
+  [factory(String.raw`env\s+up\b`), 'env lifecycle (up) belongs to the main session; run `factory env check` (no --auto-restart) and hand back blocked if the env is down'],
+  [factory(String.raw`env\s+check\b[^;&|\n]*--auto-restart`), 'env check --auto-restart restarts an env: main session only'],
 ];
+// `factory wait --cmd` runs an arbitrary shell command: builders only (its body is also judged like `bash -c`).
+const WAIT_CMD = factory(String.raw`wait\b[^\n]*--cmd\b`);
 const REVIEW_RECORD = factory(String.raw`review\s+record\b`);
 
 // Scout: read-only git, optionally `git -C <path>`, chained with `&&`, piped into
@@ -77,6 +84,18 @@ function scoutBashAllowed(command) {
   });
 }
 
+// `sleep` loops hide hung processes for minutes; `factory wait` is bounded and prints one line.
+const SLEEP = /(?:^|[;&|(\n]\s*|\bdo\s+|\bthen\s+)(?:sleep|start-sleep)\b|\btimeout(?:\.exe)?\s+\/t\b/i;
+
+function sleepsOutsideFactory(command) {
+  if (lib.waitCmdBodies(command).some((b) => sleepsOutsideFactory(b))) return true;
+  const text = lib.segments(lib.tokenize(command))
+    .filter((s) => !lib.isFactory(lib.stripPrefix(s.words)))
+    .map((s) => s.words.join(' '))
+    .join('\n');
+  return SLEEP.test(text);
+}
+
 const DOC_FILE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
 
 function checkBash(command, ctx) {
@@ -89,11 +108,17 @@ function checkBash(command, ctx) {
   for (const [pattern, why] of FORBIDDEN) {
     if (pattern.test(command)) deny(why);
   }
+  if (sleepsOutsideFactory(command)) {
+    deny('sleep is blocked: use `factory wait --file <path> [--contains <text>] | --cmd "<cmd>" --until-exit 0 | --url <url> --status 2xx [--timeout S]` (bounded, one line), or hand back `status: blocked`');
+  }
   if ((role === 'auditor' || role === 'author') && GIT_MUTATE.test(command)) {
     deny(`${role}s do not change the worktree or commit`);
   }
   for (const [pattern, why] of ORCHESTRATOR_ONLY) {
     if (pattern.test(command)) deny(why);
+  }
+  if (role !== 'builder' && WAIT_CMD.test(command)) {
+    deny('`factory wait --cmd` runs a shell command: only the builder may use it; use --file or --url');
   }
   if (role !== 'auditor' && REVIEW_RECORD.test(command)) deny('only the auditor records reviews');
   if (role !== 'auditor' && /FACTORY_ROLE/i.test(command)) {
@@ -114,9 +139,9 @@ function checkWrite(filePath, ctx) {
   if (role !== 'author' && lib.isAuthorOwned(p, home)) {
     deny(`acs.json, diagnosis.md, checks/ and figma/ are written by the author during intake/plan only (${filePath})`);
   }
-  const notes = lib.inRunSub(p, home, 'notes');
+  const notes = lib.inRunSub(p, home, 'notes') || lib.inInbox(p, home);
   if (role === 'scout') {
-    if (!notes) deny('scout may write only its report under FACTORY_HOME/runs/<id>/notes/');
+    if (!notes) deny('scout may write only its report under FACTORY_HOME/runs/<id>/notes/ (or runs/_inbox/<session>/ before a run exists)');
     return;
   }
   if (lib.under(p, `${home}/secrets`)) deny('secrets are provided by the user, never written by workers');

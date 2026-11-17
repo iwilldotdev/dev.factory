@@ -14,9 +14,15 @@ DEFAULT_TIMEOUT_S = 900
 TAIL = 4000
 
 
+# Stable English tool output (the "no tests matched" and setup markers are matched on it); a value the
+# user already set is never overridden.
+LOCALE_ENV = {"DOTNET_CLI_UI_LANGUAGE": "en", "DOTNET_NOLOGO": "1", "VSLANG": "1033"}
+
+
 def run_shell(cmd: str, cwd: Path, timeout: int = DEFAULT_TIMEOUT_S, env_vars: dict | None = None) -> tuple[int, str]:
     """Run `cmd` through the shell. Returns (exit_code, combined output). 124 on timeout."""
-    env = dict(os.environ)
+    env = dict(LOCALE_ENV)
+    env.update(os.environ)
     env.update({k: str(v) for k, v in (env_vars or {}).items()})
     try:
         proc = subprocess.run(
@@ -131,6 +137,11 @@ def collect(check: dict, ctx) -> dict:
         (ctx.out_dir / "output.log").write_text(output, encoding="utf-8")
         artifacts.append(f"evidence/{check['id']}/output.log")
     details = {"cmd": cmd, "exit_code": code, "output_tail": output[-TAIL:]}
+    empty = no_tests_marker(output)
+    if empty:
+        details["kind"] = "setup"
+        return {"status": "fail", "summary": f"no tests matched ({empty!r}): a filter matching nothing never passes",
+                "artifacts": artifacts, "details": details}
     failure = fail_pattern_error(check, code, output)
     if failure:
         return {"status": "error", "summary": failure, "artifacts": artifacts, "details": details}
@@ -140,6 +151,47 @@ def collect(check: dict, ctx) -> dict:
         "artifacts": artifacts,
         "details": details,
     }
+
+
+# a run that executed zero tests (a filter matching nothing) is never a pass
+NO_TESTS_RE = re.compile("|".join((
+    r"No test matches the given testcase filter", r"Nenhum teste corresponde", r"No test is available in",
+    r"No test files? found", r"No tests found", r"no tests ran", r"collected 0 items",
+    )), re.IGNORECASE)
+GO_NO_TESTS_RE = re.compile(r"\[no tests to run\]|testing: warning: no tests to run", re.IGNORECASE)
+GO_RAN_RE = re.compile(r"^ok\s+\S+\s+[\d.]+s\s*(?:\(cached\))?\s*$|^\s*--- (?:PASS|FAIL)", re.MULTILINE)
+CARGO_RUNNING_RE = re.compile(r"^\s*running (\d+) tests?\b", re.MULTILINE)
+MOCHA_ZERO_RE = re.compile(r"^\s*0 passing\b", re.MULTILINE)
+MOCHA_FAILING_RE = re.compile(r"^\s*[1-9]\d* failing\b", re.MULTILINE)
+DOTNET_TOTAL_RE = re.compile(r"Total tests:\s*(\d+)", re.IGNORECASE)
+DOTNET_LINE_RE = re.compile(r"(?:Passed|Failed)!\s+-\s+Failed:\s*(\d+),\s*Passed:\s*(\d+)", re.IGNORECASE)
+
+
+def _dotnet_executed(output: str) -> tuple[int, str] | None:
+    """(tests reported by the dotnet summaries, text of the zero-marker) or None when no summary is printed."""
+    totals = [int(n) for n in DOTNET_TOTAL_RE.findall(output)]
+    lines = [(int(f), int(p)) for f, p in DOTNET_LINE_RE.findall(output)]
+    if not totals and not lines:
+        return None
+    return sum(totals) + sum(f + p for f, p in lines), "Total tests: 0"
+
+
+def no_tests_marker(output: str) -> str | None:
+    """Text proving that nothing was executed, else None. Parsed totals win over message markers (a multi-project
+    dotnet run where one project matches no test but another passed some is a real run)."""
+    output = output or ""
+    dotnet = _dotnet_executed(output)
+    if dotnet is not None:
+        return dotnet[1] if dotnet[0] == 0 else None
+    if GO_NO_TESTS_RE.search(output) and not GO_RAN_RE.search(output):
+        return "no tests to run"
+    runs = [int(n) for n in CARGO_RUNNING_RE.findall(output)]
+    if runs and sum(runs) == 0:
+        return "running 0 tests"
+    if MOCHA_ZERO_RE.search(output) and not MOCHA_FAILING_RE.search(output):
+        return "0 passing"
+    m = NO_TESTS_RE.search(output)
+    return m.group(0) if m else None
 
 
 # exit codes of a shell that could not run the command (126 not executable, 127 / cmd 9009 not found)

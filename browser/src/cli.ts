@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium } from "playwright";
-import { captureSurface, runAdapter } from "./capture.js";
+import { captureSurface, DEFAULT_GOTO_TIMEOUT_MS, gotoOptions, runAdapter, WAIT_UNTIL, type WaitUntil } from "./capture.js";
 import { comparePng, type Mask } from "./compare.js";
 import { compareStyles, type Expect } from "./probe.js";
 import { runSpec, SCREENSHOT_MODES, type ScreenshotMode } from "./spec.js";
@@ -25,6 +25,7 @@ main().catch(async (err: unknown) => {
 
 async function main(): Promise<void> {
   const out = required("--out");
+  armWatchdog(out);
   switch (command) {
     case "capture":
       return finish(out, await doCapture(out));
@@ -35,7 +36,7 @@ async function main(): Promise<void> {
     case "run-spec": {
       const shot = optional("--screenshot") ?? "only-on-failure";
       if (!SCREENSHOT_MODES.includes(shot)) throw new Error(`--screenshot must be one of ${SCREENSHOT_MODES.join("|")}`);
-      const r = await runSpec({ spec: required("--spec"), baseUrl: required("--base-url"), storageState: optional("--storage-state"), outDir: out, screenshot: shot as ScreenshotMode });
+      const r = await runSpec({ spec: required("--spec"), baseUrl: required("--base-url"), storageState: optional("--storage-state"), outDir: out, screenshot: shot as ScreenshotMode, timeoutMs: optionalNumber("--timeout-ms"), gotoTimeoutMs: optionalNumber("--goto-timeout-ms") });
       const arts = ["report.json", "run.log"];
       return finish(out, { ...r, artifacts: arts });
     }
@@ -58,6 +59,7 @@ async function doCapture(out: string): Promise<Result> {
     storageState: optional("--storage-state"),
     waitFor: optional("--wait-for"),
     settleMs: optionalNumber("--settle-ms"),
+    ...navOptions(),
   });
   return { status: "pass", summary: `captured ${path.basename(c.appPng)} (${w}x${h})`, artifacts: ["app.png", "text.txt"], details: { textLength: c.text.length } };
 }
@@ -116,12 +118,14 @@ async function doProbe(out: string): Promise<Result> {
       storageState: optional("--storage-state"),
     });
     const page = await context.newPage();
-    await page.goto(required("--url"), { waitUntil: "load" });
+    const nav = navOptions();
+    page.setDefaultTimeout(nav.gotoTimeoutMs);
+    await page.goto(required("--url"), gotoOptions(nav));
     await page.evaluate(() => document.fonts.ready);
     const adapterPath = optional("--adapter");
-    if (adapterPath) await runAdapter(page, adapterPath, required("--url"));
+    if (adapterPath) await runAdapter(page, adapterPath, required("--url"), nav);
     const waitFor = optional("--wait-for");
-    if (waitFor) await page.locator(waitFor).first().waitFor({ timeout: 30000 });
+    if (waitFor) await page.locator(waitFor).first().waitFor({ timeout: nav.gotoTimeoutMs });
     if (optional("--settle-ms")) await page.waitForTimeout(optionalNumber("--settle-ms") ?? 0);
     const found: string[] = [];
     for (const e of map.entries) {
@@ -133,7 +137,11 @@ async function doProbe(out: string): Promise<Result> {
       const actual = await loc.evaluate((el) => {
         const cs = getComputedStyle(el);
         const r = el.getBoundingClientRect();
+        const sides = ["Top", "Right", "Bottom", "Left"] as const;
+        const side = sides.find((d) => parseFloat(cs.getPropertyValue(`border-${d.toLowerCase()}-width`)) > 0) ?? "Top";
         return {
+          fontFamily: cs.fontFamily, text: (el as HTMLElement).innerText ?? el.textContent ?? "",
+          borderColor: cs.getPropertyValue(`border-${side.toLowerCase()}-color`), borderWidth: cs.getPropertyValue(`border-${side.toLowerCase()}-width`),
           fontSize: cs.fontSize, lineHeight: cs.lineHeight, fontWeight: cs.fontWeight, letterSpacing: cs.letterSpacing,
           color: cs.color, backgroundColor: cs.backgroundColor, borderRadius: cs.borderTopLeftRadius,
           paddingTop: cs.paddingTop, paddingRight: cs.paddingRight, paddingBottom: cs.paddingBottom, paddingLeft: cs.paddingLeft,
@@ -199,6 +207,27 @@ async function finish(out: string, r: Result): Promise<void> {
   await writeFile(path.join(out, "result.json"), `${JSON.stringify(r, null, 2)}\n`, "utf8");
   console.log(`${r.status}: ${r.summary}`);
   if (r.status !== "pass") process.exitCode = 1;
+}
+
+/** --wait-until (default load: never networkidle unless asked) and --goto-timeout-ms (default 30 s). */
+function navOptions(): { waitUntil: WaitUntil; gotoTimeoutMs: number } {
+  const w = optional("--wait-until") ?? "load";
+  if (!(WAIT_UNTIL as readonly string[]).includes(w)) throw new Error(`--wait-until must be one of ${WAIT_UNTIL.join("|")}`);
+  return { waitUntil: w as WaitUntil, gotoTimeoutMs: optionalNumber("--goto-timeout-ms") ?? DEFAULT_GOTO_TIMEOUT_MS };
+}
+
+/** --timeout-ms: the check's wall-clock cap. Past it the CLI writes an error result and exits, so a hung
+ * page cannot hold the run until the caller's own kill. */
+function armWatchdog(out: string): void {
+  const ms = optionalNumber("--timeout-ms");
+  if (!ms || !(ms > 0) || command === "login") return;
+  const timer = setTimeout(() => {
+    const summary = `timed out after ${Math.round(ms / 1000)}s (check cap)`;
+    finish(out, { status: "error", summary, artifacts: [], details: { timeout: true } })
+      .catch(() => undefined)
+      .finally(() => process.exit(1));
+  }, ms);
+  timer.unref();
 }
 
 function scrub(s: string): string {

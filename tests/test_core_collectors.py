@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core_support import PY, FactoryCase, cli, commit_file, core, sh
@@ -113,6 +116,70 @@ class RedGreenTests(FactoryCase):
         res = red_green.collect(self.check, self.ctx())
         self.assertEqual(res["status"], "fail")
         self.assertIn("still fails", res["summary"])
+
+
+class RedGreenNoTestsTests(FactoryCase):
+    def test_zero_tests_matched_is_a_setup_failure(self):
+        self.make_run(bug=True)
+        commit_file(self.wt, "mod.py", "v = 1\n")
+        (self.wt / "tests").mkdir(exist_ok=True)
+        (self.wt / "tests" / "noisy.py").write_text(
+            "import sys\nsys.path.insert(0, '.')\nimport mod\nprint('ASSERT mod.v No tests found')\n"
+            "sys.exit(0 if mod.v == 2 else 1)\n", encoding="utf-8")
+        (self.wt / "mod.py").write_text("v = 2\n", encoding="utf-8")
+        sh("git", "add", "-A", cwd=self.wt)
+        sh("git", "commit", "-q", "-m", "[A] - fix", cwd=self.wt)
+        ctx = core.Ctx(run={}, workspace={}, run_dir=self.tmp, repo_path=self.wt, out_dir=self.tmp / "o")
+        res = red_green.collect({"id": "CHK-6", "type": "red-green", "repo": "React", "cmd": f"{PY} tests/noisy.py",
+                                 "fix_commit": "HEAD", "expect_fail_pattern": "ASSERT mod.v"}, ctx)
+        self.assertEqual(res["status"], "fail", res)
+        self.assertEqual(res["details"]["kind"], "setup")
+        self.assertIn("no tests matched", res["summary"])
+
+
+class ZeroTestsMarkerTests(unittest.TestCase):
+    def marker(self, text):
+        from factory.collectors.test import no_tests_marker
+        return no_tests_marker(text)
+
+    def test_go_no_tests_to_run(self):
+        self.assertTrue(self.marker("testing: warning: no tests to run\nPASS\nok  \tpkg\t0.003s [no tests to run]\n"))
+        self.assertTrue(self.marker("ok  \tpkg\t0.003s [no tests to run]\n"))
+        self.assertIsNone(self.marker("ok  \tpkg\t0.4s\nok  \tother\t0.003s [no tests to run]\n"))
+
+    def test_cargo_running_zero_tests(self):
+        self.assertTrue(self.marker("running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n"))
+        self.assertIsNone(self.marker("running 0 tests\n\nrunning 3 tests\ntest a ... ok\n"))
+
+    def test_mocha_zero_passing(self):
+        self.assertTrue(self.marker("\n  0 passing (2ms)\n"))
+        self.assertIsNone(self.marker("  0 passing (2ms)\n  2 failing\n"))
+        self.assertIsNone(self.marker("  5 passing (2ms)\n"))
+
+    def test_dotnet_parsed_totals(self):
+        self.assertTrue(self.marker("Total tests: 0\n"))
+        self.assertTrue(self.marker("Passed!  - Failed:     0, Passed:     0, Skipped:     0, Total:     0\n"))
+        self.assertIsNone(self.marker("Passed!  - Failed:     0, Passed:     4, Skipped:     0, Total:     4\n"))
+
+    def test_multi_project_dotnet_one_empty_one_passed_is_a_real_run(self):
+        out = ("No test matches the given testcase filter `Name~X` in A.dll\n"
+               "Passed!  - Failed:     0, Passed:     2, Skipped:     0, Total:     2, Duration: 1 s - B.dll\n")
+        self.assertIsNone(self.marker(out))
+        self.assertTrue(self.marker("No test matches the given testcase filter `Name~X` in A.dll\n"))
+        self.assertTrue(self.marker("No test matches the given testcase filter in A.dll\n"
+                                    "Passed!  - Failed:     0, Passed:     0, Skipped:     0, Total:     0\n"))
+
+    def test_collect_fails_zero_run_and_passes_multi_project(self):
+        from factory.collectors import test as tc
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        ctx = core.Ctx(run={}, workspace={}, run_dir=tmp, repo_path=tmp, out_dir=tmp / "o")
+        res = tc.collect({"id": "C1", "type": "test", "repo": "R", "cmd": f"{PY} -c \"print('running 0 tests')\""}, ctx)
+        self.assertEqual(res["status"], "fail")
+        self.assertIn("no tests matched", res["summary"])
+        text = "No test matches the given testcase filter in A.dll; Passed!  - Failed: 0, Passed: 2, Skipped: 0, Total: 2"
+        res = tc.collect({"id": "C2", "type": "test", "repo": "R", "cmd": f"{PY} -c \"print('{text}')\""}, ctx)
+        self.assertEqual(res["status"], "pass", res)
 
 
 class TestCollectorTests(FactoryCase):

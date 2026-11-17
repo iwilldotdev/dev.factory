@@ -119,6 +119,10 @@ It stops for you at four points only:
 
 Anything you say while it runs counts as steering. It is recorded with `factory run human` and acted on. Changing the ACs or the workspace after the plan gate needs a replan, and the skill handles it.
 
+When you confirm a `human` check yourself ("I tested it, the PDF looks right"), say so in chat. The skill records it with `factory run verify-human`, and it stops counting as an open review finding.
+
+**Blocking problems surface fast.** Before handing runtime work to a worker, the orchestrator runs `factory env check` as a preflight. Each browser check has a cap of 120 s by default, and an env failure skips the remaining runtime checks instead of waiting on each timeout. A worker that hits an infra failure gets one repair attempt, then must report `blocked` with the exact `ENV-FAIL` line, and a hook enforces this. So "the env won't start" reaches you within minutes, not after a long silence.
+
 ### 4. Batches in parallel sessions
 
 With `orchestration.sessions` on and two or more tickets (an epic, or several MRs), the session you started becomes the **parent**:
@@ -136,6 +140,8 @@ Without the app's session tool, for example in the plain CLI, the same batch run
 |---|---|
 | `factory run list` | Every run with its phase |
 | `factory run status <run>` | Phase, loops, open blockers, owner session and the next required action |
+| `factory env check <ws> [--run <run>]` | Whether the env is healthy, stale, or blocked by a port or the lease (exit 0/1/3/4) |
+| `factory workspace list` / `workspace show <ws>` | Workspaces and their config, with secrets redacted |
 | `factory run log <run> --tail 30` | The timeline of gates, evidence, reviews, steering and lease events |
 | `factory batch status <parent>` | Children of an epic or review batch: phase, next gate, blockers, open `human` checks, owner, lease holder |
 | `factory env lease status <ws>` | Who holds the local env and who is queued |
@@ -149,7 +155,8 @@ Run artefacts live in `FACTORY_HOME/runs/<run>/`: `acs.json`, `evidence/`, `revi
 factory run delete <run...> --yes          # zip into FACTORY_HOME/archive/runs, verify, then remove
 factory run delete <parent> <children...> --yes --force   # unfinished runs need --force
 git -C <main clone> worktree remove <worktree>             # worktrees are listed, not removed
-factory env lease release <ws> --run <run>                 # free the env if a run left it held
+factory env lease release <ws> --run <run>                 # free the lease (and stop that run's envs)
+factory run close <run> --reason "abandoned"               # end a run you will not finish; then delete it
 ```
 
 ### 7. When a gate says…
@@ -162,6 +169,11 @@ factory env lease release <ws> --run <run>                 # free the env if a r
 | `env … already up … for <other worktree>` / `lease held by …` | Another run has the env | Wait in the queue, or `env down` and release it if that run is finished |
 | `run … is claimed by session …` | Another session drives this run | Continue there, or `factory run claim <run> --takeover` |
 | `missing secrets file` / login failure | Credentials not set | Add the keys to `FACTORY_HOME/secrets/<ws>.env` |
+| `ENV-FAIL repo=… kind=unhealthy\|start\|timeout` | The env did not come up or answer | Fix what `detail=` names (port, SDK, DB), then `factory env check <ws> --run <run>` |
+| `ENV-FAIL … kind=stale` | The env runs an older commit | `factory env check <ws> --run <run> --auto-restart` (prove also does it once) |
+| `ENV-FAIL … kind=port` | The port is held by something factory did not start | Stop that process yourself. Factory never kills it |
+| `PROVE-FAIL check=… kind=timeout` | A check hit its cap | Fix the check, or raise `timeout_s` on it |
+| `no tests matched` | A test filter ran zero tests | Fix the filter in the check |
 
 CLI help for everything else: `factory --help`, `factory <command> --help`.
 

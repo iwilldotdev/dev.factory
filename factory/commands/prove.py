@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import re
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -13,7 +14,7 @@ from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setu
                                weak_pattern_reason)
 from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
-                    repo_path_for_run, run_base_branch, run_dir, run_load, run_save, run_targets,
+                    repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
                     target_worktree, workspace_load, write_evidence, write_json)
 from .. import shots
 from . import gate
@@ -176,7 +177,13 @@ def dispatch(check: dict, ctx: Ctx, before: bool = False) -> dict:
                 "details": {"traceback": traceback.format_exc()[-3000:]}}
 
 
-def collect_one(run: dict, ws: dict, check: dict, target: str | None = None) -> dict:
+def log_evidence(run: dict, record: dict) -> None:
+    """Append the `evidence` event to run.json under the run lock, merging into whatever is on disk now: a
+    `run human/decide` that happened while the proof ran survives (the in-memory `run` is never saved)."""
+    run_update(run["id"], lambda r: evidence_event(r, record))
+
+
+def collect_one(run: dict, ws: dict, check: dict, target: str | None = None, skip_reason: str | None = None) -> dict:
     alias = repo_conf(ws, check["repo"])["alias"] if check.get("repo") else None
     repo_path = target_worktree(run, ws, alias, target) if alias else None
     if target and hotfix_of(run):
@@ -194,10 +201,21 @@ def collect_one(run: dict, ws: dict, check: dict, target: str | None = None) -> 
     bound = None
     if check.get("type") in gate.RUNTIME_TYPES | {shots.SHOT_TYPE} and alias and repo_path:
         bound = env_binding(ws, alias, repo_path, git_head(repo_path))
-    body = {"status": "error", "summary": bound} if bound else dispatch(check, ctx)
+    if skip_reason:
+        body = {"status": "error", "summary": f"skipped: {skip_reason}", "details": {"skipped": skip_reason.split()[0]}}
+    elif bound:
+        body = {"status": "error", "summary": bound,
+                "details": {"fail_kind": "env", "env_kind": binding_kind(bound)}}
+    else:
+        body = dispatch(check, ctx)
     record = write_evidence(run["id"], check, body, repo_path, started, time.monotonic() - t0)
-    evidence_event(run, record)
+    log_evidence(run, record)
     return record
+
+
+def binding_kind(message: str) -> str:
+    """ENV-FAIL kind of an env_binding message."""
+    return "stale" if re.search(r"started at|serves|worktree HEAD", message) else "start"
 
 
 def env_binding(ws: dict, alias: str, worktree: Path, head: str | None) -> str | None:
@@ -230,7 +248,7 @@ def quality_delta(run: dict, ws: dict, alias: str) -> dict:
                         "current": {k: {"exit": v["exit"], "failures": len(v["failures"])} for k, v in current.items()}}}
     check = {"id": gate.quality_id(alias), "type": "quality", "repo": alias}
     record = write_evidence(run["id"], check, body, wt, started, time.monotonic() - t0)
-    evidence_event(run, record)
+    log_evidence(run, record)
     return record
 
 
@@ -303,7 +321,7 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
         "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
     }
     write_json(run_dir(run["id"]) / "evidence" / f"{rid}.json", record)
-    evidence_event(run, record)
+    log_evidence(run, record)
     return record
 
 
@@ -343,7 +361,7 @@ def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
         "summary": body.get("summary", ""), "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
     }
     write_json(run_dir(run["id"]) / "evidence" / f"{bid}.json", record)
-    evidence_event(run, record)
+    log_evidence(run, record)
     return record
 
 
@@ -404,7 +422,6 @@ def cmd_repro(args) -> int:
         if not chk.get("repo"):
             raise FactoryError(f"{chk['id']}: repo is required")
         records.append(before_one(run, ws, chk, args.assume_env))
-    run_save(run)
     bad = [r for r in records if r["status"] != ("pass" if r.get("kind") == "before" else "reproduced")]
     if getattr(args, "json", False):
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha")} for r in records], indent=2))
@@ -424,6 +441,118 @@ def _lease_heartbeat(run: dict) -> None:
         pass
 
 
+# ---------- failure classification and fail-fast ----------
+
+EXIT_FAIL, EXIT_USAGE, EXIT_ENV = 1, 2, 3
+RUNTIME = gate.RUNTIME_TYPES | {shots.SHOT_TYPE}
+ENV_RE = re.compile(
+    r"ECONNREFUSED|ECONNRESET|ERR_CONNECTION|ERR_NAME_NOT_RESOLVED|ERR_EMPTY_RESPONSE|ERR_SSL|connection refused|"
+    r"env not reachable|not reachable|login (?:failed|did not|form)|session expired|storage ?state|"
+    r"no storage state|health(?:check)? .{0,20}\b5\d\d\b|\b50[234] (?:bad gateway|service unavailable|gateway)", re.I)
+TIMEOUT_RE = re.compile(r"timed out after|Timeout \d+ms exceeded|\[timeout after|check cap", re.I)
+
+
+def _first_line(text: str, limit: int = 200) -> str:
+    for line in str(text or "").splitlines():
+        if line.strip():
+            return line.strip()[:limit]
+    return "no detail"
+
+
+def _text_of(record: dict) -> str:
+    try:
+        blob = json.dumps(record.get("details") or {}, ensure_ascii=False)[:6000]
+    except (TypeError, ValueError):
+        blob = ""
+    return f"{record.get('summary', '')}\n{blob}"
+
+
+def env_kind_of(text: str) -> str:
+    if re.search(r"started at|serves|worktree HEAD", text):
+        return "stale"
+    if re.search(r"no pid record|not started by|not running|pid was reused", text):
+        return "start"
+    return "unhealthy"
+
+
+def classify(record: dict, first_runtime: bool = False) -> tuple[str, str | None] | None:
+    """(kind, env_kind) of a non-pass record: kind is timeout|assert|env|setup. A timeout on the first
+    navigation of a repo's runtime batch is an env failure (kind env, env_kind timeout)."""
+    status = record.get("status")
+    if status == "pass":
+        return None
+    details = record.get("details") or {}
+    if details.get("skipped"):
+        return "env" if details["skipped"] == "env" else "setup", None
+    text = _text_of(record)
+    if record.get("type") in RUNTIME and details.get("fail_kind") == "env":
+        return "env", details.get("env_kind") or env_kind_of(text)
+    if record.get("type") in RUNTIME and ENV_RE.search(text):
+        return "env", env_kind_of(text)
+    if details.get("timeout") or TIMEOUT_RE.search(text):
+        if first_runtime and record.get("type") in RUNTIME:
+            return "timeout", "timeout"
+        return "timeout", None
+    return ("assert" if status == "fail" else "setup"), None
+
+
+class Reporter:
+    """PROVE-FAIL / ENV-FAIL lines: stdout, or stderr with --json (stdout stays one JSON document)."""
+
+    def __init__(self, json_mode: bool):
+        self.json_mode = json_mode
+        self.env_failed = False
+
+    def line(self, text: str) -> None:
+        print(text, file=sys.stderr if self.json_mode else sys.stdout, flush=True)
+
+    def prove_fail(self, check_id: str, kind: str, detail: str) -> None:
+        if kind == "env":
+            self.env_failed = True
+        self.line(f"PROVE-FAIL check={check_id} kind={kind} detail={_first_line(detail)}")
+
+    def env_fail(self, alias: str, kind: str, detail: str) -> None:
+        from .env import env_fail_line
+        self.env_failed = True
+        self.line(env_fail_line(alias, kind, detail))
+
+
+def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict) -> None:
+    """A running env of ours that serves another HEAD/worktree than the run is restarted once (env down + up)
+    when the run holds the lease; nothing else is probed here (the first runtime check does that)."""
+    try:
+        from .env import restart_blocker, restart_env, stale_reason
+    except ImportError:
+        return
+    for alias in aliases:
+        try:
+            reason = stale_reason(ws, run, alias)
+            if not reason:
+                continue
+            blocked = restart_blocker(ws, run, alias)
+            if blocked:  # another run's (or a hand-started) env, or the lease is not ours: never touched
+                stopped[alias] = f"env not restarted: {blocked}"
+                rep.env_fail(alias, "stale", blocked)
+                continue
+            print(f"env {alias}: stale ({reason}); auto-restarting once (env down + up)", flush=True)
+            ok, lines = restart_env(ws, run, alias)
+        except FactoryError as err:
+            stopped[alias] = f"env restart refused: {err}"
+            rep.env_fail(alias, "lease" if "lease" in str(err) else "start", str(err))
+            continue
+        if not ok:
+            detail = _first_line(next((l for l in reversed(lines) if l.strip() and not l.startswith("---")), "restart failed"))
+            stopped[alias] = f"env restart failed: {detail}"
+            rep.env_fail(alias, "start", f"restart failed: {detail}")
+
+
+def _quality_check(run: dict, ws: dict, wanted: str):
+    for alias in run["repos"]:
+        if gate.quality_id(alias) == wanted and repo_conf(ws, alias).get("quality"):
+            return alias
+    return None
+
+
 def cmd_prove(args) -> int:
     if getattr(args, "repro", False):
         return cmd_repro(args)
@@ -434,40 +563,117 @@ def cmd_prove(args) -> int:
     acs = gate.load_acs(run["id"])
     wanted_repo = repo_conf(ws, args.repo)["alias"] if args.repo else None
     checks = [c for c in acs.get("checks", []) if c.get("type") != "human"]
+    only_quality, only_rule = None, None
     if args.check:
-        checks = [c for c in checks if c["id"] == args.check]
-        if not checks:
+        picked = [c for c in checks if c["id"] == args.check]
+        if not picked and args.check.startswith("QUALITY-"):
+            only_quality = _quality_check(run, ws, args.check)
+            if only_quality is None:
+                raise FactoryError(f"no runnable check {args.check} (repo has no quality commands or is not in the run)")
+        elif not picked and args.check.startswith("RULE-"):
+            only_rule = [r for r in gate.rule_checks(ws, run) if r["id"] == args.check]
+            if not only_rule:
+                raise FactoryError(f"no runnable check {args.check}")
+        elif not picked:
             raise FactoryError(f"no runnable check {args.check}")
+        checks = picked
     if wanted_repo:
         checks = [c for c in checks if c.get("repo") and repo_conf(ws, c["repo"])["alias"] == wanted_repo]
-    records = []
+    json_mode = bool(getattr(args, "json", False))
+    rep = Reporter(json_mode)
+    records: list[dict] = []
     for alias in {repo_conf(ws, c["repo"])["alias"] for c in checks if c.get("repo")}:
         if alias in run["repos"] and git_dirty(repo_path_for_run(run, ws, alias)):
             print(f"warning: {alias} worktree is dirty; evidence will be rejected by the gate")
+    stopped: dict[str, str] = {}  # repo alias -> why its remaining runtime checks are skipped
+    runtime_aliases = sorted({repo_conf(ws, c["repo"])["alias"] for c in checks
+                              if c.get("repo") and c.get("type") in RUNTIME and repo_conf(ws, c["repo"])["alias"] in run["repos"]})
+    _preflight_envs(run, ws, runtime_aliases, rep, stopped)
+    seen_runtime: set[str] = set()
+    last_sig: tuple | None = None
+    batch_stop: str | None = None
+
+    def handle(record: dict, chk: dict) -> None:
+        nonlocal last_sig, batch_stop
+        runtime = chk.get("type") in RUNTIME
+        alias = repo_conf(ws, chk["repo"])["alias"] if chk.get("repo") else "-"
+        first = runtime and alias not in seen_runtime
+        if runtime:
+            seen_runtime.add(alias)
+        cls = classify(record, first_runtime=first)
+        if cls is None:
+            last_sig = None
+            return
+        kind, env_kind = cls
+        detail = _first_line(record.get("summary") or "")
+        rep.prove_fail(record["check_id"], kind, detail)
+        if record.get("details", {}).get("skipped"):
+            return
+        if runtime and env_kind:
+            rep.env_fail(alias, env_kind, detail)
+            stopped[alias] = f"{record['check_id']}: {detail}"
+            last_sig = None
+        elif runtime:
+            sig = (kind, detail)
+            if sig == last_sig:
+                batch_stop = f"two identical failures ({kind}: {detail})"
+            last_sig = sig
+        else:
+            last_sig = None
+
+    def run_checks(chk: dict, target) -> None:
+        alias = repo_conf(ws, chk["repo"])["alias"] if chk.get("repo") else None
+        runtime = chk.get("type") in RUNTIME
+        reason = None
+        if runtime and alias and alias in stopped:
+            reason = f"env (not run: {stopped[alias]})"
+        elif runtime and batch_stop:
+            reason = f"batch-stopped (not run: {batch_stop})"
+        _lease_heartbeat(run)
+        record = collect_one(run, ws, chk, target, skip_reason=reason)
+        records.append(record)
+        handle(record, chk)
+
     for chk in checks:
         for target in run_targets(run):
             if chk.get("repo") and target_worktree(run, ws, repo_conf(ws, chk["repo"])["alias"], target) is None:
                 print(f"warning: {chk['id']}: no worktree for target {target} (factory run mirror); skipped")
                 continue
-            records.append(collect_one(run, ws, chk, target))
+            run_checks(chk, target)
+    if only_quality:
+        _lease_heartbeat(run)
+        records.append(quality_delta(run, ws, only_quality))
+        handle(records[-1], {"type": "quality", "repo": only_quality})
+    for rule in only_rule or []:
+        _lease_heartbeat(run)
+        records.append(collect_one(run, ws, rule))
+        handle(records[-1], rule)
     if not args.check:
         for alias in _select_repos(run, ws, wanted_repo):
             if repo_conf(ws, alias).get("quality"):
+                _lease_heartbeat(run)
                 records.append(quality_delta(run, ws, alias))
+                handle(records[-1], {"type": "quality", "repo": alias})
         for rule in gate.rule_checks(ws, run):
             if wanted_repo and rule["repo"] != wanted_repo:
                 continue
+            _lease_heartbeat(run)
             records.append(collect_one(run, ws, rule))
+            handle(records[-1], rule)
     _lease_heartbeat(run)
-    run_save(run)
     failed = [r for r in records if r["status"] != "pass"]
-    if getattr(args, "json", False):
+    skipped = [r for r in records if (r.get("details") or {}).get("skipped")]
+    if json_mode:
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha", "dirty")} for r in records], indent=2))
     else:
         for r in records:
             print(f"{r['status'].upper():5} {r['check_id']}  {r['summary']}")
         print(f"{len(records) - len(failed)}/{len(records)} passed")
-    return 1 if failed else 0
+        if skipped:
+            print(f"fail-fast: {len(skipped)} runtime check(s) not run; fix the cause, then `factory prove {run['id']}` again")
+    if rep.env_failed:
+        return EXIT_ENV
+    return EXIT_FAIL if failed else 0
 
 
 def register(sub) -> None:

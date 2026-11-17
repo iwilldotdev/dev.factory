@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
+import string
 from pathlib import Path
 
-from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, read_json,
+from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, factory_home, read_json, secrets_path,
                     workspace_load, workspace_path, write_json)
 
 DEFAULT_AUTONOMY = {"ship": "ask", "max_build_loops": 3, "max_review_rounds": 2, "max_replans": 2}
@@ -167,13 +169,16 @@ def orchestration_config_errors(ws: dict) -> list[str]:
         if not isinstance(orch, dict):
             errors.append("orchestration must be an object {sessions, per}")
         else:
-            unknown = set(orch) - {"sessions", "per"}
+            unknown = set(orch) - {"sessions", "per", "max_parallel"}
             if unknown:
-                errors.append(f"orchestration: unknown key(s) {sorted(unknown)} (sessions, per)")
+                errors.append(f"orchestration: unknown key(s) {sorted(unknown)} (sessions, per, max_parallel)")
             if not isinstance(orch.get("sessions", False), bool):
                 errors.append("orchestration.sessions must be true or false")
             if orch.get("per", "ticket") not in ("ticket", "run"):
                 errors.append("orchestration.per must be ticket or run")
+            mp = orch.get("max_parallel")
+            if "max_parallel" in orch and (isinstance(mp, bool) or not isinstance(mp, int) or mp < 1):
+                errors.append("orchestration.max_parallel must be an integer >= 1")
     env = ws.get("env")
     if env is not None:
         if not isinstance(env, dict):
@@ -192,9 +197,20 @@ def orchestration_config_errors(ws: dict) -> list[str]:
 
 def workspace_warnings(ws: dict) -> list[str]:
     """Non-fatal: a repo with an env block and no explicit boolean `ui` relies on guessing for the visual-evidence question."""
-    return [f"{r.get('alias') or '?'}: has an env block but no explicit `ui: true|false` (visual-evidence question falls "
-            "back to UI files in the diff)"
-            for r in ws.get("repos", []) if r.get("env") and not isinstance(r.get("ui"), bool)]
+    out = [f"{r.get('alias') or '?'}: has an env block but no explicit `ui: true|false` (visual-evidence question falls "
+           "back to UI files in the diff)"
+           for r in ws.get("repos", []) if r.get("env") and not isinstance(r.get("ui"), bool)]
+    fmt = (ws.get("branch_format") or {}).get("hotfix") if isinstance(ws.get("branch_format"), dict) else None
+    hf = hotfix_config(ws)
+    if isinstance(fmt, str) and hf and hf.get("mirror"):
+        try:
+            names = {n for _, n, _, _ in string.Formatter().parse(fmt) if n}
+        except ValueError:
+            names = set()
+        if not names & {"target", "target_upper"}:
+            out.append(f"branch_format.hotfix {fmt!r} has no {{target}} or {{target_upper}}: the base and the mirror "
+                       "branch names would collide (a `-<target>` suffix is appended to the mirror as a fallback)")
+    return out
 
 
 def check_workspace(ws: dict) -> list[str]:
@@ -251,6 +267,57 @@ def cmd_check(args) -> int:
     return 0
 
 
+SECRET_KEY_RE = re.compile(r"pass|secret|token|credential|api[_-]?key|auth|private", re.IGNORECASE)
+
+
+def redact(value, key: str = ""):
+    """Copy of a workspace.json value with every secret-looking key's value replaced (never printed)."""
+    if isinstance(value, dict):
+        return {k: redact(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v, key) for v in value]
+    if key and SECRET_KEY_RE.search(key) and value not in (None, "", False):
+        return "***"
+    return value
+
+
+def _secret_count(name: str) -> int:
+    try:
+        lines = secrets_path(name).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    return sum(1 for ln in lines if "=" in ln and not ln.lstrip().startswith("#"))
+
+
+def cmd_list(args) -> int:
+    root = factory_home() / "workspaces"
+    rows = []
+    for p in sorted(root.glob("*/workspace.json")) if root.is_dir() else []:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            rows.append({"name": p.parent.name, "error": "unreadable workspace.json"})
+            continue
+        rows.append({"name": p.parent.name, "repos": [r.get("alias") for r in data.get("repos") or []],
+                     "targets": (data.get("ship") or {}).get("targets") or [], "path": str(p)})
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return 0
+    for r in rows:
+        print(f"{r['name']}	{r.get('error') or ', '.join(r['repos'])}	{', '.join(r.get('targets') or [])}")
+    if not rows:
+        print("no workspaces")
+    return 0
+
+
+def cmd_show(args) -> int:
+    ws = workspace_load(args.name)
+    data = redact(ws)
+    data["_secrets"] = f"{_secret_count(args.name)} key(s) in secrets/{args.name}.env (values never shown)"
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def register(sub) -> None:
     parser = sub.add_parser("workspace", help="create, import and validate workspace.json")
     ws_sub = parser.add_subparsers(dest="ws_cmd", required=True)
@@ -265,3 +332,8 @@ def register(sub) -> None:
     p = ws_sub.add_parser("check", help="report missing configuration")
     p.add_argument("name")
     p.set_defaults(func=cmd_check)
+    p = ws_sub.add_parser("list", help="list the configured workspaces")
+    p.set_defaults(func=cmd_list)
+    p = ws_sub.add_parser("show", help="workspace.json with secrets redacted")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_show)

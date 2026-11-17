@@ -6,6 +6,11 @@ from __future__ import annotations
 import json
 import unittest
 
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
+
 from real_support import RealCase, cli, commit_file, core, sh
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16

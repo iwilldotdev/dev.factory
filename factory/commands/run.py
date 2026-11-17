@@ -20,7 +20,7 @@ from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, c
 from .. import integrity
 from . import gate
 
-BLOCKER_KINDS = ("env", "access", "question", "dependency", "conflict")
+BLOCKER_KINDS = ("env", "access", "question", "dependency", "conflict", "decision")
 
 
 def _emit(args, payload, text: str) -> None:
@@ -45,6 +45,15 @@ def branch_name(run: dict, ws: dict, alias: str, target: str | None, mirror: boo
     if not fmt:
         base = f"{'bugfix' if first['type'] == 'bug' else 'feature'}/{first['key']}-{slug(alias)}"
         return f"{base}-{target}" if mirror and target else base
+    name = _format_branch(run, ws, alias, target, fmt, kind, first)
+    if mirror and target and run.get("hotfix"):
+        base_name = _format_branch(run, ws, alias, run["hotfix"].get("base"), fmt, kind, first)
+        if name in (base_name, ((run.get("repos") or {}).get(alias) or {}).get("branch")):
+            name = f"{name}-{target}"  # a hotfix format without {target}: the mirror must not collide with the base
+    return name
+
+
+def _format_branch(run: dict, ws: dict, alias: str, target: str | None, fmt: str, kind: str, first: dict) -> str:
     target = target or ""
     values = {"key": first["key"], "slug": slug(first.get("summary") or alias), "target": target,
               "target_upper": target.upper(), "package": (ws.get("ship") or {}).get("package") or ""}
@@ -55,6 +64,23 @@ def branch_name(run: dict, ws: dict, alias: str, target: str | None, mirror: boo
 
 
 # ---------- start ----------
+
+ISSUE_BUG_TYPES = {"bug", "defeito", "erro"}
+
+
+def issue_is_bug(path: Path) -> bool | None:
+    """True/False from the saved Jira issue's issuetype (Bug/Defeito/Erro, any case); None when unreadable or absent."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    fields = data.get("fields") if isinstance(data, dict) and isinstance(data.get("fields"), dict) else data
+    itype = fields.get("issuetype") if isinstance(fields, dict) else None
+    name = itype.get("name") if isinstance(itype, dict) else itype
+    if not isinstance(name, str) or not name.strip():
+        return None
+    return name.strip().lower() in ISSUE_BUG_TYPES
+
 
 def cmd_start(args) -> int:
     ws = workspace_load(args.workspace)
@@ -77,6 +103,12 @@ def cmd_start(args) -> int:
     run_id = f"{ws['name'].lower()}-{(args.epic or tickets[0]).lower()}"
     if (run_dir(run_id) / "run.json").exists():
         raise FactoryError(f"run {run_id} already exists")
+    derived = []
+    if not args.feature:  # the saved Jira issuetype decides when the issue was fetched into the run dir already
+        for t in tickets:
+            if issue_is_bug(run_dir(run_id) / "remote" / f"issue-{t}.json"):
+                bugs.add(t)
+                derived.append(t)
     stamp = now()
     run = {
         "schemaVersion": SCHEMA_VERSION, "id": run_id, "workspace": ws["name"], "kind": "ticket",
@@ -95,8 +127,11 @@ def cmd_start(args) -> int:
     for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
+    if derived:
+        event(run, "retype", to="bug", tickets=derived, source="jira issuetype")
     run_save(run)
-    _emit(args, {"run": run_id, "dir": str(run_dir(run_id))}, f"started {run_id} at {run_dir(run_id)}")
+    note = f" (bug derived from the Jira issuetype: {', '.join(derived)})" if derived else ""
+    _emit(args, {"run": run_id, "dir": str(run_dir(run_id)), "bug": derived}, f"started {run_id} at {run_dir(run_id)}{note}")
     return 0
 
 
@@ -107,6 +142,8 @@ def next_action(run: dict) -> str:
     open_blockers = [b for b in run.get("blockers", []) if not b.get("resolved")]
     if phase == "done":
         return "nothing: run is done"
+    if phase == "closed":
+        return f"nothing: run is closed ({(run.get('closed') or {}).get('reason', 'no reason recorded')})"
     if phase == "blocked":
         return "resolve blockers (factory run unblock <run> <n>) or decide with the user"
     if phase not in gate.EVALUATORS:
@@ -119,20 +156,40 @@ def next_action(run: dict) -> str:
     return f"{errors[0]}{more}{suffix}"
 
 
+def missing_state(run: dict) -> list[str]:
+    """What the run records that is gone: worktrees and recorded heads (status prints it instead of a traceback)."""
+    out = []
+    for alias, rec in (run.get("repos") or {}).items():
+        if not isinstance(rec, dict):
+            continue
+        paths = ([("", rec["worktree"])] if rec.get("worktree") else []) + \
+            [(f" ({t})", w) for t, w in (rec.get("worktrees") or {}).items()]
+        for label, wt in paths:
+            if not Path(wt).is_dir():
+                out.append(f"{alias}{label}: worktree missing: {wt}")
+            elif rec.get("head") and not label:
+                proc = subprocess.run(["git", "-C", str(wt), "cat-file", "-e", f"{rec['head']}^{{commit}}"],
+                                      capture_output=True, text=True)
+                if proc.returncode != 0:
+                    out.append(f"{alias}: recorded head {str(rec['head'])[:8]} not found in {wt}")
+    return out
+
+
 def cmd_status(args) -> int:
     run = run_load(args.run)
     open_blockers = [(i, b) for i, b in enumerate(run.get("blockers", [])) if not b.get("resolved")]
+    gone = missing_state(run)
     try:
         action = next_action(run)
         errors = gate.evaluate(run["id"], run["phase"]) if run["phase"] in gate.EVALUATORS else []
-    except FactoryError as err:
+    except Exception as err:  # noqa: BLE001 - status degrades (never a traceback) when worktrees or heads are gone
         action, errors = f"cannot evaluate: {err}", []
     if getattr(args, "json", False):
         owner = current_owner(run)
         print(json.dumps({"id": run["id"], "phase": run["phase"], "loops": run["loops"],
                           "owner": owner["session"] if owner else None,
                           "blockers": [dict(b, n=i) for i, b in open_blockers],
-                          "next": action, "missing": errors}, indent=2))
+                          "next": action, "missing": errors, "gone": gone}, indent=2))
         return 0
     print(f"{run['id']}  phase={run['phase']}  risk={run.get('risk')}  "
           f"loops build={run['loops'].get('build', 0)} review={run['loops'].get('review', 0)}")
@@ -141,6 +198,8 @@ def cmd_status(args) -> int:
         print(f"owner: session {session_short(owner['session'])} since {owner.get('claimed_at')}")
     for i, b in open_blockers:
         print(f"blocker #{i} [{b['kind']}] {b['text']}")
+    for g in gone:
+        print(f"missing: {g}")
     print(f"next: {action}")
     for e in errors[1:6]:
         print(f"  - {e}")
@@ -155,6 +214,8 @@ def cmd_list(args) -> int:
             r = run_load(p.parent.name)
         except FactoryError:
             continue
+        if r.get("phase") == "closed" and not getattr(args, "all", False):
+            continue
         rows.append({"id": r["id"], "phase": r["phase"], "updated": r.get("updated")})
     if getattr(args, "json", False):
         print(json.dumps(rows, indent=2))
@@ -163,6 +224,118 @@ def cmd_list(args) -> int:
             print(f"{r['id']}\t{r['phase']}\t{r['updated']}")
         if not rows:
             print("no runs")
+    return 0
+
+
+def cmd_close(args) -> int:
+    """Terminal phase `closed` for a run that will not continue (abandoned, superseded); keeps every artifact."""
+    reason = (args.reason or "").strip()
+    if not reason:
+        raise FactoryError("run close needs --reason \"<why the run stops>\"")
+
+    def mutate(run: dict) -> None:
+        ensure_owner(run)
+        if run["phase"] == "closed":
+            raise FactoryError(f"run {run['id']} is already closed")
+        if run["phase"] == "done":
+            raise FactoryError(f"run {run['id']} is done; nothing to close (run delete removes it)")
+        prev = run["phase"]
+        event(run, "close", reason=reason, **{"from": prev})
+        run["closed"] = {"at": now(), "reason": reason, "from": prev}
+        gate._set_phase(run, "closed")
+
+    run = run_update(args.run, mutate)
+    _emit(args, {"phase": "closed", "reason": reason}, f"{run['id']} closed ({reason})")
+    return 0
+
+
+def cmd_retype(args) -> int:
+    """Switch a run between feature, bug and hotfix keeping every artifact; only before gate build passed."""
+    mode = "bug" if args.bug else "feature" if args.feature else "hotfix"
+
+    def mutate(run: dict) -> None:
+        ensure_owner(run)
+        if run.get("kind", "ticket") != "ticket":
+            raise FactoryError(f"run retype is for ticket runs, not {run.get('kind')}")
+        if any(e["kind"] == "gate_pass" and e["data"].get("phase") == "build" for e in run.get("events", [])) or \
+                run["phase"] in ("prove", "review", "ship", "feedback", "done", "closed"):
+            raise FactoryError("gate build already passed (or the run is past it): retype is no longer possible; "
+                               "start a new run or replan")
+        ws = workspace_load(run["workspace"])
+        before = {"bug": gate.is_bug_run(run), "hotfix": bool(run.get("hotfix")), "phase": run["phase"]}
+        if mode == "hotfix":
+            from .workspace import hotfix_config, hotfix_config_errors
+            cfg = hotfix_config(ws)
+            if not cfg:
+                raise FactoryError("--hotfix needs ship.hotfix in workspace.json (or a target named homolog)")
+            bad = hotfix_config_errors(dict(ws, ship=dict(ws.get("ship") or {}, hotfix=cfg)))
+            if bad:
+                raise FactoryError("; ".join(bad))
+            run["hotfix"] = {"base": cfg["base"], "mirror": list(cfg.get("mirror") or [])}
+            run["targets"] = [cfg["base"], *run["hotfix"]["mirror"]]
+            for t in run["tickets"]:
+                t["type"] = "bug"
+        else:
+            if run.get("hotfix"):
+                if any((rec or {}).get("worktrees") for rec in (run.get("repos") or {}).values()):
+                    raise FactoryError(f"cannot retype to {mode}: mirror worktrees exist (run mirror); "
+                                       "they would be orphaned")
+                run.pop("hotfix")
+                run["targets"] = list((ws.get("ship") or {}).get("targets") or [])
+            for t in run["tickets"]:
+                t["type"] = mode
+        phases, _ = gate.machine(run)
+        passed = {e["data"].get("phase") for e in run.get("events", []) if e["kind"] == "gate_pass"}
+        if run["phase"] not in phases:  # a feature has no reproduce phase
+            gate._set_phase(run, "build")
+        elif run["phase"] == "build" and "reproduce" in phases and "reproduce" not in passed:
+            gate._set_phase(run, "reproduce")  # a bug is reproduced before the fix is built
+        event(run, "retype", to=mode, bug=gate.is_bug_run(run), hotfix=bool(run.get("hotfix")),
+              before=before, phase=run["phase"])
+
+    run = run_update(args.run, mutate)
+    _emit(args, {"retype": mode, "phase": run["phase"]}, f"{run['id']} is now a {mode} run (phase {run['phase']})")
+    return 0
+
+
+def cmd_verify_human(args) -> int:
+    """Pass evidence for a `human` check: only what the user stated in chat, bound to the worktree HEAD."""
+    said = (args.user_said or "").strip()
+    note = (args.note or "").strip()
+    if args.by != "user":
+        raise FactoryError("verify-human records what the USER confirmed: pass --by user (an agent cannot verify a "
+                           "human check)")
+    if not said or not note:
+        raise FactoryError("verify-human needs --note \"<what the user confirmed>\" and --user-said \"<gist of the "
+                           "user's chat message>\"")
+    from ..core import evidence_file, file_sha256, read_json, repo_path_for_run, write_evidence
+
+    def mutate(run: dict) -> None:
+        ensure_owner(run)
+        data = read_json(run_dir(run["id"]) / "acs.json")
+        chk = next((c for c in data.get("checks") or [] if c.get("id") == args.check), None)
+        if chk is None:
+            raise FactoryError(f"{args.check} is not a check of acs.json")
+        if chk.get("type") != "human":
+            raise FactoryError(f"{args.check} is a {chk.get('type')} check: only `human` checks are verified by the user; "
+                               f"run `factory prove {run['id']} --check {args.check}`")
+        ws = workspace_load(run["workspace"])
+        repos = sorted(run.get("repos") or {})
+        alias = args.repo or chk.get("repo") or (repos[0] if repos else None)
+        path = repo_path_for_run(run, ws, alias) if alias else None
+        if path is not None and not path.is_dir():
+            raise FactoryError(f"worktree missing: {path}")
+        record = write_evidence(run["id"], dict(chk, repo=alias), {
+            "status": "pass", "summary": f"confirmed by the user: {note}",
+            "details": {"by": "user", "user_said": said, "note": note, "text": chk.get("text")}}, path, now(), 0.0)
+        run.setdefault("events", []).append({"at": now(), "kind": "evidence", "data": {  # `kind` is event()'s own arg
+            "check": chk["id"], "status": "pass", "sha": record.get("git_sha"),
+            "digest": file_sha256(evidence_file(run["id"], chk["id"])), "kind": "human", "by": "user", "note": note}})
+        run["decisions"].append({"at": now(), "phase": run["phase"], "by": "user", "user_said": said,
+                                 "text": f"human check {chk['id']} confirmed: {note}"})
+
+    run = run_update(args.run, mutate)
+    _emit(args, {"check": args.check, "status": "pass"}, f"{args.check}: human confirmation recorded for {run['id']}")
     return 0
 
 
@@ -546,12 +719,16 @@ def event_summary(e: dict) -> str:
         return f"replan from {d.get('from')}: {d.get('reason')}"
     if kind == "rewind":
         return f"rewind {d.get('from')} -> {d.get('to')}: {d.get('reason')}"
+    if kind == "close":
+        return f"closed from {d.get('from')}: {d.get('reason')}"
+    if kind == "retype":
+        return f"retyped to {d.get('to')} (phase {d.get('phase')})"
     if kind == "claim":
         return f"claimed by {session_short(d.get('session'))}" + (" (takeover)" if d.get("takeover") else "")
     return _kv(d)
 
 
-DELETABLE_PHASES = ("done", "report", "blocked")
+DELETABLE_PHASES = ("done", "report", "blocked", "closed")
 
 
 def _archive_run(rid: str) -> Path:
@@ -660,7 +837,27 @@ def register(sub) -> None:
     p.add_argument("run")
     p.set_defaults(func=cmd_status)
     p = rs.add_parser("list")
+    p.add_argument("--all", action="store_true", help="include closed runs")
     p.set_defaults(func=cmd_list)
+    p = rs.add_parser("close", help="stop a run for good (phase closed); keeps the artifacts, deletable without --force")
+    p.add_argument("run")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_close)
+    p = rs.add_parser("retype", help="switch a run to bug, feature or hotfix keeping its artifacts (before gate build)")
+    p.add_argument("run")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--bug", action="store_true")
+    g.add_argument("--feature", action="store_true")
+    g.add_argument("--hotfix", action="store_true")
+    p.set_defaults(func=cmd_retype)
+    p = rs.add_parser("verify-human", help="record the user's confirmation of a human check as pass evidence")
+    p.add_argument("run")
+    p.add_argument("check")
+    p.add_argument("--note", required=True, help="what the user confirmed")
+    p.add_argument("--by", choices=["agent", "user"], default="agent", help="must be user")
+    p.add_argument("--user-said", help="gist of the user's chat message")
+    p.add_argument("--repo", help="repo alias whose worktree HEAD the evidence is bound to")
+    p.set_defaults(func=cmd_verify_human)
     p = rs.add_parser("branch")
     p.add_argument("run")
     p.add_argument("repo")

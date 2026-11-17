@@ -7,9 +7,10 @@
   - `text` compares the trimmed `innerText` exactly.
   - `borderColor` is a normalized color, taken from the first side with width > 0, else the top side.
   - `borderWidth` is in px, with the default tolerance.
-  - Known limits (audit, minor):
-    - An empty expected `text` passes against an empty element.
-    - `borderWidth`'s 1 px tolerance accepts a 0 px (missing) border when 1 px is expected.
+  - Fixed after the audit (false PASS):
+    - An empty expected `text` now fails, with the note "expected text is empty".
+    - An expected `borderWidth` > 0 now fails against 0 px or a missing border, with the note "border missing (0px or style none)". The px tolerance still applies to a border that is present.
+  - Known limits (audit, minor, false FAIL only):
     - Multi-line text, and text changed by `text-transform`, fail, because Figma line breaks and case are not normalized.
     - Hashed font names (e.g. next/font `__Inter_abc123`) fail.
 

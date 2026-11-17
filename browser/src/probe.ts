@@ -77,6 +77,9 @@ export function compareStyles(expect: Expect, actual: Record<string, unknown>, t
         out.push({ property: prop, expected: e, actual: 0, ok: e === 0 });
       } else if (prop === "gap" && String(act) === "normal") {
         out.push({ property: prop, expected: e, actual: 0, ok: e === 0 });
+      } else if (prop === "borderWidth" && e !== null && e > 0 && (a === null || a <= 0)) {
+        // The px tolerance must not turn a missing border (0px / style none) into a pass.
+        out.push({ property: prop, expected: e, actual: a ?? act, ok: false, note: "border missing (0px or style none)" });
       } else {
         out.push({ property: prop, expected: e, actual: a, ok: e !== null && a !== null && pxWithin(e, a, tolerancePx) });
       }
@@ -87,7 +90,8 @@ export function compareStyles(expect: Expect, actual: Record<string, unknown>, t
     } else if (prop === "text") {
       const e = String(exp).trim();
       const a = typeof act === "string" ? act.trim() : "";
-      out.push({ property: prop, expected: e, actual: a, ok: e === a });
+      // An empty expected text proves nothing ("" === "" on any empty element).
+      out.push({ property: prop, expected: e, actual: a, ok: e !== "" && e === a, ...(e === "" ? { note: "expected text is empty" } : {}) });
     } else {
       out.push({ property: prop, expected: exp, actual: act, ok: false, note: "unknown property" });
     }

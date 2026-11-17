@@ -49,3 +49,19 @@ test("compareStyles: fontFamily, borderColor, text, borderWidth", () => {
   assert.deepEqual(bad.map((r) => r.ok), [false, false, false]);
   assert.ok(bad.every((r) => r.note !== "unknown property"));
 });
+
+test("compareStyles: no false PASS for empty expected text or a missing border", () => {
+  // empty expected text never passes, even against an empty element
+  const [t] = compareStyles({ text: "   " }, { text: "" });
+  assert.equal(t.ok, false);
+  assert.equal(t.note, "expected text is empty");
+  // a 1px border is not satisfied by 0px (border absent / style none), despite the 1px tolerance
+  for (const actual of ["0px", "0", 0]) {
+    const [b] = compareStyles({ borderWidth: 1 }, { borderWidth: actual });
+    assert.equal(b.ok, false, String(actual));
+    assert.equal(b.note, "border missing (0px or style none)");
+  }
+  // the tolerance still applies to a present border, and an expected 0 still matches 0
+  assert.ok(compareStyles({ borderWidth: 1 }, { borderWidth: "1.5px" })[0].ok);
+  assert.ok(compareStyles({ borderWidth: 0 }, { borderWidth: "0px" })[0].ok);
+});

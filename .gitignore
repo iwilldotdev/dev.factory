@@ -3,3 +3,6 @@ __pycache__/
 node_modules/
 browser/dist/
 .tmp/
+
+# Session handoff notes (product details; keep local)
+Handoffs/

@@ -61,7 +61,9 @@ export async function captureSurface(options: {
     const appPng = path.join(options.outDir, "app.png");
     await target.screenshot({ path: appPng, animations: "disabled", caret: "hide" });
     const text = options.selector
-      ? await page.locator(options.selector).innerText()
+      ? await page.locator(options.selector).evaluate((node) =>
+          node instanceof HTMLElement ? node.innerText : (node.textContent ?? ""),
+        )
       : await page.locator("body").innerText();
     await writeFile(path.join(options.outDir, "text.txt"), text, "utf8");
     return { appPng, text };

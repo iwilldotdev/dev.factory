@@ -37,6 +37,11 @@ Fast verification, parallel envs and engineering review (DESIGN §11, §14). Dri
     - Multi-line text, and text changed by `text-transform`, fail, because Figma line breaks and case are not normalized.
     - Hashed font names (e.g. next/font `__Inter_abc123`) fail.
 
+- Fixes from the same session (e25991f, ccd2232, 3ddcfaa):
+  - `capture` reads the text of non-HTML targets (e.g. `svg`) with `textContent`, since `innerText` exists only on `HTMLElement`.
+  - Workspace `limits.expect_timeout_ms` sets the Playwright assertion timeout of browser specs. The collector exports it as `FACTORY_EXPECT_TIMEOUT_MS` and the generated config, single and batched, writes `expect: { timeout }`. It is meant for slow databases such as the remote dump. Without the key, Playwright's default of 5 s stays.
+  - `gate build` treats commits of merged MRs as inherited. The shas of `mr-*.json` payloads in state `merged` go into `--not`, so a dependency branch deleted after its merge no longer turns its commits into foreign ones. `inherited_allow` also unwraps `{merge_request: {...}}` payloads.
+
 Fail fast and recovery (DESIGN §13), driven by the findings of real runs since 13/11 (Handoffs/ and run transcripts):
 
 - prove: per-check wall-clock caps (`timeout_s`, `limits.check_timeout_s`, 120 s UI / 60 s api) kill the process tree. An env-kind failure skips the repo's remaining runtime checks and exits 3. Two identical failures stop the batch. New `PROVE-FAIL`/`ENV-FAIL` lines. A stale env is restarted once. prove no longer overwrites run.json (`run_update`). `--check` accepts `QUALITY-*` and `RULE-*`.

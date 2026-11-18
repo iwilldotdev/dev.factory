@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+Fast verification, parallel envs and engineering review (DESIGN §11, §14). Driven by the DEV-7853 epic evaluation (session "[Tarefas | Personalização de campos]"): the 9451 run spent 21.8 h in prove with 762 check executions, passing checks rerun 15–20× at the same sha, a new check failing only after 27 min, React restarted on every HEAD, and test data piling up in the dump. Audited independently twice (opus); the first audit's 2 blockers and 3 majors are fixed with regression tests (`tests/test_verification_audit.py`).
+
+- prove fail fast / pass fast:
+  - Risk order: last fail/error first, then new or changed checks, then checks whose repo moved, then the rest; cheapest type first in each group.
+  - Evidence reuse: a `pass` at the same repo HEAD, same `details.check_digest` (new `integrity.check_digest`) and, for runtime checks, the same `details.run_heads` of every run repo, is not rerun (`REUSED`). `--all` forces everything. `evidence_error` also treats a changed check digest or changed run heads as stale.
+  - Modes: `--bail` (stop at the first runtime assert failure), `--fast` (bail + reuse + `quality_fast`), `--final` (run everything, strict env binding). Evidence records `details.mode`; `gate prove` refuses `mode=fast` and `hot_reload` evidence. A `prove` event records mode, ran/reused/skipped/failed and wall time.
+  - Flaky: a browser assert failure is retried once; a pass on retry stays `fail` with `details.flaky` and `PROVE-FAIL kind=flaky` (`--no-retry`).
+  - Batched browser checks: browser checks of one repo run in one Playwright process (`run-specs`, one project per check) and are split back into per-check evidence; falls back to one-by-one. Opt out with `limits.browser_batch: false`.
+  - `prove --estimate`: expected time per check (REUSED/RUN) and totals, without running anything.
+  - Repo `quality_fast` with `{changed}` (files changed since the merge-base), used only in fast mode.
+- `factory run amend-check <run> CHK-n --kind timing|selector --reason`: fixes a check's waits/timeouts (and, for selector, its own spec files) without a full replan. Refused when a changed file is read by another check, or when workspace.json changed since the lock; the relock keeps the old workspace digest. A timing amend does not count against `max_replans` with `autonomy.allow_timing_amends`.
+- Env:
+  - `env.hot_reload` (Vite): a new HEAD does not restart the server in default/fast modes; `--final` restarts it so final evidence comes from a process started at HEAD.
+  - `env.seed {cmd, reset}`: `env seed` / `env reset-data --run` (with `FACTORY_DATA_PREFIX=UAT<ticket>`), and prove resets data once before the runtime batch. `env.preflight[]` runs in `env check` (`ENV-FAIL kind=preflight`), e.g. for the trigger the daily dump reset drops.
+  - Per-repo leases (`env/<ws>/<alias>[@k]/lease.json`, all-or-nothing in repo order, FIFO across repos), slots (`slots`, `port_stride`, ports/health/base_url/start shifted by `k*stride`, run.json `env_slots`), `shareable` repos with shared leases, `{base_url:ALIAS}`/`{port:ALIAS}` placeholders resolved per slot, `login.handoff_rewrite` (rewrites the legacy → React hand-off URL to the slot port; the React cookie is host-only so it is port-agnostic). Storage/login state is per slot, the pid record carries an `env_digest` of the resolved env, and the legacy `lease.json` holds a marker for older factory versions. Slot math and leases live in `factory/commands/env_lease.py` (re-exported by env.py).
+  - prove now checks the env binding of the `depends_on` closure of runtime repos too (and `--final` restarts a stale one it holds), so `run_heads` never claims a dependency HEAD that is not being served (re-audit A3).
+  - Without the new keys behaviour is unchanged.
+- Engineering quality: authors write `notes/design.md` (Approach, Complexity, Reuse, Architecture risks) for medium/high risk runs; builders follow it; the code auditor now reviews complexity, readability, architecture and reuse ("No formatting nits; readability and design problems are findings") with a finding `category`. Workspace rules with `kind: guideline` go to the auditor.
+- Ship: the MR description lists unresolved minor findings in `## Follow-ups`.
+- Skill: early UAT checkpoint after the first `gate build` for UI runs (screenshots + assumed decisions from run.json), a scout checks whether a new decision is already met before a builder runs, child sessions recommended for epics of 3+ tickets or more than a day, `prove --estimate` for "how long" answers.
+- `factory metrics`: `phase_hours`, prove invocations by mode, check executions/status, slowest and most-rerun checks, flaky count; child runs without transcripts get tokens attributed from the parent's transcripts (or `tokens: null` with a note). `batch status` shows each child's last prove and slots.
+- Known limits (audit, minor): reuse of evidence recorded before this change never happens (it has no `check_digest`/`run_heads`), so the first prove after upgrading runs everything; `--estimate` ignores batching and overestimates browser time; one shared-repo caveat — evidence can depend on another run's code in a `shareable` repo (recorded in `details.shared`).
+
 - Style probe (browser `style-probe`) now measures `fontFamily`, `text`, `borderColor` and `borderWidth`, so the `factory figma expect` expectations for them no longer fail as "unknown property". This came from the "[Tarefas | Personalização de campos]" session; it landed in 72ac634 and was audited afterwards.
   - `fontFamily` compares the first family only, unquoted and case-insensitive.
   - `text` compares the trimmed `innerText` exactly.

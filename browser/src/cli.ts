@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 import { captureSurface, DEFAULT_GOTO_TIMEOUT_MS, gotoOptions, runAdapter, WAIT_UNTIL, type WaitUntil } from "./capture.js";
 import { comparePng, type Mask } from "./compare.js";
 import { compareStyles, type Expect } from "./probe.js";
-import { runSpec, SCREENSHOT_MODES, type ScreenshotMode } from "./spec.js";
+import { runSpec, runSpecs, SCREENSHOT_MODES, type BatchEntry, type ScreenshotMode } from "./spec.js";
 
 type Status = "pass" | "fail" | "error";
 type Result = { status: Status; summary: string; artifacts: string[]; details: Record<string, unknown> };
@@ -40,11 +40,26 @@ async function main(): Promise<void> {
       const arts = ["report.json", "run.log"];
       return finish(out, { ...r, artifacts: arts });
     }
+    case "run-specs":
+      return doRunSpecs(out);
     case "login":
       return doLogin();
     default:
-      throw new Error("usage: browser-cli capture|compare|style-probe|run-spec|login");
+      throw new Error("usage: browser-cli capture|compare|style-probe|run-spec|run-specs|login");
   }
+}
+
+/** run-specs --manifest <json: [{id, spec, out, timeout_ms?, goto_timeout_ms?}]> --base-url --out [--storage-state] [--max-failures n]
+ * Writes <out>/batch.json ({results: [{id, status, summary, details, ran, durationMs}]}) and, per entry, report.json + run.log in its out dir. */
+async function doRunSpecs(out: string): Promise<void> {
+  const raw = JSON.parse(await readFile(required("--manifest"), "utf8")) as Array<{ id: string; spec: string; out: string; timeout_ms?: number; goto_timeout_ms?: number }>;
+  if (!Array.isArray(raw) || raw.length === 0) throw new Error("manifest has no entries");
+  const entries: BatchEntry[] = raw.map((e) => ({ id: e.id, spec: e.spec, out: e.out, timeoutMs: e.timeout_ms, gotoTimeoutMs: e.goto_timeout_ms }));
+  const results = await runSpecs({ entries, baseUrl: required("--base-url"), storageState: optional("--storage-state"), outDir: out, maxFailures: optionalNumber("--max-failures") });
+  if (!results) throw new Error("Playwright produced no report");
+  await mkdir(out, { recursive: true });
+  await writeFile(path.join(out, "batch.json"), `${JSON.stringify({ results }, null, 2)}\n`, "utf8");
+  console.log(`batch: ${results.map((r) => `${r.id}=${r.ran ? r.status : "not-run"}`).join(" ")}`);
 }
 
 async function doCapture(out: string): Promise<Result> {
@@ -177,6 +192,7 @@ async function doProbe(out: string): Promise<Result> {
 async function doLogin(): Promise<void> {
   const cfg = JSON.parse(await readFile(required("--login-json"), "utf8")) as {
     url: string; user_field: string; pass_field: string; submit: string; success_url_contains: string;
+    handoff?: { host?: string | null; from_port: number; to_port: number };
   };
   // credentials come from the environment, never argv (process listings show argv)
   const user = process.env.FACTORY_LOGIN_USER ?? "";
@@ -189,6 +205,33 @@ async function doLogin(): Promise<void> {
   try {
     const context = await browser.newContext({ locale: "en-US" });
     const page = await context.newPage();
+    if (cfg.handoff) {
+      // Slot > 0: the login redirects to a fixed origin (e.g. localhost:3300/portal/coming?token=...). The Location of
+      // a navigation answered on the slot's origin, and any navigation to the fixed origin itself, is moved to the
+      // slot's port (path, query and token kept), so the hand-off completes on the slot.
+      const h = cfg.handoff;
+      const ports = [String(h.from_port), String(h.to_port)];
+      const sameHost = (u: URL) => !h.host || u.hostname.toLowerCase() === h.host.toLowerCase();
+      await page.route((u) => ports.includes(u.port) && sameHost(u), async (route) => {
+        const req = route.request();
+        if (!req.isNavigationRequest()) return route.continue();
+        const url = new URL(req.url());
+        if (url.port === String(h.from_port)) {
+          url.port = String(h.to_port);
+          return route.fulfill({ status: 302, headers: { location: url.toString() } });
+        }
+        const res = await route.fetch({ maxRedirects: 0 });
+        const loc = res.headers()["location"];
+        if (res.status() >= 300 && res.status() < 400 && loc) {
+          const next = new URL(loc, req.url());
+          if (next.port === String(h.from_port) && sameHost(next)) {
+            next.port = String(h.to_port);
+            return route.fulfill({ response: res, headers: { ...res.headers(), location: next.toString() } });
+          }
+        }
+        return route.fulfill({ response: res });
+      });
+    }
     await page.goto(new URL(cfg.url, base).toString(), { waitUntil: "load" });
     await page.locator(cfg.user_field).fill(user);
     await page.locator(cfg.pass_field).fill(pass);

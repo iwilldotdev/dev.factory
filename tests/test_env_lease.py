@@ -1,4 +1,4 @@
-"""Env lease (DESIGN §11): one env per workspace at a time, FIFO queue, stale reclaim, owner checks on down/up/login."""
+"""Env lease (DESIGN §11): per-repo lease (one holder per repo slot), FIFO queue, stale reclaim, owner checks on down/up/login."""
 
 import contextlib
 import io
@@ -61,7 +61,7 @@ class LeaseCase(FactoryCase):
             self.make_run(rid, phase="build")
 
     def holder(self):
-        return envmod.lease_read("ws").get("run")
+        return envmod.lease_read("ws", "Web").get("run")
 
     def try_(self, rid, wait=False):
         return envmod.lease_try("ws", rid, 900, wait=wait)
@@ -109,10 +109,10 @@ class AcquireTests(LeaseCase):
                                 cwd=str(ROOT), env=sub_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         try:
             for _ in range(200):
-                if [w["run"] for w in envmod.lease_read("ws")["queue"]] == ["r2"]:
+                if [w["run"] for w in envmod.lease_read("ws", "Web")["queue"]] == ["r2"]:
                     break
                 time.sleep(0.05)
-            self.assertEqual([w["run"] for w in envmod.lease_read("ws")["queue"]], ["r2"])
+            self.assertEqual([w["run"] for w in envmod.lease_read("ws", "Web")["queue"]], ["r2"])
             envmod.lease_release("ws", "r1")
             rc = proc.wait(timeout=60)
             out = proc.stdout.read()
@@ -124,14 +124,14 @@ class AcquireTests(LeaseCase):
         self.assertIn("position 1 in queue", out)
         self.assertIn("held by r1", out)
         self.assertEqual(self.holder(), "r2")
-        self.assertEqual(envmod.lease_read("ws")["queue"], [])
+        self.assertEqual(envmod.lease_read("ws", "Web")["queue"], [])
 
     def test_wait_timeout_leaves_queue(self):
         self.try_("r1")
         rc, out = cli("env", "lease", "acquire", "ws", "--run", "r2", "--wait", "--poll", "0.05", "--timeout", "0.2")
         self.assertEqual(rc, 1, out)
         self.assertIn("timed out", out)
-        self.assertEqual(envmod.lease_read("ws")["queue"], [])
+        self.assertEqual(envmod.lease_read("ws", "Web")["queue"], [])
         self.assertEqual(self.holder(), "r1")
 
     def test_fifo_order(self):
@@ -139,7 +139,7 @@ class AcquireTests(LeaseCase):
         self.assertEqual(self.try_("r2", wait=True)["position"], 1)
         self.assertEqual(self.try_("r3", wait=True)["position"], 2)
         self.assertFalse(self.try_("r4")["granted"])  # no --wait: refused, not queued
-        self.assertEqual([w["run"] for w in envmod.lease_read("ws")["queue"]], ["r2", "r3"])
+        self.assertEqual([w["run"] for w in envmod.lease_read("ws", "Web")["queue"]], ["r2", "r3"])
         envmod.lease_release("ws", "r1")
         self.assertFalse(self.try_("r3", wait=True)["granted"])  # r2 is ahead
         self.assertFalse(self.try_("r4")["granted"])
@@ -156,9 +156,9 @@ class AcquireTests(LeaseCase):
 
     def test_release_free_drops_file(self):
         self.try_("r1")
-        self.assertTrue(envmod.lease_path("ws").is_file())
+        self.assertTrue(envmod.lease_path("ws", "Web").is_file())
         envmod.lease_release("ws", "r1")
-        self.assertFalse(envmod.lease_path("ws").exists())
+        self.assertFalse(envmod.lease_path("ws", "Web").exists())
         self.assertIsNone(self.holder())
 
     def test_release_by_other_needs_force(self):
@@ -175,9 +175,9 @@ class AcquireTests(LeaseCase):
         rc, out = cli("env", "lease", "status", "ws", "--json")
         self.assertEqual(rc, 0, out)
         st = json.loads(out)
-        self.assertEqual(st["holder"], "r1")
+        self.assertEqual([(r["repo"], r["holder"]) for r in st["repos"]], [("Web", "r1")])
         self.assertEqual([w["run"] for w in st["queue"]], ["r2"])
-        self.assertIsNone(st["stale"])
+        self.assertIsNone(st["repos"][0]["stale"])
         rc, out = cli("env", "lease", "status", "ws")
         self.assertIn("held by r1", out)
         self.assertIn("1. r2", out)
@@ -193,11 +193,11 @@ class StaleTests(LeaseCase):
         old = time.time() - age_s
         import datetime as dt
         stamp = dt.datetime.fromtimestamp(old, dt.timezone.utc).isoformat(timespec="seconds")
-        self.write("env/ws/lease.json", {"run": rid, "pid": 1, "acquired_at": stamp, "heartbeat": stamp, "queue": []})
+        self.write("env/ws/Web/lease.json", {"run": rid, "pid": 1, "acquired_at": stamp, "heartbeat": stamp, "queue": []})
 
     def test_stale_by_ttl(self):
         self._old_lease("r1", 2000)
-        self.assertIn("ttl", envmod.lease_stale(envmod.lease_read("ws"), 900))
+        self.assertIn("ttl", envmod.lease_stale(envmod.lease_read("ws", "Web"), 900))
         rc, out = cli("env", "lease", "acquire", "ws", "--run", "r2")
         self.assertEqual(rc, 0, out)
         self.assertIn("reclaimed stale lease of r1", out)
@@ -206,7 +206,7 @@ class StaleTests(LeaseCase):
 
     def test_fresh_within_ttl_not_stale(self):
         self._old_lease("r1", 100)
-        self.assertIsNone(envmod.lease_stale(envmod.lease_read("ws"), 900))
+        self.assertIsNone(envmod.lease_stale(envmod.lease_read("ws", "Web"), 900))
         self.assertFalse(self.try_("r2")["granted"])
 
     def test_stale_by_finished_run(self):
@@ -224,9 +224,9 @@ class StaleTests(LeaseCase):
     def test_stale_waiter_leaves_queue(self):
         self.try_("r1")
         self.try_("r2", wait=True)
-        lease = envmod.lease_read("ws")
+        lease = envmod.lease_read("ws", "Web")
         lease["queue"][0]["seen"] = "2000-01-01T00:00:00+00:00"
-        self.write("env/ws/lease.json", lease)
+        self.write("env/ws/Web/lease.json", lease)
         envmod.lease_release("ws", "r1")
         self.assertTrue(self.try_("r3")["granted"])  # r2 stopped polling: it no longer blocks the queue
 
@@ -234,15 +234,15 @@ class StaleTests(LeaseCase):
         self._old_lease("r1", 600)
         self.assertFalse(envmod.lease_heartbeat("ws", "r2"))
         self.assertTrue(envmod.lease_heartbeat("ws", "r1"))
-        self.assertLess(envmod.lease_status("ws", 900)["heartbeat_age_s"], 60)
+        self.assertLess(envmod.lease_status("ws", 900)["repos"][0]["heartbeat_age_s"], 60)
 
     def test_prove_and_check_refresh_heartbeat(self):
         self._old_lease("r1", 600)
         prove._lease_heartbeat(core.run_load("r1"))
-        self.assertLess(envmod.lease_status("ws", 900)["heartbeat_age_s"], 60)
+        self.assertLess(envmod.lease_status("ws", 900)["repos"][0]["heartbeat_age_s"], 60)
         self._old_lease("r1", 600)
         cli("env", "check", "ws", "Web", "--run", "r1")
-        self.assertLess(envmod.lease_status("ws", 900)["heartbeat_age_s"], 60)
+        self.assertLess(envmod.lease_status("ws", 900)["repos"][0]["heartbeat_age_s"], 60)
 
 
 class OwnerTests(LeaseCase):

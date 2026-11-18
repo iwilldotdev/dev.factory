@@ -39,6 +39,8 @@ Risk is **high** when the work touches auth, money, data, migration, concurrency
 
 `/factory session <run-id...>` = child mode: this session drives only those runs. A parent with `orchestration.sessions` and 2+ tickets starts one linked app session per ticket instead of hidden subagents. Parent and child rules, UI phase with the env lease, fallback: [references/sessions.md](references/sessions.md).
 
+Epic with 3+ tickets, or expected to run past a working day: recommend child sessions (`orchestration.sessions`) to the user even if they asked for one session, because a single context window fills up and compaction loses run detail. If the session is compacted or resumed, the brief must carry the `factory batch status <parent>` output and the open decisions and blockers from run.json.
+
 ## Progress (parent, child, single run)
 
 The user follows the run in the app, not at the end.
@@ -64,11 +66,11 @@ Each phase ends with `factory gate <run> <phase>`. On FAIL, fix what it lists (d
 | Phase | Work | Who | Closes with |
 |---|---|---|---|
 | intake | Fetch raw dev.mcp responses with `save_to`: issue, links, parent/epic, Figma file meta → `remote/`, `figma/`. Classify feature/bug. Record dependencies. | author (scout for lookups) | `gate intake` |
-| plan | `acs.json` + checks + Figma pack + style maps. Branches/worktrees (`run branch`). `env check`/`env up` early. `baseline`. One batched question round. `run decide` for choices. | author; you run CLI and ask | `gate plan` |
+| plan | `acs.json` + checks + Figma pack + style maps. Branches/worktrees (`run branch`). `env check`/`env up` early. `baseline`. One batched question round. `run decide` for choices. Medium/high risk or >~5 files: `notes/design.md` (approach, complexity, reuse, architecture risks). | author; you run CLI and ask | `gate plan` |
 | reproduce | Bug runs only. Author writes failing repro checks + `diagnosis.md`; you run `factory prove <run> --repro` and `gate reproduce` before any builder touches code. | author; you run CLI | `gate reproduce` |
-| build | Implement in the run worktrees. Commits match `commit.header_regex`. Bugs: fix the cause named in `diagnosis.md`. | builder (fresh per batch of ~5–7 tasks) | `gate build` |
+| build | Implement in the run worktrees. Commits match `commit.header_regex`. Bugs: fix the cause named in `diagnosis.md`. | builder (fresh per batch of ~5–7 tasks) | `gate build` (UI runs: then the early UAT checkpoint) |
 | prove | `factory prove <run>`. Failures go back to a builder with the evidence paths. | you run CLI; builder fixes | `gate prove` |
-| review | Fresh auditors in parallel: `code` and `qa`, each records its review. | auditor ×2 | `gate review` (fail → back to build, loop counted) |
+| review | Fresh auditors in parallel: `code` (correctness plus engineering: complexity, readability, architecture, reuse, `design.md`, `guideline` rules) and `qa`, each records its review. | auditor ×2 | `gate review` (fail → back to build, loop counted) |
 | ship | `git fetch`, `ship plan`, execute `ship-plan.json` actions in order, readbacks with `save_to`, `ship verify`. | you | `gate ship` |
 | feedback | Fetch MR notes + pipeline/jobs into `remote/` with `save_to`, `feedback ingest`. Findings → build. | scout reads; you run CLI | `gate feedback` → done |
 
@@ -81,7 +83,10 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 - **Visual evidence (user said yes):** one `screenshot` check per touched UI repo (`path`, or a Playwright `spec` with the steps to reach the state: hover, click, open). Feature: the after image is its evidence at HEAD. Bug: `prove --repro --assume-env` on the clean base also captures `BEFORE-<check>` with the same steps, before any fix commit; `gate reproduce` and `gate prove` require it. At Gate S, send the before/after images listed in `ship-plan.json` `visual_evidence` to the user (`SendUserFile`) next to the briefing. A screenshot is documentation, not an assertion: it never satisfies a `bug` or `ui` AC.
 - **Small, low-risk tickets** still go through prove and review: the gate is the point. They may skip review round 2.
 - **Runtime checks** (`browser`, `visual`, `style`, `api`) need the repo `env` block. Bring env up at plan time, not at prove time. A missing env goes in the question round as one consolidated list (the plan gate prints it).
-- **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice.
+- **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice. Rules with `kind: guideline` have no check: pass their text to the auditor, who cites them.
+- **Early UAT (UI runs):** after the first `gate build`, run only the `screenshot` checks, show the images and the decisions assumed (from `factory run log`, not memory), and ask the user to confirm before full prove and review. No answer does not block autonomous mode; answers go in with `run decide --by user --user-said`.
+- **Replan on a new user decision:** a scout first checks whether the code already satisfies it (file:line) before any builder. Decision reports come from `run.json`.
+- **Minor findings** of the latest code/qa reviews appear in the MR description as `## Follow-ups`.
 
 ## Epics
 

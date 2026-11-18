@@ -153,6 +153,90 @@ def _escaped(run: dict, rd: Path) -> dict:
     return result
 
 
+def phase_hours(run: dict) -> dict:
+    """Hours per phase from `phase` events; the last open phase runs up to `updated`."""
+    evs = sorted(((_ts(e.get("at")), e) for e in run.get("events", []) if e.get("kind") == "phase"),
+                 key=lambda x: x[0] or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc))
+    secs: Counter = Counter()
+    cur = at0 = None
+    for at, e in evs:
+        if at is None:
+            continue
+        if cur is not None:
+            secs[cur] += max(0.0, (at - at0).total_seconds())
+        cur, at0 = (e.get("data") or {}).get("to"), at
+    end = _ts(run.get("updated"))
+    if cur is not None and end and end > at0:
+        secs[cur] += (end - at0).total_seconds()
+    return {k: round(v / 3600, 2) for k, v in secs.items()}
+
+
+def prove_stats(run: dict) -> dict:
+    events = run.get("events", [])
+    proves = [e for e in events if e.get("kind") == "prove"]
+    modes = Counter((e.get("data") or {}).get("mode") or "unknown" for e in proves)
+    wall = sum(float((e.get("data") or {}).get("wall_s") or 0) for e in proves)
+    entries = sum(1 for e in events if e.get("kind") == "phase" and (e.get("data") or {}).get("to") == "prove")
+    return {"invocations": len(proves), "phase_entries": entries, "by_mode": dict(modes), "wall_s": round(wall, 1)}
+
+
+def check_stats(run: dict, rd: Path) -> dict:
+    evs = [e for e in run.get("events", []) if e.get("kind") == "evidence"]
+    by_status = Counter((e.get("data") or {}).get("status") or "unknown" for e in evs)
+    reruns = Counter((e.get("data") or {}).get("check") for e in evs if (e.get("data") or {}).get("check"))
+    rows, flaky = [], 0
+    for p in sorted((rd / "evidence").glob("*.json")):
+        try:
+            rec = read_json(p)
+        except Exception:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if isinstance(rec.get("details"), dict) and rec["details"].get("flaky"):
+            flaky += 1
+        if rec.get("duration_s") is not None:
+            rows.append({"id": rec.get("id") or rec.get("check") or p.stem, "type": rec.get("type"),
+                         "duration_s": rec.get("duration_s")})
+    rows.sort(key=lambda r: -float(r["duration_s"] or 0))
+    return {"executions": len(evs), "by_status": dict(by_status), "top_slowest": rows[:10],
+            "most_rerun": [{"id": k, "count": v} for k, v in reruns.most_common(10)], "flaky": flaky}
+
+
+def _parent_attribution(run: dict) -> tuple[dict | None, str | None, list[str]]:
+    """Child without transcripts: tokens of the parent's messages in its time window that mention it."""
+    pid = run.get("parent")
+    if not pid:
+        return None, None, []
+    try:
+        parent = run_load(pid)
+    except Exception:
+        return None, None, []
+    lo, hi = _ts(run.get("created")), _ts(run.get("updated"))
+    needles = [RUN_MARKER + run["id"], run["id"]]
+    total: Counter = Counter()
+    used: list[str] = []
+    for main in find_transcripts(parent):
+        usage: dict[str, dict] = {}
+        for rec in _records(main):
+            t = _ts(rec.get("timestamp"))
+            if t is None or (lo and t < lo) or (hi and t > hi) or rec.get("type") != "assistant":
+                continue
+            msg = rec.get("message") or {}
+            u = msg.get("usage")
+            if isinstance(u, dict) and any(n in json.dumps(rec, ensure_ascii=False) for n in needles):
+                usage[msg.get("id") or f"{main.name}:{len(usage)}"] = u
+        for u in usage.values():
+            total["input"] += int(u.get("input_tokens") or 0)
+            total["output"] += int(u.get("output_tokens") or 0)
+            total["cache_read"] += int(u.get("cache_read_input_tokens") or 0)
+            total["cache_creation"] += int(u.get("cache_creation_input_tokens") or 0)
+        if usage:
+            used.append(str(main))
+    if total:
+        return dict(total), None, used
+    return None, f"shared with parent {pid}", []
+
+
 def compute(run_id: str) -> dict:
     run = run_load(run_id)
     rd = run_dir(run_id)
@@ -168,6 +252,13 @@ def compute(run_id: str) -> dict:
     sub_tokens: Counter = Counter()
     firsts, lasts = [], []
     transcripts = find_transcripts(run)
+    if run.get("parent"):  # the parent's own session mentions the child marker; it is not the child's transcript
+        try:
+            ps = {str((x.get("session") if isinstance(x, dict) else x) or "") for x in run_load(run["parent"]).get("sessions") or []}
+        except Exception:
+            ps = set()
+        own = {str((x.get("session") if isinstance(x, dict) else x) or "") for x in run.get("sessions") or []}
+        transcripts = [t for t in transcripts if (t.stem not in ps and str(t) not in ps) or t.stem in own or str(t) in own]
     for main in transcripts:
         s = scan_transcript(main, human=True)
         humans += s["humans"]
@@ -194,6 +285,14 @@ def compute(run_id: str) -> dict:
     for e in events:
         if e.get("kind") == "review":
             review_rounds[(e.get("data") or {}).get("review_kind") or "unknown"] += 1
+    tokens_block = None
+    tokens_note = None
+    if not transcripts and run.get("parent"):
+        attributed, tokens_note, used = _parent_attribution(run)
+        if attributed is not None:
+            tokens_block = {"main": attributed, "subagents": {}, "total": attributed}
+            tokens_note = f"attributed from parent {run['parent']} transcripts"
+            transcripts = [Path(u) for u in used]
     total = Counter()
     total.update(tokens)
     total.update(sub_tokens)
@@ -206,21 +305,45 @@ def compute(run_id: str) -> dict:
         "human_messages": humans,
         "human_interventions": sum(1 for e in events if e.get("kind") == "human"),
         "subagents": dict(sorted(agents.items())),
-        "tokens": {"main": dict(tokens), "subagents": dict(sub_tokens), "total": dict(total)},
+        "tokens": tokens_block if (tokens_block or tokens_note) else
+        {"main": dict(tokens), "subagents": dict(sub_tokens), "total": dict(total)},
         "gate_fail": dict(gate_fail),
         "review_rounds": dict(review_rounds),
         "loops": run.get("loops", {}),
         "escaped_findings": _escaped(run, rd),
         "transcripts": [str(p) for p in transcripts],
+        "phase_hours": phase_hours(run),
+        "prove": prove_stats(run),
+        "checks": check_stats(run, rd),
     }
+    if tokens_note:
+        metrics["tokens_note"] = tokens_note
     write_json(rd / "metrics.json", metrics)
     return metrics
 
 
+def _out_tokens(m: dict) -> int | str:
+    if not m.get("tokens"):
+        return "null"
+    return m["tokens"]["total"].get("output", 0)
+
+
 def _summary(m: dict) -> str:
+    pr, ck = m.get("prove") or {}, m.get("checks") or {}
+    extra = [f"phase_h {m.get('phase_hours')}",
+             f"prove {pr.get('invocations', 0)} runs {pr.get('by_mode')} {pr.get('wall_s', 0)}s",
+             f"checks {ck.get('executions', 0)} {ck.get('by_status')} flaky {ck.get('flaky', 0)}",
+             "slowest " + ", ".join(f"{r['id']} {r['duration_s']}s" for r in ck.get("top_slowest", [])[:5]),
+             "rerun " + ", ".join(f"{r['id']}x{r['count']}" for r in ck.get("most_rerun", [])[:5])]
+    if m.get("tokens_note"):
+        extra.append(f"tokens: {m['tokens_note']}")
+    return _summary_base(m) + "".join("\n  " + x for x in extra)
+
+
+def _summary_base(m: dict) -> str:
     return (
         f"{m['run']}: wall {m['wall_time_h']}h, human msgs {m['human_messages']}, interventions {m['human_interventions']}, "
-        f"subagents {sum(m['subagents'].values())}, out tokens {m['tokens']['total'].get('output', 0)}, "
+        f"subagents {sum(m['subagents'].values())}, out tokens {_out_tokens(m)}, "
         f"gate fails {sum(m['gate_fail'].values())}, loops {m['loops']}, escaped {m['escaped_findings']['count']}"
     )
 
@@ -244,7 +367,7 @@ def _table(rows: list[dict]) -> str:
     head = ["run", "phase", "wall_h", "human", "interv", "agents", "out_tok", "gate_fail", "build_loops", "escaped"]
     body = [[
         m["run"], str(m["phase"]), str(m["wall_time_h"]), str(m["human_messages"]), str(m["human_interventions"]),
-        str(sum(m["subagents"].values())), str(m["tokens"]["total"].get("output", 0)), str(sum(m["gate_fail"].values())),
+        str(sum(m["subagents"].values())), str(_out_tokens(m)), str(sum(m["gate_fail"].values())),
         str((m["loops"] or {}).get("build", 0)), str(m["escaped_findings"]["count"]),
     ] for m in rows]
     widths = [max(len(r[i]) for r in [head, *body]) for i in range(len(head))]

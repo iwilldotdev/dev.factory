@@ -105,8 +105,20 @@ def storage_state(check: dict, ctx: Ctx) -> str | dict | None:
     except Exception:
         return None
     ws, alias = ctx.workspace.get("name"), check.get("repo")
+    slot = 0
     try:
-        path = Path(storage_state_path(ws, alias, user) if user else storage_state_path(ws, alias))
+        from factory.commands.env import run_storage_slot
+        slot = run_storage_slot(ctx.workspace, ctx.run, alias)
+    except Exception:
+        slot = 0
+    if not isinstance(slot, int) or isinstance(slot, bool):
+        slot = 0
+    try:
+        if slot:  # per slot: each slot logs in on its own origin (`<alias>@<k>.storage.json`)
+            from factory.core import repo_conf
+            path = Path(storage_state_path(ws, repo_conf(ctx.workspace, alias)["alias"], user, slot))
+        else:
+            path = Path(storage_state_path(ws, alias, user) if user else storage_state_path(ws, alias))
     except Exception:
         return None
     if path.is_file():
@@ -226,19 +238,98 @@ def finish(data: dict, out: Path, ctx: Ctx) -> dict:
     }
 
 
-def collect(check: dict, ctx: Ctx) -> dict:
+def _prepare(check: dict, ctx: Ctx):
+    """(spec path, base url, storage state or None) of a browser check, or an error body."""
     url = base_url(ctx)
     if not url:
         return _error("repo env has no base_url; cannot run the browser spec")
     spec = ctx.run_dir / check["spec"]
     if not spec.is_file():
         return _error(f"spec not found: {check['spec']}")
-    out = out_dir(ctx)
-    budget = Budget(check_cap(check, ctx))
-    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out), *budget.cli_args(check)]
     state = storage_state(check, ctx)
     if isinstance(state, dict):
         return state
+    return spec, url, state
+
+
+def collect(check: dict, ctx: Ctx) -> dict:
+    prep = _prepare(check, ctx)
+    if isinstance(prep, dict):
+        return prep
+    spec, url, state = prep
+    out = out_dir(ctx)
+    budget = Budget(check_cap(check, ctx))
+    argv = ["run-spec", "--spec", str(spec), "--base-url", url, "--out", str(out), *budget.cli_args(check)]
     if state:
         argv += ["--storage-state", state]
     return finish(run_cli(argv, out, budget.cap), out, ctx)
+
+
+def collect_batch(items: list[tuple[dict, Ctx]], bail: bool = False) -> list[dict] | None:
+    """Run the specs of several checks (same repo, same target) in ONE Playwright process (`run-specs`: one worker, one
+    project per check, shared storage state). One entry per item: `{"body": <collector body or None>, "duration_s",
+    "ran"}`; a check whose spec/base_url/login is unusable gets its error body without joining the batch, a check
+    Playwright did not run (`--max-failures` under `bail`, global timeout) has `ran` False. Bodies of run checks carry
+    `details.batched: true`. Returns None when the batch cannot be used (CLI missing or crashed, no/unmappable
+    batch.json, fewer than two usable specs): the caller runs the checks one by one."""
+    prefix = node_command()
+    if isinstance(prefix, dict) or not items:
+        return None
+    result: list[dict | None] = [None] * len(items)
+    members: list[tuple[int, dict, Ctx, Path, Path]] = []
+    shared: tuple | None = None
+    for i, (check, ctx) in enumerate(items):
+        prep = _prepare(check, ctx)
+        if isinstance(prep, dict):
+            result[i] = {"body": prep, "duration_s": 0.0, "ran": True}
+            continue
+        spec, url, state = prep
+        if shared is not None and shared != (url, state):
+            return None  # one process has one base URL and one login
+        shared = (url, state)
+        members.append((i, check, ctx, spec, out_dir(ctx)))
+    if len(members) < 2:
+        return None
+    url, state = shared
+    caps = {i: check_cap(check, ctx) for i, check, ctx, _, _ in members}
+    manifest = []
+    for i, check, ctx, spec, out in members:
+        total_ms = int(max(1.0, caps[i] - CLI_MARGIN_S) * 1000)
+        manifest.append({"id": check["id"], "spec": str(spec), "out": str(out), "timeout_ms": total_ms,
+                         "goto_timeout_ms": min(GOTO_TIMEOUT_MS, total_ms)})
+    total_cap = sum(caps.values())
+    first_ctx = members[0][2]
+    batch_out = first_ctx.run_dir / "evidence" / "_batch" / members[0][1]["id"]
+    batch_out.mkdir(parents=True, exist_ok=True)
+    manifest_file = batch_out / "manifest.json"
+    manifest_file.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    batch_file = batch_out / "batch.json"
+    if batch_file.exists():
+        batch_file.unlink()
+    argv = ["run-specs", "--manifest", str(manifest_file), "--base-url", url, "--out", str(batch_out),
+            "--timeout-ms", str(int(max(1.0, total_cap - CLI_MARGIN_S) * 1000))]
+    if state:
+        argv += ["--storage-state", state]
+    if bail:
+        argv += ["--max-failures", "1"]
+    try:
+        run_capped([*prefix, *argv], total_cap)
+    except OSError:
+        return None
+    try:
+        data = json.loads(batch_file.read_text(encoding="utf-8"))
+        by_id = {r["id"]: r for r in data["results"]}
+        for i, check, ctx, spec, out in members:
+            r = by_id[check["id"]]
+            if r["status"] not in ("pass", "fail", "error") or not isinstance(r["ran"], bool):
+                return None
+            if r["ran"]:
+                details = dict(r.get("details") or {}, batched=True)
+                body = {"status": r["status"], "summary": r.get("summary", ""),
+                        "artifacts": relativize(["report.json", "run.log"], out, ctx), "details": details}
+                result[i] = {"body": body, "duration_s": round(float(r.get("durationMs") or 0) / 1000, 2), "ran": True}
+            else:
+                result[i] = {"body": None, "duration_s": 0.0, "ran": False}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return result  # type: ignore[return-value]

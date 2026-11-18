@@ -99,6 +99,97 @@ def hotfix_config(ws: dict) -> dict | None:
     return None
 
 
+def _argv_ok(value) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(a, str) and a for a in value)
+
+
+def _data_errors(alias: str, env: dict) -> list[str]:
+    """env.seed (null or {cmd, cwd, reset}) and env.preflight ([{name, cmd}]): commands are argv arrays."""
+    errors: list[str] = []
+    seed = env.get("seed")
+    if seed is not None:
+        if not isinstance(seed, dict):
+            errors.append(f"{alias}: env.seed must be null or an object {{cmd, cwd, reset}}")
+        else:
+            for key in ("cmd", "reset"):
+                if key in seed and not _argv_ok(seed[key]):
+                    errors.append(f"{alias}: env.seed.{key} must be a non-empty array of strings")
+            if "cwd" in seed and not isinstance(seed["cwd"], str):
+                errors.append(f"{alias}: env.seed.cwd must be a string")
+    pre = env.get("preflight")
+    if pre is not None:
+        if not isinstance(pre, list):
+            errors.append(f"{alias}: env.preflight must be an array of {{name, cmd}}")
+        else:
+            for i, item in enumerate(pre):
+                if not (isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"] and _argv_ok(item.get("cmd"))):
+                    errors.append(f"{alias}: env.preflight[{i}] needs name (string) and cmd (non-empty array of strings)")
+    return errors
+
+
+def _slot_errors(alias: str, env: dict) -> list[str]:
+    """env.slots / port_stride / shareable / login.handoff_rewrite (DESIGN section 11: slots, shared repos, hand-off)."""
+    import re
+    errors: list[str] = []
+    isint = lambda v: isinstance(v, int) and not isinstance(v, bool)  # noqa: E731
+    slots = env.get("slots", 1)
+    if "slots" in env and not (isint(slots) and slots >= 1):
+        errors.append(f"{alias}: env.slots must be an integer >= 1")
+        slots = 1
+    stride = env.get("port_stride")
+    if "port_stride" in env and not (isint(stride) and stride >= 1):
+        errors.append(f"{alias}: env.port_stride must be an integer >= 1")
+    elif slots > 1 and "port_stride" not in env:
+        errors.append(f"{alias}: env.port_stride is required when env.slots > 1")
+    if "shareable" in env and not isinstance(env["shareable"], bool):
+        errors.append(f"{alias}: env.shareable must be true or false")
+    ports = env.get("ports")
+    if ports is not None and not (isinstance(ports, list) and all(isint(p) and 0 < p < 65536 for p in ports)):
+        errors.append(f"{alias}: env.ports must be an array of port numbers")
+        ports = None
+    if slots > 1:
+        for key in ("health", "base_url"):
+            if env.get(key) and not re.match(r"^[a-z][a-z0-9+.\-]*://[^/?#]*:\d+(?:[/?#]|$)", str(env[key]), re.I):
+                errors.append(f"{alias}: env.{key} needs an explicit port when env.slots > 1 (it moves per slot)")
+        start = env.get("start")
+        items = [start] if isinstance(start, str) else [str(a) for a in start] if isinstance(start, list) else []
+        has_ph = any(re.search(r"\{(?:port\d*|slot)\}", a) for a in items)
+        if items and not has_ph and not any(re.search(rf"(?<!\d){p}(?!\d)", a) for p in ports or [] for a in items):
+            errors.append(f"{alias}: env.start carries no port to move per slot: use {{port}} / {{port0}} / {{port1}} "
+                          "or the literal numbers of env.ports")
+        for m in re.findall(r"\{port(\d*)\}", " ".join(items)):
+            if int(m or 0) >= len(ports or []):
+                errors.append(f"{alias}: env.start uses {{port{m}}} but env.ports has {len(ports or [])} port(s)")
+    login = env.get("login")
+    if isinstance(login, dict) and "handoff_rewrite" in login:
+        if not isinstance(login["handoff_rewrite"], bool):
+            errors.append(f"{alias}: env.login.handoff_rewrite must be true or false")
+        elif login["handoff_rewrite"] and not re.search(r"[A-Za-z0-9_.\-]+:\d{2,5}", str(login.get("success_url_contains") or "")):
+            errors.append(f"{alias}: env.login.handoff_rewrite needs env.login.success_url_contains with the fixed "
+                          "host:port the login redirects to (e.g. localhost:3300/portal/coming)")
+    return errors
+
+
+def _ref_errors(ws: dict) -> list[str]:
+    """`{base_url:<ALIAS>}` / `{port:<ALIAS>}` in env.start and env.env_vars name a repo of the workspace (DESIGN section 11)."""
+    import re
+    ref = re.compile(r"\{(base_url|port):([^{}]*)\}")
+    repos = [r for r in ws.get("repos", []) if isinstance(r, dict)]
+    known = {r.get("alias") for r in repos}
+    errors: list[str] = []
+    for repo in repos:
+        env = repo.get("env") if isinstance(repo.get("env"), dict) else {}
+        start = env.get("start")
+        texts = [("env.start", a) for a in ([start] if isinstance(start, str) else start if isinstance(start, list) else [])]
+        vars_ = env.get("env_vars") if isinstance(env.get("env_vars"), dict) else {}
+        texts += [(f"env.env_vars.{k}", v) for k, v in vars_.items()]
+        for where, text in texts:
+            for kind, other in ref.findall(str(text)):
+                if other not in known:
+                    errors.append(f"{repo.get('alias')}: {where} uses {{{kind}:{other}}} but {other!r} is not a repo alias of the workspace")
+    return errors
+
+
 def hotfix_config_errors(ws: dict) -> list[str]:
     import string
     errors = []
@@ -235,6 +326,10 @@ def check_workspace(ws: dict) -> list[str]:
             missing.append(f"{alias}: path is not a git repository: {path}")
         if not repo.get("quality"):
             missing.append(f"{alias}: quality commands are missing")
+        if "quality_fast" in repo:
+            qf = repo["quality_fast"]
+            if not isinstance(qf, dict) or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in qf.items()):
+                missing.append(f"{alias}: quality_fast must be an object of name -> command (a command may contain {{changed}})")
         if "ui" in repo and not isinstance(repo["ui"], bool):
             missing.append(f"{alias}: ui must be true or false (UI repo: visual-evidence question)")
         env = repo.get("env") or {}
@@ -244,9 +339,18 @@ def check_workspace(ws: dict) -> list[str]:
             for key in ("start", "health", "base_url"):
                 if not env.get(key):
                     missing.append(f"{alias}: env.{key} is missing")
+            if "hot_reload" in env and not isinstance(env["hot_reload"], bool):
+                missing.append(f"{alias}: env.hot_reload must be true or false")
+            missing.extend(_data_errors(alias, env))
+            missing.extend(_slot_errors(alias, env))
     autonomy = ws.get("autonomy") or {}
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):
         missing.append("autonomy.ship must be ask or draft-auto")
+    if "allow_timing_amends" in autonomy and not isinstance(autonomy["allow_timing_amends"], bool):
+        missing.append("autonomy.allow_timing_amends must be true or false")
+    missing.extend(_ref_errors(ws))
+    if "browser_batch" in (ws.get("limits") or {}) and not isinstance(ws["limits"]["browser_batch"], bool):
+        missing.append("limits.browser_batch must be true or false")
     missing.extend(hotfix_config_errors(ws))
     missing.extend(target_branches_errors(ws))
     missing.extend(orchestration_config_errors(ws))

@@ -274,10 +274,10 @@ class LeaseAndMergeTests(ProveCase):
         real = api_collector.collect
 
         def spy(check, ctx):
-            lease = envmod.lease_read("ws")
+            lease = envmod.lease_read("ws", "Web")
             ages.append(envmod._age(lease["heartbeat"]))
             lease["heartbeat"] = "2000-01-01T00:00:00+00:00"  # the next check's pre-heartbeat must refresh it
-            self.write("env/ws/lease.json", lease)
+            self.write("env/ws/Web/lease.json", lease)
             return real(check, ctx)
 
         with mock.patch.object(api_collector, "collect", side_effect=spy):

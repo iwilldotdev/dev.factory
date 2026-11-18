@@ -37,7 +37,8 @@ repo: <alias> @ <worktree path> (base <target>)    # builder/auditor
 fetch: [<FETCH lines from the CLI, run as-is with save_to>]               # author/scout
 inputs: [<paths: acs.json, checks, figma/<node>.json, notes/diagnosis.md, evidence/CHK-n.json>]
 commit: {header_regex: "<from workspace>", forbidden_trailers: [...]}   # builder
-rules: [<workspace rule ids + text>]                                   # builder/auditor
+rules: [<workspace rule ids + text; auditor also gets kind: guideline rules, text only>]   # builder/auditor
+design: <R/notes/design.md when present>                               # builder/auditor
 kind: code | qa ; round: <n> ; review_file: <temp path>                 # auditor
 risk: normal | high
 env_preflight: <last `factory env check` result: repo, exit code, ENV-FAIL line or "healthy", who started it>   # runtime-dependent work
@@ -57,6 +58,9 @@ Final message is only a YAML block: `status` (`done | blocked | failed`), `summa
 - `done`: verify cheaply (`git log --oneline -n`, `factory run status`, file exists, gate exit code). A report is a claim.
 - `blocked` with `questions`: merge them into the single question round; do not ask piecemeal.
 - `failed`: read the reason; re-delegate with the missing input, or block the run.
+- Replan caused by a new user decision: first send a `factory-scout` to check whether the current code already satisfies it (cite file:line); dispatch a builder only for the gap.
+- Final decision reports come from `run.json` decisions (`factory run log`), never from memory.
+- Fix loops tell builders to use `factory prove <run> --fast`; you run `--final` once before `gate prove`. Timing/selector-only check fixes: `factory run amend-check`, not a replan.
 - Summarise each worker reply in 1–2 chat lines (status, what changed, what is open): the user does not see the reply itself.
 - A `human` check that the user confirms in chat is recorded by you, never by a worker: `factory run verify-human <run> <CHK-id> --note "<what the user confirmed>" --by user --user-said "<gist of the user's words>"`. Only after the user actually said it this conversation.
 - A question or assumption that reduces proof (`human` check, `ui`→`logic`, no `env up`, no Figma fetch) goes to the user in the question round, with the failed attempt when it claims something is inaccessible.

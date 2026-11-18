@@ -303,6 +303,18 @@ def _quality_lines(run: dict, alias: str, targets: list[str]) -> list[str]:
     return [line(load_evidence(run["id"], qid), qid)]
 
 
+def _followup_lines(run_id: str) -> list[str]:
+    """Unresolved minor findings of the latest code and qa reviews, so they have a destination."""
+    from . import gate
+    items = []
+    for kind in ("code", "qa"):
+        for f in (gate.latest_review(run_id, kind) or {}).get("findings") or []:
+            if f.get("severity") == "minor" and not f.get("resolved"):
+                where = f" `{f['file']}`" if f.get("file") else ""
+                items.append(f"- {f.get('id')}{where}: {' '.join(str(f.get('text', '')).split())}")
+    return ["", "## Follow-ups", ""] + items if items else []
+
+
 def _description(run: dict, workspace: dict, alias: str, target: str, deps: list[tuple[str, str]], acs: dict,
                  cross: list[str] | None = None, targets: list[str] | None = None) -> str:
     lines = ["## Tickets", ""]
@@ -321,6 +333,7 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
         lines.append("None.")
     lines += shots.description_lines(run, alias, target if run.get("hotfix") else None)
     lines += ["", "## Quality", ""] + _baseline_summary(run["id"], alias) + _quality_lines(run, alias, targets or [target])
+    lines += _followup_lines(run["id"])
     if cross:
         lines += ["", "## Hotfix mirror", ""] + cross
     if deps:

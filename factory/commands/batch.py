@@ -64,20 +64,42 @@ def open_human_checks(run_id: str) -> int:
     return open_
 
 
-def lease_holder(ws: str) -> str | None:
-    path = factory_home() / "env" / ws / "lease.json"
-    if not path.is_file():
-        return None
+def _holders(path) -> list[str]:
     try:
         data = read_json(path)
     except FactoryError:
-        return None
+        return []
     if not isinstance(data, dict):
-        return None
+        return []
+    out = []
     for k in ("run", "holder", "owner", "session"):
         if data.get(k):
-            return str(data[k])
-    return "held"
+            out.append(str(data[k]))
+            break
+    else:
+        out.append("held")
+    out.extend(str(e["run"]) for e in data.get("shared") or [] if isinstance(e, dict) and e.get("run"))
+    return out
+
+
+def lease_holder(ws: str) -> str | None:
+    """Runs holding an env lease of the workspace: the legacy workspace-level file and every repo slot (shared
+    holders included), unique, comma-separated."""
+    base = factory_home() / "env" / ws
+    paths = [base / "lease.json"] + (sorted(base.glob("*/lease.json")) if base.is_dir() else [])
+    seen: list[str] = []
+    for p in paths:
+        if p.is_file():
+            seen.extend(h for h in _holders(p) if h not in seen)
+    return ",".join(seen) or None
+
+
+def slots_of(c: dict) -> str:
+    """`API=1,React=0` from the child's run.json `env_slots` (the env slot it holds per repo), `-` when none."""
+    slots = c.get("env_slots")
+    if not isinstance(slots, dict) or not slots:
+        return "-"
+    return ",".join(f"{a}={k}" for a, k in sorted(slots.items()))
 
 
 def rows(parent: dict) -> list[dict]:
@@ -93,9 +115,24 @@ def rows(parent: dict) -> list[dict]:
         row.update({"kind": c.get("kind"), "review_mrs": mrs, "next": action, "missing": len(missing),
                     "open_human_checks": open_human_checks(c["id"]),
                     "owner": session_short(owner["session"]) if owner else None,
-                    "lease": lease_holder(c["workspace"])})
+                    "lease": lease_holder(c["workspace"]), "slots": slots_of(c), "prove": last_prove(c)})
         out.append(row)
     return out
+
+
+def last_prove(c: dict) -> str:
+    """`final 54/0/0 31m` = mode ran/reused/failed wall of the last prove event."""
+    ev = [e for e in c.get("events", []) if e.get("kind") == "prove"]
+    if not ev:
+        return "-"
+    d = ev[-1].get("data") or {}
+    w = float(d.get("wall_s") or 0)
+    wall = f"{round(w / 60)}m" if w >= 60 else f"{round(w)}s"
+
+    def cnt(k):
+        return len(d[k]) if isinstance(d.get(k), (list, tuple)) else d.get(k, 0)
+
+    return f"{d.get('mode', '?')} {cnt('ran')}/{cnt('reused')}/{cnt('failed')} {wall}"
 
 
 def cmd_status(args) -> int:
@@ -109,10 +146,10 @@ def cmd_status(args) -> int:
                           "children": data}, indent=2, ensure_ascii=False))
         return 0
     print(f"{parent['id']}  kind={parent['kind']}  phase={parent['phase']}")
-    print("child\tticket\tMR\tphase\tblockers\thuman\towner\tlease\tnext")
+    print("child\tticket\tMR\tphase\tblockers\thuman\towner\tlease\tslots\tprove\tnext")
     for r in data:
         print("\t".join([r["id"], r["key"], ",".join(r["review_mrs"]) or "-", r["phase"], str(r["open_blockers"]),
-                         str(r["open_human_checks"]), r["owner"] or "-", r["lease"] or "-", r["next"]]))
+                         str(r["open_human_checks"]), r["owner"] or "-", r["lease"] or "-", r["slots"], r["prove"], r["next"]]))
     if not data:
         print("no children")
     return 0

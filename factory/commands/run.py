@@ -596,6 +596,105 @@ def cmd_replan(args) -> int:
     return 0
 
 
+AMEND_KEYS = {"timing": ("timeout_s", "wait_for", "wait_until", "expect_timeout_ms"),
+              "selector": ("timeout_s", "wait_for", "wait_until", "expect_timeout_ms")}
+
+
+def _amend_errors(run: dict, cid: str, kind: str) -> tuple[list[str], list[str]]:
+    """(refusals, changed check fields): what differs from the locked plan must stay inside the amend kind."""
+    lock = run["plan_lock"]
+    old_checks = lock.get("checks")
+    if not isinstance(old_checks, dict) or lock.get("acs_rest") is None:
+        return [f"the plan lock of {run['id']} predates amend-check support: use `factory run replan`"], []
+    if cid not in old_checks:
+        return [f"{cid} is not a check of the locked plan"], []
+    new_checks, new_rest = integrity.acs_snapshot(run["id"])
+    errors: list[str] = []
+    if new_rest != lock["acs_rest"]:
+        errors.append("acs.json changed outside `checks` (ACs, ids, schema): amend-check only changes one check")
+    if set(new_checks) != set(old_checks):
+        errors.append(f"checks added or removed: {sorted(set(new_checks) ^ set(old_checks))}")
+    for other in sorted(set(new_checks) & set(old_checks) - {cid}):
+        if new_checks[other] != old_checks[other]:
+            errors.append(f"{other} changed: amend-check changes only {cid}")
+    old, new = old_checks[cid], new_checks.get(cid, {})
+    fields = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+    bad = [f for f in fields if f not in AMEND_KEYS[kind]]
+    if kind == "selector":  # the spec file (and its helpers) the check reads may change; it is a plan file under checks/
+        owned = {rel for _, rel in integrity.check_inputs(run["id"], old)} | {rel for _, rel in integrity.check_inputs(run["id"], new)}
+        stray = [f for f in integrity.changed_files(run) if f != "acs.json" and not (f in owned and f.startswith("checks/"))]
+        readers: dict[str, list[str]] = {}  # file -> other checks that read it (old or new definition)
+        for other in sorted((set(old_checks) | set(new_checks)) - {cid}):
+            for chk in (old_checks.get(other), new_checks.get(other)):
+                if isinstance(chk, dict):
+                    for _, rel in integrity.check_inputs(run["id"], chk):
+                        readers.setdefault(rel, [])
+                        if other not in readers[rel]:
+                            readers[rel].append(other)
+        shared = [f for f in integrity.changed_files(run) if f in owned and f.startswith("checks/") and readers.get(f)]
+        if shared:
+            errors.append(f"{cid}: changed file(s) also read by other checks: "
+                          + "; ".join(f"{f} (read by {', '.join(readers[f])})" for f in shared)
+                          + "; their evidence would stay valid against a changed spec: use `factory run replan`")
+    else:
+        stray = [f for f in integrity.changed_files(run) if f != "acs.json"]
+    if bad:
+        errors.append(f"{cid}: field(s) {bad} cannot be amended as {kind} (allowed: {', '.join(AMEND_KEYS[kind])}"
+                      + (" and its spec files under checks/" if kind == "selector" else "") + "); use `factory run replan`")
+    if stray:
+        errors.append(f"plan files changed that {kind} amend of {cid} does not cover: {stray}")
+    if not fields and not integrity.changed_files(run):
+        errors.append(f"{cid}: nothing changed against the locked plan (edit the check first)")
+    return errors, fields
+
+
+def cmd_amend_check(args) -> int:
+    """After the plan lock, fix only how a check waits or where it looks (timing/selector) without a replan."""
+    said = (getattr(args, "user_said", None) or "").strip()
+    reason = (args.reason or "").strip()
+    if not reason:
+        raise FactoryError("amend-check needs --reason \"<why>\"")
+    if args.by == "user" and not said:
+        raise FactoryError("--by user needs --user-said \"<gist of the user's chat message>\"")
+    out: dict = {}
+
+    def mutate(run: dict) -> None:
+        ensure_owner(run)
+        if run.get("kind") not in ("ticket", "review", None):
+            raise FactoryError(f"run amend-check is for ticket and review runs, not {run.get('kind')}")
+        if not isinstance(run.get("plan_lock"), dict):
+            raise FactoryError(f"run {run['id']} has no plan lock: edit the check freely, then pass `factory gate {run['id']} plan`")
+        if integrity.workspace_error(run):  # a relock would absorb workspace.json edits (quality, autonomy, hot_reload)
+            raise FactoryError(f"amend-check refused: workspace changed since plan lock: replan "
+                               f"(`factory run replan {run['id']} \"<reason>\"`)")
+        errors, fields = _amend_errors(run, args.check, args.kind)
+        if errors:
+            raise FactoryError("amend-check refused:\n  " + "\n  ".join(errors))
+        autonomy = integrity.locked_autonomy(run)
+        free = args.kind == "timing" and autonomy.get("allow_timing_amends") is True
+        loops = run.setdefault("loops", {"build": 0, "review": 0})
+        if not free:
+            if args.by != "user":
+                cap = autonomy.get("max_replans", 2)
+                if loops.get("replan", 0) - loops.get("replan_approved", 0) + 1 > cap:
+                    raise FactoryError(f"max_replans ({cap}) reached: amend-check counts like a replan without a user "
+                                       "decision; ask the user and retry with --by user --user-said")
+            loops["replan"] = loops.get("replan", 0) + 1
+            if args.by == "user":
+                loops["replan_approved"] = loops.get("replan_approved", 0) + 1
+            event(run, "loop", replan=loops["replan"])
+        event(run, "amend_check", check=args.check, amend=args.kind, reason=reason, fields=fields, by=args.by,
+              user_said=said or None, counted=not free, phase=run["phase"])
+        integrity.lock_plan(run, f"amend-check {args.check}", keep_seq=True, keep_workspace=True)
+        out.update(check=args.check, kind=args.kind, fields=fields, counted=not free, phase=run["phase"])
+
+    run_update(args.run, mutate)
+    _emit(args, out, f"{args.check}: {args.kind} amend recorded ({', '.join(out['fields']) or 'files'}); plan relocked, "
+                     f"phase {out['phase']}" + ("" if out["counted"] else " (not counted as a replan)")
+                     + f"; re-run `factory prove {args.run} --check {args.check}`")
+    return 0
+
+
 REWIND_TO = ("build", "prove")
 
 
@@ -920,6 +1019,14 @@ def register(sub) -> None:
     p.add_argument("--decision", type=int, help="user decision # (run decide --by user, this phase); else counts "
                    "against autonomy.max_replans")
     p.set_defaults(func=cmd_replan)
+    p = rs.add_parser("amend-check", help="after the plan lock: change only timing or selectors of one check, relock the plan")
+    p.add_argument("run")
+    p.add_argument("check")
+    p.add_argument("--kind", required=True, choices=["timing", "selector"])
+    p.add_argument("--reason", required=True)
+    p.add_argument("--by", choices=["agent", "user"], default="agent")
+    p.add_argument("--user-said", help="gist of the user's chat message behind a --by user amend")
+    p.set_defaults(func=cmd_amend_check)
     p = rs.add_parser("rewind", help="back to build or prove after the worktree moved past the proof")
     p.add_argument("run")
     p.add_argument("phase", choices=REWIND_TO)

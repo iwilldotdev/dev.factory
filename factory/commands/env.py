@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import datetime as _dt
 import json
 import os
 import re
@@ -24,16 +22,96 @@ from ..core import (ensure_owner,
     factory_home,
     git,
     now,
-    read_json,
     repo_conf,
     repo_path_for_env,
-    run_dir,
     run_load,
     run_update,
     secrets_path,
-    session_hint,
     workspace_load,
     write_json,
+)
+
+from .env_lease import (  # noqa: F401  slot math and per-repo leases live there (re-exported)
+    _env_dir,
+    PLACEHOLDER_RE,
+    REF_RE,
+    _URL_PORT_RE,
+    _HOSTPORT_RE,
+    _is_int,
+    slot_conf,
+    slots_configured,
+    slot_key,
+    run_slot,
+    url_port,
+    shift_url_port,
+    shift_text_ports,
+    _fill,
+    _literal_ports,
+    slot_start,
+    handoff_origin,
+    handoff_rewrite_url,
+    ref_aliases,
+    _ref_value,
+    resolve_refs,
+    slot_env,
+    _slot_env,
+    is_shared,
+    LOCK_TIMEOUT_S,
+    LOCK_STALE_S,
+    LEASE_TTL_S,
+    WAITER_STALE_S,
+    LEASE_POLL_S,
+    FINISHED_PHASES,
+    _LOCKS_HELD,
+    _file_lock,
+    lease_path,
+    _lock_path,
+    lease_conf,
+    _age,
+    _hhmm,
+    _dur,
+    _session_short,
+    _finished,
+    _ws_dict,
+    lease_read,
+    _lease_write,
+    _holder_alive,
+    _stamp_holder,
+    lease_stale,
+    _clear_holder,
+    _prune,
+    lease_repos,
+    lease_mode,
+    default_lease_repos,
+    lease_requests,
+    _load_state,
+    _dump,
+    _store,
+    LEGACY_MARKER,
+    is_legacy_marker,
+    _raw_legacy,
+    sync_legacy_marker,
+    _legacy_holder,
+    _ticket,
+    _waiters,
+    _decide,
+    _decide_all,
+    _apply,
+    _blocker_text,
+    lease_try,
+    lease_held,
+    lease_release_info,
+    lease_release,
+    _leave_queue,
+    _lease_files,
+    lease_heartbeat,
+    _holder_text,
+    _repo_holder_text,
+    require_lease,
+    _record,
+    lease_conflict,
+    _lease_row,
+    lease_status,
 )
 
 IS_WIN = os.name == "nt"
@@ -63,8 +141,13 @@ def capability(workspace: dict, alias: str) -> list[str]:
     return errors
 
 
-def base_url(workspace: dict, alias: str) -> str:
-    env = repo_conf(workspace, alias).get("env") or {}
+def _health_url(workspace: dict, alias: str, slot: int = 0) -> str:
+    env = slot_env(workspace, None, alias, slot, refs=False)
+    return env.get("health") or base_url(workspace, alias, slot)
+
+
+def base_url(workspace: dict, alias: str, slot: int = 0) -> str:
+    env = slot_env(workspace, None, alias, slot, refs=False)
     if env.get("base_url"):
         return str(env["base_url"]).rstrip("/")
     health = env.get("health")
@@ -74,16 +157,21 @@ def base_url(workspace: dict, alias: str) -> str:
     raise FactoryError(f"{alias}: env.base_url or env.health missing")
 
 
-def _env_dir(ws: str) -> Path:
-    return factory_home() / "env" / ws
+def _safe_run(run_id: str | None) -> dict | None:
+    if not run_id:
+        return None
+    try:
+        return run_load(run_id)
+    except (FactoryError, OSError):
+        return None
 
 
-def pid_path(ws: str, alias: str) -> Path:
-    return _env_dir(ws) / f"{alias}.pid"
+def pid_path(ws: str, alias: str, slot: int = 0) -> Path:
+    return _env_dir(ws) / f"{slot_key(alias, slot)}.pid"
 
 
-def log_path(ws: str, alias: str) -> Path:
-    return _env_dir(ws) / f"{alias}.log"
+def log_path(ws: str, alias: str, slot: int = 0) -> Path:
+    return _env_dir(ws) / f"{slot_key(alias, slot)}.log"
 
 
 def user_slug(email: str) -> str:
@@ -91,21 +179,34 @@ def user_slug(email: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(email).lower()).strip("_")
 
 
-def storage_state_path(ws: str, alias: str, user: str | None = None) -> Path:
-    """`<alias>.storage.json` for the workspace default user, `<alias>.<slug>.storage.json` for an override user."""
+def storage_state_path(ws: str, alias: str, user: str | None = None, slot: int = 0) -> Path:
+    """`<alias>.storage.json` for the workspace default user, `<alias>.<slug>.storage.json` for an override user. Keyed
+    by slot like the pid/log files (`<alias>@<k>...` for slot k > 0; slot 0 keeps today's names): each slot logs in on
+    its own origin, so two runs on two slots never overwrite each other's session."""
+    key = slot_key(alias, slot)
     if user:
-        return _env_dir(ws) / f"{alias}.{user_slug(user)}.storage.json"
-    return _env_dir(ws) / f"{alias}.storage.json"
+        return _env_dir(ws) / f"{key}.{user_slug(user)}.storage.json"
+    return _env_dir(ws) / f"{key}.storage.json"
+
+
+def login_json_path(ws: str, alias: str, slot: int = 0) -> Path:
+    """The login block the browser CLI reads (`--login-json`), per slot: `<alias>.login.json` / `<alias>@<k>.login.json`."""
+    return _env_dir(ws) / f"{slot_key(alias, slot)}.login.json"
+
+
+def run_storage_slot(workspace: dict, run: dict | None, alias: str) -> int:
+    """Slot whose storage state a run uses for `alias`: 0 for a shared repo, else the run's slot."""
+    return 0 if is_shared(workspace, run, alias) else run_slot(run, repo_conf(workspace, alias)["alias"])
 
 
 def login_command(ws: str, alias: str, user: str | None) -> str:
     return f"factory env login {ws} {alias}" + (f" --user {user}" if user else "")
 
 
-def read_record(ws: str, alias: str) -> dict | None:
+def read_record(ws: str, alias: str, slot: int = 0) -> dict | None:
     """Pid record {pid, cwd, head, started, create_time}; a legacy bare pid becomes {pid}."""
     try:
-        text = pid_path(ws, alias).read_text(encoding="utf-8").strip()
+        text = pid_path(ws, alias, slot).read_text(encoding="utf-8").strip()
     except OSError:
         return None
     try:
@@ -119,14 +220,14 @@ def read_record(ws: str, alias: str) -> dict | None:
     return None
 
 
-def _read_pid(ws: str, alias: str) -> int | None:
-    rec = read_record(ws, alias)
+def _read_pid(ws: str, alias: str, slot: int = 0) -> int | None:
+    rec = read_record(ws, alias, slot)
     return rec["pid"] if rec else None
 
 
-def _drop_record(ws: str, alias: str) -> None:
+def _drop_record(ws: str, alias: str, slot: int = 0) -> None:
     try:
-        pid_path(ws, alias).unlink()
+        pid_path(ws, alias, slot).unlink()
     except OSError:
         pass
 
@@ -446,324 +547,6 @@ def env_fail_line(alias: str, kind: str, detail: str) -> str:
     return f"ENV-FAIL repo={alias} kind={kind} detail={first}"
 
 
-def _health_url(workspace: dict, alias: str) -> str:
-    env = repo_conf(workspace, alias).get("env") or {}
-    return env.get("health") or base_url(workspace, alias)
-
-
-# ---------- lock + lease (DESIGN §11) ----------
-
-LOCK_TIMEOUT_S = 15.0
-LOCK_STALE_S = 120.0     # a lock file older than this was left by a dead process
-LEASE_TTL_S = 900        # default `env.lease_ttl_s`
-WAITER_STALE_S = 120.0   # a queued waiter that has not polled for this long leaves the queue
-LEASE_POLL_S = 2.0
-FINISHED_PHASES = ("done", "blocked")
-_LOCKS_HELD: set[str] = set()  # lock paths this process holds (re-entrant: `up` -> lease check, deps)
-
-
-@contextlib.contextmanager
-def _file_lock(path: Path, timeout: float = LOCK_TIMEOUT_S):
-    """Exclusive cross-process lock: `path` created with O_CREAT|O_EXCL, removed on exit. Re-entrant in-process;
-    a lock file older than LOCK_STALE_S is reclaimed."""
-    key = os.path.normcase(os.path.abspath(str(path)))
-    if key in _LOCKS_HELD:
-        yield
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                if time.time() - path.stat().st_mtime > LOCK_STALE_S:
-                    path.unlink()
-                    continue
-            except OSError:
-                pass
-        except PermissionError:
-            pass  # Windows: the lock file is being deleted by its owner
-        else:
-            try:
-                os.write(fd, f"{os.getpid()}\n".encode())
-            finally:
-                os.close(fd)
-            break
-        if time.monotonic() > deadline:
-            raise FactoryError(f"env lock {path} is held by another process; retry, or delete it if stale")
-        time.sleep(0.02)
-    _LOCKS_HELD.add(key)
-    try:
-        yield
-    finally:
-        _LOCKS_HELD.discard(key)
-        try:
-            path.unlink()
-        except OSError:
-            pass
-
-
-def lease_path(ws: str) -> Path:
-    return _env_dir(ws) / "lease.json"
-
-
-def _lock_path(ws: str) -> Path:
-    return _env_dir(ws) / "env.lock"
-
-
-def lease_conf(workspace: dict) -> tuple[bool, int]:
-    """(`env.lease` on, `env.lease_ttl_s`) from the workspace-level `env` block."""
-    env = workspace.get("env") if isinstance(workspace.get("env"), dict) else {}
-    ttl = env.get("lease_ttl_s", LEASE_TTL_S)
-    if isinstance(ttl, bool) or not isinstance(ttl, (int, float)) or ttl <= 0:
-        ttl = LEASE_TTL_S
-    return env.get("lease") is True, int(ttl)
-
-
-def _age(stamp) -> float | None:
-    try:
-        at = _dt.datetime.fromisoformat(str(stamp))
-    except ValueError:
-        return None
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=_dt.timezone.utc)
-    return max(0.0, (_dt.datetime.now(_dt.timezone.utc) - at).total_seconds())
-
-
-def _hhmm(stamp) -> str:
-    try:
-        at = _dt.datetime.fromisoformat(str(stamp))
-    except ValueError:
-        return "?"
-    if at.tzinfo is None:
-        at = at.replace(tzinfo=_dt.timezone.utc)
-    return at.astimezone().strftime("%H:%M")
-
-
-def _dur(seconds) -> str:
-    if seconds is None:
-        return "?"
-    s = int(seconds)
-    return f"{s}s" if s < 120 else f"{s // 60}m" if s < 7200 else f"{s // 3600}h{(s % 3600) // 60:02d}m"
-
-
-def _session_short(hint) -> str:
-    if not isinstance(hint, dict):
-        return "-"
-    for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID", "CLAUDE_AGENT_ID", "CLAUDE_CODE_AGENT_ID"):
-        if hint.get(k):
-            return str(hint[k])[:8]
-    return "-"
-
-
-def _finished(run_id) -> str | None:
-    """"done"/"blocked" when the run is finished, "missing" when it has no run.json; None otherwise (or unreadable)."""
-    if not run_id:
-        return None
-    if not (run_dir(str(run_id)) / "run.json").is_file():
-        return "missing"
-    try:
-        phase = run_load(str(run_id)).get("phase")
-    except (FactoryError, OSError):
-        return None
-    return phase if phase in FINISHED_PHASES else None
-
-
-def lease_read(ws: str) -> dict:
-    """{run, session, pid, acquired_at, heartbeat, queue: [{run, session, pid, since, seen}]}; run None = free."""
-    try:
-        data = json.loads(lease_path(ws).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    data.setdefault("run", None)
-    if not isinstance(data.get("queue"), list):
-        data["queue"] = []
-    data["queue"] = [w for w in data["queue"] if isinstance(w, dict) and w.get("run")]
-    return data
-
-
-def _lease_write(ws: str, lease: dict) -> None:
-    if not lease.get("run") and not lease.get("queue"):
-        try:  # free and nobody waiting: no file (a present lease.json reads as "held" elsewhere)
-            lease_path(ws).unlink()
-        except OSError:
-            pass
-        return
-    write_json(lease_path(ws), lease)
-
-
-def _holder_alive(lease: dict) -> bool:
-    """The process that last refreshed the lease still runs on this machine (a recycled pid does not count when
-    its create time was recorded)."""
-    pid = lease.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:  # 1 = init, never a factory process
-        return False
-    if lease.get("host") and lease["host"] != socket.gethostname():
-        return False
-    if not pid_alive(pid):
-        return False
-    want = lease.get("pid_create")
-    return not want or process_create_time(pid) == want
-
-
-def _stamp_holder(lease: dict) -> None:
-    lease.update(pid=os.getpid(), host=socket.gethostname(), pid_create=process_create_time(os.getpid()))
-
-
-def lease_stale(lease: dict, ttl: int) -> str | None:
-    """Why the held lease may be reclaimed (heartbeat older than the TTL with no live holder process, or the
-    owning run finished), else None."""
-    run_id = lease.get("run")
-    if not run_id:
-        return None
-    age = _age(lease.get("heartbeat"))
-    if (age is None or age > ttl) and not _holder_alive(lease):
-        return f"heartbeat {_dur(age)} old > ttl {ttl}s"
-    fin = _finished(run_id)
-    return f"run {run_id} is {fin}" if fin else None
-
-
-def _clear_holder(lease: dict) -> None:
-    lease.update(run=None, session=None, pid=None, host=None, pid_create=None, acquired_at=None, heartbeat=None)
-
-
-def _prune(lease: dict, ttl: int) -> list[tuple[str, str]]:
-    """Drop a stale holder and stale/duplicate waiters. Returns [(reclaimed run, reason)]."""
-    reclaimed: list[tuple[str, str]] = []
-    reason = lease_stale(lease, ttl)
-    if reason:
-        reclaimed.append((lease["run"], reason))
-        _clear_holder(lease)
-    keep, seen = [], set()
-    for w in lease["queue"]:
-        age = _age(w.get("seen"))
-        if w["run"] in seen or age is None or age > WAITER_STALE_S or _finished(w["run"]):
-            continue
-        seen.add(w["run"])
-        keep.append(w)
-    lease["queue"] = keep
-    return reclaimed
-
-
-def lease_try(ws: str, run_id: str, ttl: int, wait: bool = False) -> dict:
-    """One atomic acquire attempt. FIFO: a free lease goes to the head of the queue. With `wait` a refused run
-    joins (or refreshes its place in) the queue. Returns {granted, fresh, position, lease, reclaimed}."""
-    with _file_lock(_lock_path(ws)):
-        lease = lease_read(ws)
-        reclaimed = _prune(lease, ttl)
-        stamp = now()
-        queue = lease["queue"]
-        fresh = False
-        if lease.get("run") == run_id:
-            lease["heartbeat"] = stamp
-            _stamp_holder(lease)
-            granted = True
-        elif not lease.get("run") and (not queue or queue[0]["run"] == run_id):
-            lease.update(run=run_id, session=session_hint() or None, acquired_at=stamp, heartbeat=stamp)
-            _stamp_holder(lease)
-            lease["queue"] = [w for w in queue if w["run"] != run_id]
-            granted = fresh = True
-        else:
-            granted = False
-            if wait:
-                mine = next((w for w in queue if w["run"] == run_id), None)
-                if mine:
-                    mine.update(seen=stamp, pid=os.getpid())
-                else:
-                    queue.append({"run": run_id, "session": session_hint() or None, "pid": os.getpid(),
-                                  "since": stamp, "seen": stamp})
-        position = 0 if granted else next((i + 1 for i, w in enumerate(lease["queue"]) if w["run"] == run_id), None)
-        _lease_write(ws, lease)
-    return {"granted": granted, "fresh": fresh, "position": position, "lease": lease, "reclaimed": reclaimed}
-
-
-def lease_release(ws: str, run_id: str, force: bool = False) -> str:
-    with _file_lock(_lock_path(ws)):
-        lease = lease_read(ws)
-        holder = lease.get("run")
-        queued = any(w["run"] == run_id for w in lease["queue"])
-        lease["queue"] = [w for w in lease["queue"] if w["run"] != run_id]
-        if holder and (holder == run_id or force):
-            _clear_holder(lease)
-            msg = f"lease of {ws} released (was held by {holder})"
-        elif queued:
-            msg = f"{run_id} left the queue of {ws}; lease still held by {holder or 'nobody'}"
-        elif holder:
-            raise FactoryError(f"lease of {ws} is held by run {holder}, not {run_id}; "
-                               "pass --force to release it anyway")
-        else:
-            msg = f"lease of {ws} is not held"
-        _lease_write(ws, lease)
-    return msg
-
-
-def _leave_queue(ws: str, run_id: str) -> None:
-    with _file_lock(_lock_path(ws)):
-        lease = lease_read(ws)
-        lease["queue"] = [w for w in lease["queue"] if w["run"] != run_id]
-        _lease_write(ws, lease)
-
-
-def lease_heartbeat(ws: str, run_id: str | None) -> bool:
-    """Refresh the heartbeat when `run_id` holds the lease. True when it holds it."""
-    if not run_id or not lease_path(ws).is_file():
-        return False
-    with _file_lock(_lock_path(ws)):
-        lease = lease_read(ws)
-        if lease.get("run") != run_id:
-            return False
-        lease["heartbeat"] = now()
-        _stamp_holder(lease)  # the process that keeps proving is the one whose death frees the lease
-        _lease_write(ws, lease)
-    return True
-
-
-def _holder_text(lease: dict) -> str:
-    if not lease.get("run"):
-        return "free"
-    return f"held by {lease['run']} since {_hhmm(lease.get('acquired_at'))}"
-
-
-def require_lease(workspace: dict, run_id: str | None, what: str) -> None:
-    """With `env.lease: true`, `run_id` must hold the env lease (its heartbeat is refreshed). No-op otherwise."""
-    enabled, _ = lease_conf(workspace)
-    if not enabled:
-        return
-    ws = workspace["name"]
-    acquire = f"`factory env lease acquire {ws} --run {run_id or '<run>'} --wait`"
-    if not run_id:
-        raise FactoryError(f"{what}: env.lease is on for {ws}; pass --run <run> holding the env lease ({acquire})")
-    if not lease_heartbeat(ws, run_id):
-        raise FactoryError(f"{what}: run {run_id} does not hold the env lease of {ws} "
-                           f"({_holder_text(lease_read(ws))}); {acquire} first")
-
-
-def _record(run_id: str | None, kind: str, **data) -> None:
-    """Best-effort event on a run (never fails the env command)."""
-    if not run_id:
-        return
-    try:
-        run_update(run_id, lambda r: event(r, kind, **data))
-    except (FactoryError, OSError):
-        pass
-
-
-def lease_status(ws: str, ttl: int) -> dict:
-    lease = lease_read(ws)
-    return {
-        "workspace": ws, "holder": lease.get("run"), "session": lease.get("session"), "pid": lease.get("pid"),
-        "acquired_at": lease.get("acquired_at"), "heartbeat": lease.get("heartbeat"),
-        "age_s": None if not lease.get("run") else _age(lease.get("acquired_at")),
-        "heartbeat_age_s": None if not lease.get("run") else _age(lease.get("heartbeat")),
-        "ttl_s": ttl, "stale": lease_stale(lease, ttl),
-        "queue": [{"run": w["run"], "since": w.get("since"), "wait_s": _age(w.get("since")),
-                   "session": w.get("session")} for w in lease["queue"]],
-    }
-
-
 # ---------- up / down / check ----------
 
 def _cwd_for(workspace: dict, run: dict | None, alias: str) -> Path:
@@ -783,19 +566,31 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     alias = repo["alias"]
     env = repo["env"]
     ws = workspace["name"]
+    require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     for dep in env.get("depends_on") or []:
         if not _up_one(workspace, run, dep, seen, out):
             return False
 
-    health = _health_url(workspace, alias)
+    shared = is_shared(workspace, run, alias)
+    slot = 0 if shared else run_slot(run, alias)
+    env = slot_env(workspace, run, alias, slot)  # ports, health, base_url and start of this run's slot
+    health = _health_url(workspace, alias, slot)
+    if shared:  # the run does not change this repo: it uses the running one and never starts, stops or restarts it
+        if health_ok(health):
+            out.append(f"{alias}: up (shared) {health}")
+            return True
+        detail = f"shared repo {alias} not up; ask its holder or start it with env up"
+        out.append(f"{alias}: {detail}")
+        out.append(env_fail_line(alias, "lease", detail))
+        return False
     cwd = _cwd_for(workspace, run, alias)
     head = _head_of(cwd) if cwd.is_dir() else None
     # record check -> port checks -> Popen -> pid write under the env lock: two concurrent ups cannot both start
     with _file_lock(_lock_path(ws)):
-        status, proc = _start_locked(env, ws, alias, health, cwd, head, out)
+        status, proc = _start_locked(env, ws, alias, health, cwd, head, out, slot)
     if status != "started":
         return status == "up"
-    log = log_path(ws, alias)
+    log = log_path(ws, alias, slot)
 
     deadline = time.time() + float(env.get("startup_timeout_s") or 120)
     while time.time() < deadline:
@@ -823,15 +618,21 @@ def _http_sys_healthy(env: dict, health: str) -> bool:
 
 
 def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: str | None,
-                  out: list[str]) -> tuple[str, subprocess.Popen | None]:
-    """("up", None) already running for this request, ("fail", None) refused, ("started", proc)."""
-    rec = read_record(ws, alias)
+                  out: list[str], slot: int = 0) -> tuple[str, subprocess.Popen | None]:
+    """("up", None) already running for this request, ("fail", None) refused, ("started", proc). `env` is the slot's
+    env block (see `slot_env`)."""
+    rec = read_record(ws, alias, slot)
     state = record_state(rec) if rec else "gone"
     if state == "unknown":
         out.append(_unknown_identity(alias, rec["pid"]))
         return "fail", None
     if state == "same":
-        if not _same_path(rec.get("cwd"), cwd) or (rec.get("head") or None) != head:
+        if rec.get("env_digest") and rec["env_digest"] != env_digest(env):
+            out.append(env_fail_line(alias, "stale", "running env serves another resolved env (start/env_vars/ports)"))
+            out.append(f"{alias}: already up (pid {rec['pid']}) with another resolved env (start/env_vars/ports differ). "
+                       f"Run `factory env down {ws} {alias}` first, then up again.")
+            return "fail", None
+        if not _same_path(rec.get("cwd"), cwd) or ((rec.get("head") or None) != head and env.get("hot_reload") is not True):
             out.append(env_fail_line(alias, "stale", f"running for {rec.get('cwd') or '?'} at {str(rec.get('head') or '?')[:8]}, "
                                      f"request is {cwd} at {str(head or '?')[:8]}"))
             out.append(
@@ -847,11 +648,11 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
             out.append(env_fail_line(alias, "stale", f"pid {rec['pid']} is not killable (current process or ancestor)"))
             return "fail", None
         kill_tree(rec["pid"])  # stale: ours, alive but unhealthy; restart below
-        _drop_record(ws, alias)
+        _drop_record(ws, alias, slot)
     elif rec:
         if state == "other":
             out.append(f"{alias}: pid {rec['pid']} now belongs to another process (create time differs); not touched")
-        _drop_record(ws, alias)  # our process is gone
+        _drop_record(ws, alias, slot)  # our process is gone
     for port in env.get("ports") or []:
         if port_in_use(int(port)):
             owner = port_owner(int(port))
@@ -883,8 +684,10 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
         if resolved:
             cmd[0] = resolved
     proc_env = {**os.environ, **{k: str(v) for k, v in (env.get("env_vars") or {}).items()}}
+    if slots_configured(env):
+        proc_env["FACTORY_SLOT"] = str(slot)
     _env_dir(ws).mkdir(parents=True, exist_ok=True)
-    log = log_path(ws, alias)
+    log = log_path(ws, alias, slot)
     kwargs: dict = {}
     if IS_WIN:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
@@ -895,41 +698,57 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
             cmd, cwd=str(cwd), env=proc_env, stdin=subprocess.DEVNULL,
             stdout=logf, stderr=subprocess.STDOUT, shell=shell, **kwargs,
         )
-    pid_path(ws, alias).write_text(json.dumps({
+    pid_path(ws, alias, slot).write_text(json.dumps({
         "pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
-        "create_time": process_create_time(proc.pid)}), encoding="utf-8")
+        "create_time": process_create_time(proc.pid), "env_digest": env_digest(env)}), encoding="utf-8")
     return "started", proc
 
 
 def up(workspace: dict, alias: str, run: dict | None = None) -> tuple[bool, list[str]]:
-    require_lease(workspace, run["id"] if run else None, f"env up {alias}")
+    require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     out: list[str] = []
     ok = _up_one(workspace, run, alias, set(), out)
     return ok, out
 
 
-def down(workspace: dict, alias: str, run_id: str | None = None, force: bool = False) -> str:
-    """Stop the env of `alias`. Refused when a live env lease is held by another run than `run_id`, unless
-    `force`. The stop is recorded on `run_id` (and, when forced, on the holder's run)."""
+def down(workspace: dict, alias: str, run_id: str | None = None, force: bool = False, slot: int | None = None) -> str:
+    """Stop the env of `alias` (the run's slot, else `slot`, else 0). Refused when a live env lease on that slot is held
+    by another run than `run_id` (or the repo is shared with other runs), unless `force`; a run that holds the repo only
+    shared never stops it. The stop is recorded on `run_id` (and, when forced, on the holder's run)."""
     repo = repo_conf(workspace, alias)
     ws, alias = workspace["name"], repo["alias"]
+    run = _safe_run(run_id)
+    if slot is None:
+        slot = run_slot(run, alias)
+    if is_shared(workspace, run, alias) and not force:
+        raise FactoryError(f"{alias}: shared repo, this run does not own its process; not stopped. "
+                           "Its exclusive holder stops it, or pass --force")
     _, ttl = lease_conf(workspace)
-    lease = lease_read(ws)
-    holder = lease.get("run")
-    other = holder if holder and holder != run_id and not lease_stale(lease, ttl) else None
+    holders: list[str] = []
+    keys: list[str | None] = [slot_key(alias, slot)]
+    if lease_path(ws).is_file():
+        keys.insert(0, None)
+    for key in keys:
+        lease = lease_read(ws, key)
+        if lease.get("run") and not lease_stale(lease, ttl):
+            holders.append(lease["run"])
+        if key == alias:  # slot 0 is also in use while other runs share the repo
+            holders.extend(e["run"] for e in lease["shared"] if not lease_stale(e, ttl))
+    holder = next((h for h in holders if h != run_id), None)
+    other = holder
     if other and not force:
-        raise FactoryError(f"{alias}: the env lease of {ws} is {_holder_text(lease)}; not stopped. "
+        raise FactoryError(f"{alias}: the env lease of {ws} is {_repo_holder_text(ws, alias)}; not stopped. "
                            f"Pass --run <run> if that run is yours, or --force to stop another run's env")
     with _file_lock(_lock_path(ws)):
-        msg = _down_locked(ws, alias)
+        msg = _down_locked(ws, alias, slot)
     _record(run_id, "env_down", repo=alias, result=msg, forced=bool(other), lease_holder=holder)
     if other:
         _record(other, "env_down_forced", repo=alias, by=run_id, result=msg)
     return msg + (f" (forced: lease held by {other})" if other else "")
 
 
-def _down_locked(ws: str, alias: str) -> str:
-    rec = read_record(ws, alias)
+def _down_locked(ws: str, alias: str, slot: int = 0) -> str:
+    rec = read_record(ws, alias, slot)
     if not rec:
         return f"{alias}: no pid file (nothing started by factory)"
     pid = rec["pid"]
@@ -941,18 +760,122 @@ def _down_locked(ws: str, alias: str) -> str:
             raise FactoryError(f"{alias}: pid {pid} is the current process or its ancestor; NOT killed (pid record kept)")
         kill_tree(pid)
     elif state == "other":
-        _drop_record(ws, alias)
+        _drop_record(ws, alias, slot)
         return (f"{alias}: pid {pid} now belongs to another process (create time differs); "
                 "not killed; pid record removed")
-    _drop_record(ws, alias)
+    _drop_record(ws, alias, slot)
     return f"{alias}: stopped (pid {pid})"
 
 
-def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None) -> str | None:
-    """None when the env of `alias` was started by `factory env up` from `worktree` at `head` and still runs."""
+# ---------- deterministic test data: seed / reset / preflight (DESIGN section 14) ----------
+
+DATA_TIMEOUT_S = 600
+
+
+def ticket_digits(run: dict | None) -> str:
+    key = str((((run or {}).get("tickets") or [{}])[0] or {}).get("key") or "")
+    return "".join(re.findall(r"\d+", key))
+
+
+def data_prefix(run: dict | None) -> str:
+    """Prefix every record the checks create must carry, so a reset can delete exactly those: UAT<ticket digits>."""
+    return f"UAT{ticket_digits(run)}"
+
+
+def _data_env(workspace: dict, run: dict | None, alias: str) -> dict[str, str]:
+    env = {**os.environ}
+    env.update({k: str(v) for k, v in (slot_env(workspace, run, alias).get("env_vars") or {}).items()})
+    first = ((run or {}).get("tickets") or [{}])[0] or {}
+    env.update({"FACTORY_RUN": str((run or {}).get("id") or ""), "FACTORY_TICKET": str(first.get("key") or ""),
+                "FACTORY_DATA_PREFIX": data_prefix(run)})
+    return env
+
+
+def _run_argv(workspace: dict, run: dict | None, alias: str, argv: list, cwd: Path) -> tuple[int, str]:
+    try:
+        proc = subprocess.run([str(a) for a in argv], cwd=str(cwd), env=_data_env(workspace, run, alias), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=DATA_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return 124, f"[timeout after {DATA_TIMEOUT_S}s]"
+    except OSError as err:
+        return 127, str(err)
+    return proc.returncode, ((proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")).strip()
+
+
+def seed_conf(workspace: dict, alias: str) -> dict:
+    seed = (repo_conf(workspace, alias).get("env") or {}).get("seed")
+    return seed if isinstance(seed, dict) else {}
+
+
+def data_run(workspace: dict, run: dict | None, alias: str, which: str) -> tuple[int, str]:
+    """Run the repo's `env.seed.cmd` (which="cmd") or `env.seed.reset` in its worktree with FACTORY_RUN, FACTORY_TICKET and
+    FACTORY_DATA_PREFIX set; records an `env_seed`/`env_reset` event with the exit code."""
+    repo = repo_conf(workspace, alias)
+    alias = repo["alias"]
+    seed = seed_conf(workspace, alias)
+    argv = seed.get(which)
+    if not argv:
+        raise FactoryError(f"{alias}: env.seed.{which} is not configured")
+    base = repo_path_for_env(run, workspace, alias) if run else Path(repo["path"])
+    code, text = _run_argv(workspace, run, alias, argv, (base / (seed.get("cwd") or ".")).resolve())
+    _record((run or {}).get("id"), "env_seed" if which == "cmd" else "env_reset", repo=alias, exit=code)
+    return code, text
+
+
+def run_preflights(workspace: dict, run: dict | None, alias: str) -> list[tuple[str, int, str]]:
+    """Failed `env.preflight` entries of the repo: [(name, exit, output)]. Empty when all pass."""
+    repo = repo_conf(workspace, alias)
+    out = []
+    for item in (repo.get("env") or {}).get("preflight") or []:
+        code, text = _run_argv(workspace, run, repo["alias"], item["cmd"], _cwd_for(workspace, run, repo["alias"]))
+        if code != 0:
+            out.append((str(item.get("name") or "preflight"), code, text))
+    return out
+
+
+def hot_reload(repo: dict) -> bool:
+    """`env.hot_reload: true`: the dev server (Vite HMR, watch mode) follows commits in its worktree, so a HEAD that
+    moved since `env up` is not stale (a different cwd still is)."""
+    return (repo.get("env") or {}).get("hot_reload") is True
+
+
+def env_digest(env: dict) -> str:
+    """sha256 of what a started process depends on besides its cwd/HEAD: the resolved `start` command, `env_vars`
+    (after `{base_url:ALIAS}`/`{port:ALIAS}` and slot placeholders) and `ports` of the slot env (`slot_env`)."""
+    import hashlib
+    env_vars = env.get("env_vars") if isinstance(env.get("env_vars"), dict) else {}
+    body = {"start": env.get("start"), "env_vars": {k: str(v) for k, v in env_vars.items()},
+            "ports": [int(p) for p in env.get("ports") or []]}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def env_digest_error(workspace: dict, run: dict | None, alias: str, rec: dict, slot: int) -> str | None:
+    """The pid record carries `env_digest` and the run's slot env now resolves to another one (a referenced repo moved
+    slot, a port/start/env_vars edit): the process does not serve this run's env. Records without it: None."""
+    want = rec.get("env_digest")
+    if not want:
+        return None
+    try:
+        current = env_digest(slot_env(workspace, run, alias, slot))
+    except FactoryError as err:
+        return f"slot env cannot be resolved ({err})"
+    if current != want:
+        return ("serves another resolved env (start/env_vars/ports differ from the run's slot env, e.g. a "
+                "{base_url:ALIAS} slot moved)")
+    return None
+
+
+def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None, run: dict | None = None,
+                  strict: bool = False) -> str | None:
+    """None when the env of `alias` (in the slot of `run`, if any) was started by `factory env up` from `worktree` at
+    `head` (with the run's resolved slot env, when the record carries `env_digest`) and still runs. A repo the run only
+    shares is judged by its process alone: it serves another run's code. `strict` (`prove --final`) ignores
+    `env.hot_reload`: final evidence must come from a process started at HEAD."""
     repo = repo_conf(workspace, alias)
     ws, alias = workspace["name"], repo["alias"]
-    rec = read_record(ws, alias)
+    shared = is_shared(workspace, run, alias)
+    slot = 0 if shared else run_slot(run, alias)
+    rec = read_record(ws, alias, slot)
     if not rec:
         return (f"env {alias}: not started by `factory env up {ws} {alias} --run <run>` (no pid record); "
                 "evidence cannot be bound to the worktree")
@@ -961,14 +884,47 @@ def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None)
         return f"env {alias}: process {rec['pid']} identity cannot be verified (create time unreadable); ask the user"
     if state != "same":
         return f"env {alias}: recorded process {rec['pid']} is not running (or its pid was reused); env up again"
+    if shared:
+        return None
     want = (Path(worktree) / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
     if not _same_path(rec.get("cwd"), want):
         return (f"env {alias}: running env serves {rec.get('cwd') or '?'}, not {want}; "
                 f"`factory env down {ws} {alias}` then `env up --run`")
-    if head and rec.get("head") != head:
+    drift = env_digest_error(workspace, run, alias, rec, slot)
+    if drift:
+        return f"env {alias}: running env {drift}; `factory env down {ws} {alias}` then `env up --run`"
+    if head and rec.get("head") != head and (strict or not hot_reload(repo)):
         return (f"env {alias}: started at {str(rec.get('head') or '?')[:8]}, worktree HEAD is {head[:8]}; "
                 f"`factory env down {ws} {alias}` then `env up --run`")
     return None
+
+
+def hot_reload_drift(workspace: dict, alias: str, head: str | None, run: dict | None = None) -> bool:
+    """The env of `alias` is served only thanks to `env.hot_reload`: its process was started at another HEAD than
+    `head` (evidence then records `details.hot_reload: true`, refused by `gate prove`)."""
+    repo = repo_conf(workspace, alias)
+    if not hot_reload(repo) or not head or is_shared(workspace, run, repo["alias"]):
+        return False
+    rec = read_record(workspace["name"], repo["alias"], run_slot(run, repo["alias"]))
+    return bool(rec) and rec.get("head") != head
+
+
+def shared_heads(workspace: dict, run: dict | None) -> dict:
+    """{alias: HEAD of the serving process's cwd} of every repo the run uses shared (the runtime repos it needs that it
+    has no worktree for): runtime evidence then depends on that code, which is another run's (DESIGN section 11)."""
+    if not run or not lease_conf(workspace)[0]:
+        return {}
+    out: dict = {}
+    for alias in default_lease_repos(workspace, run):
+        try:
+            if not is_shared(workspace, run, alias):
+                continue
+        except FactoryError:
+            continue
+        rec = read_record(workspace["name"], alias, 0)
+        cwd = (rec or {}).get("cwd")
+        out[alias] = _head_of(Path(cwd)) if cwd and Path(cwd).is_dir() else None
+    return out
 
 
 # ---------- preflight (env check, prove) ----------
@@ -976,12 +932,13 @@ def binding_error(workspace: dict, alias: str, worktree: Path, head: str | None)
 EXIT_UNHEALTHY, EXIT_USAGE, EXIT_STALE, EXIT_CONFLICT = 1, 2, 3, 4
 
 
-def stale_reason(workspace: dict, run: dict | None, alias: str) -> str | None:
-    """Why a running env of ours no longer serves the run worktree (other cwd, or started at another HEAD)."""
-    if not run:
-        return None
+def stale_reason(workspace: dict, run: dict | None, alias: str, strict: bool = False) -> str | None:
+    """Why a running env of ours no longer serves the run worktree (other cwd, another resolved slot env, or started at
+    another HEAD; `strict` = `prove --final`: a HEAD change is stale even with `env.hot_reload`)."""
+    if not run or is_shared(workspace, run, alias):
+        return None  # a shared repo serves its holder's code: this run never restarts it
     repo = repo_conf(workspace, alias)
-    rec = read_record(workspace["name"], repo["alias"])
+    rec = read_record(workspace["name"], repo["alias"], run_slot(run, repo["alias"]))
     if not rec or record_state(rec) != "same":
         return None
     if is_protected_pid(rec["pid"]):
@@ -989,8 +946,14 @@ def stale_reason(workspace: dict, run: dict | None, alias: str) -> str | None:
     cwd = _cwd_for(workspace, run, repo["alias"])
     if not _same_path(rec.get("cwd"), cwd):
         return f"serves {rec.get('cwd') or '?'}, run worktree is {cwd}"
+    try:
+        drift = env_digest_error(workspace, run, repo["alias"], rec, run_slot(run, repo["alias"]))
+    except FactoryError:
+        drift = None
+    if drift and drift.startswith("serves"):
+        return drift
     head = _head_of(cwd) if cwd.is_dir() else None
-    if head and rec.get("head") != head:
+    if head and rec.get("head") != head and (strict or not hot_reload(repo)):
         return f"started at {str(rec.get('head') or '?')[:8]}, worktree HEAD is {head[:8]}"
     return None
 
@@ -1012,7 +975,9 @@ def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
     """Why factory must NOT restart this stale env for `run`: it serves a worktree that is not the run's own (another
     run, or a hand-started checkout), so env down would kill someone else's process. None when the record's cwd is
     inside this run's worktrees (HEAD moved) and the run may restart (it holds the lease when env.lease is on)."""
-    rec = read_record(workspace["name"], repo_conf(workspace, alias)["alias"])
+    if is_shared(workspace, run, alias):
+        return f"shared repo {repo_conf(workspace, alias)['alias']}: only its exclusive holder restarts it"
+    rec = read_record(workspace["name"], repo_conf(workspace, alias)["alias"], run_slot(run, repo_conf(workspace, alias)["alias"]))
     if rec:
         cwd = rec.get("cwd")
         here = os.path.normcase(os.path.abspath(str(cwd))) if cwd else None
@@ -1020,7 +985,7 @@ def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
         if not here or not any(here == w or here.startswith(w.rstrip("\\/") + os.sep) for w in own):
             other = find_run_for_cwd(workspace["name"], Path(cwd)) if cwd else None
             return f"env serves {cwd or '?'} (run {other[0]['id'] if other else 'none'})"
-    if not can_restart(workspace, run):
+    if not can_restart(workspace, run, alias):
         enabled, _ = lease_conf(workspace)
         return f"env lease of {workspace['name']} is not held by run {run['id']}" if enabled else "run may not restart"
     return None
@@ -1034,20 +999,23 @@ def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: floa
     errs = capability(workspace, alias)
     if errs:
         return {"code": EXIT_USAGE, "kind": "usage", "detail": "; ".join(errs)}
+    slot = 0 if is_shared(workspace, run, alias) else run_slot(run, alias)
+    try:
+        env = slot_env(workspace, run, alias, slot)
+    except FactoryError as err:
+        return {"code": EXIT_USAGE, "kind": "usage", "detail": str(err)}
     if run:
-        enabled, ttl = lease_conf(workspace)
-        lease = lease_read(ws)
-        holder = lease.get("run")
-        if enabled and holder and holder != run["id"] and not lease_stale(lease, ttl):
-            return {"code": EXIT_CONFLICT, "kind": "lease", "detail": f"env lease of {ws} is {_holder_text(lease)}"}
-    health = _health_url(workspace, alias)
+        conflict = lease_conflict(workspace, run, alias)
+        if conflict:
+            return {"code": EXIT_CONFLICT, "kind": "lease", "detail": conflict}
+    health = _health_url(workspace, alias, slot)
     status = health_status(health, probe_timeout)
     healthy = status is not None and status < 500
     out = {"health": health}
     stale = stale_reason(workspace, run, alias)
     if stale:
         return {**out, "code": EXIT_STALE, "kind": "stale", "detail": f"{alias}: {stale}"}
-    rec = read_record(ws, alias)
+    rec = read_record(ws, alias, slot)
     ours = record_state(rec) == "same" if rec else False
     ports = [int(p) for p in env.get("ports") or []]
     busy = next((p for p in ports if port_in_use(p)), None)
@@ -1079,16 +1047,16 @@ def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: floa
 def restart_env(workspace: dict, run: dict, alias: str) -> tuple[bool, list[str]]:
     """env down + up for `run` (the run must hold the lease when env.lease is on)."""
     alias = repo_conf(workspace, alias)["alias"]
-    require_lease(workspace, run["id"], f"env restart {alias}")
+    require_lease(workspace, run["id"], f"env restart {alias}", alias)
     lines = [down(workspace, alias, run["id"])]
     ok, up_lines = up(workspace, alias, run)
     return ok, lines + up_lines
 
 
-def can_restart(workspace: dict, run: dict) -> bool:
-    """The run may restart its env: it holds the lease, or the workspace has no lease."""
+def can_restart(workspace: dict, run: dict, alias: str | None = None) -> bool:
+    """The run may restart its env: it holds the lease (of `alias`), or the workspace has no lease."""
     enabled, _ = lease_conf(workspace)
-    return (not enabled) or lease_heartbeat(workspace["name"], run["id"])
+    return (not enabled) or lease_heartbeat(workspace["name"], run["id"], repo_conf(workspace, alias)["alias"] if alias else None)
 
 
 def find_run_for_cwd(ws_name: str, cwd: Path) -> tuple[dict, str] | None:
@@ -1154,13 +1122,30 @@ def factory_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def login_config(workspace: dict, run: dict | None, alias: str, slot: int | None = None) -> dict:
+    """The login block for the browser CLI in the run's slot: `success_url_contains` with the slot's port, and, for a slot
+    above 0 with `handoff_rewrite: true`, `handoff: {host, from_port, to_port}` so the CLI redirects the hand-off URL
+    (e.g. the fixed legacy redirect `http://localhost:3300/portal/coming?token=...`) to the slot's port."""
+    base = (repo_conf(workspace, alias).get("env") or {}).get("login") or {}
+    k = run_slot(run, repo_conf(workspace, alias)["alias"]) if slot is None else slot
+    cfg = dict(slot_env(workspace, run, alias, k).get("login") or {})
+    if k and base.get("handoff_rewrite") is True:
+        host, port = handoff_origin(base.get("success_url_contains"))
+        stride = slot_conf(repo_conf(workspace, alias).get("env"))[1]
+        if port:
+            cfg["handoff"] = {"host": host, "from_port": port, "to_port": port + k * stride}
+    return cfg
+
+
 def login(workspace: dict, alias: str, user: str | None = None, run_id: str | None = None) -> tuple[bool, str]:
-    require_lease(workspace, run_id, f"env login {alias}")  # the storage state is shared per workspace
+    require_lease(workspace, run_id, f"env login {alias}", alias)  # the storage state is per repo slot
     repo = repo_conf(workspace, alias)
     alias = repo["alias"]
     env = repo.get("env") or {}
     if not env.get("login"):
         raise FactoryError(f"{alias}: env.login missing")
+    run = _safe_run(run_id)
+    slot = 0 if is_shared(workspace, run, alias) else run_slot(run, alias)
     override = user
     user, pw = _credentials(workspace["name"], alias, override)
     cli = factory_root() / "browser" / "dist" / "cli.js"
@@ -1169,11 +1154,11 @@ def login(workspace: dict, alias: str, user: str | None = None, run_id: str | No
     node = shutil.which("node")
     if not node:
         raise FactoryError("node not found on PATH")
-    out = storage_state_path(workspace["name"], alias, override)
+    out = storage_state_path(workspace["name"], alias, override, slot)
     out.parent.mkdir(parents=True, exist_ok=True)
-    cfg = out.with_name(f"{alias}.login.json")  # the CLI reads --login-json as a file
-    cfg.write_text(json.dumps(env["login"]), encoding="utf-8")
-    cmd = [node, str(cli), "login", "--base-url", base_url(workspace, alias), "--login-json", str(cfg), "--out", str(out)]
+    cfg = login_json_path(workspace["name"], alias, slot)  # the CLI reads --login-json as a file
+    cfg.write_text(json.dumps(login_config(workspace, run, alias, slot)), encoding="utf-8")
+    cmd = [node, str(cli), "login", "--base-url", base_url(workspace, alias, slot), "--login-json", str(cfg), "--out", str(out)]
     # credentials go through the environment, never argv (process listings show argv)
     proc_env = {**os.environ, "FACTORY_LOGIN_USER": user, "FACTORY_LOGIN_PASS": pw}
     proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180, env=proc_env)
@@ -1200,7 +1185,7 @@ def _cmd_up(args) -> int:
 
 def _cmd_down(args) -> int:
     ws, _ = _load(args)
-    print(down(ws, args.repo, getattr(args, "run", None), getattr(args, "force", False)))
+    print(down(ws, args.repo, getattr(args, "run", None), getattr(args, "force", False), getattr(args, "slot", None)))
     return 0
 
 
@@ -1251,6 +1236,11 @@ def _cmd_check(args) -> int:
                                                       "detail": f"{alias}: restart failed", "health": ""}
         if st["code"] == 0:
             print(f"{alias}: healthy {st.get('health', '')}")
+            for name, code, text in run_preflights(ws, run, alias):
+                detail = f"{name} exited {code}" + (f": {text.splitlines()[-1]}" if text else "")
+                print(f"{alias}: preflight {name} FAILED ({detail})")
+                print(f"ENV-FAIL repo={alias} kind=preflight detail={name}")
+                st = {"code": EXIT_UNHEALTHY}
         else:
             print(f"{alias}: NOT healthy ({st['kind']}) {st['detail']}")
             print(env_fail_line(alias, st["kind"], st["detail"]))
@@ -1258,59 +1248,114 @@ def _cmd_check(args) -> int:
     return worst
 
 
-def _cmd_logs(args) -> int:
-    ws, _ = _load(args)
+def _cmd_data(args) -> int:
+    ws, run = _load(args)
     alias = repo_conf(ws, args.repo)["alias"]
-    print(tail(log_path(ws["name"], alias), args.lines))
+    which = "cmd" if args.env_cmd == "seed" else "reset"
+    require_lease(ws, args.run, f"env {args.env_cmd} {alias}", alias)
+    try:
+        code, text = data_run(ws, run, alias, which)
+    except FactoryError as err:
+        print(env_fail_line(alias, "seed", str(err)))
+        return 1
+    if text:
+        print(text)
+    if code != 0:
+        print(env_fail_line(alias, "seed", f"env.seed.{which} exited {code}"))
+        return 1
+    print(f"{alias}: {'seed' if which == 'cmd' else 'reset-data'} ok (prefix {data_prefix(run)})")
+    return 0
+
+
+def _cmd_logs(args) -> int:
+    ws, run = _load(args)
+    alias = repo_conf(ws, args.repo)["alias"]
+    slot = getattr(args, "slot", None)
+    print(tail(log_path(ws["name"], alias, run_slot(run, alias) if slot is None else slot), args.lines))
     return 0
 
 
 def _cmd_login(args) -> int:
-    ws, _ = _load(args)
+    ws, run = _load(args)
     user = getattr(args, "user", None)
     ok, text = login(ws, args.repo, user, getattr(args, "run", None))
     if text:
         print(text)
     if ok:
-        print(f"storage state: {storage_state_path(ws['name'], repo_conf(ws, args.repo)['alias'], user)}")
+        alias = repo_conf(ws, args.repo)["alias"]
+        print(f"storage state: {storage_state_path(ws['name'], alias, user, run_storage_slot(ws, run, alias))}")
     return 0 if ok else 1
 
 
 def _print_status(st: dict) -> None:
     ws = st["workspace"]
-    if not st["holder"]:
-        print(f"lease {ws}: free")
-    else:
-        line = (f"lease {ws}: held by {st['holder']} (session {_session_short(st['session'])}, pid {st['pid']}) "
-                f"since {_hhmm(st['acquired_at'])}, age {_dur(st['age_s'])}, "
-                f"heartbeat {_dur(st['heartbeat_age_s'])} ago (ttl {st['ttl_s']}s)")
-        print(line + (f" STALE: {st['stale']}" if st["stale"] else ""))
+    rows = list(st["repos"])
+    if st.get("legacy"):
+        rows.insert(0, dict(st["legacy"], key="workspace"))
+    for row in rows:
+        label = f"{ws}/{row['key']}" if row["key"] != "workspace" else f"{ws} (workspace lease, every repo)"
+        if not row["holder"]:
+            if not row["shared"]:
+                print(f"lease {label}: free")
+        else:
+            line = (f"lease {label}: held by {row['holder']} (session {_session_short(row['session'])}, pid {row['pid']}) "
+                    f"since {_hhmm(row['acquired_at'])}, age {_dur(row['age_s'])}, "
+                    f"heartbeat {_dur(row['heartbeat_age_s'])} ago (ttl {row['ttl_s']}s)")
+            print(line + (f" STALE: {row['stale']}" if row["stale"] else ""))
+        if row["shared"]:
+            print(f"lease {label}: shared by " + ", ".join(
+                f"{e['run']} (heartbeat {_dur(e['heartbeat_age_s'])} ago{', STALE: ' + e['stale'] if e['stale'] else ''})"
+                for e in row["shared"]))
     for i, w in enumerate(st["queue"], 1):
-        print(f"  {i}. {w['run']} waiting {_dur(w['wait_s'])} (session {_session_short(w['session'])})")
+        wants = ", ".join(a if m == "exclusive" else f"{a} (shared)" for a, m in w["repos"].items())
+        print(f"  {i}. {w['run']} waiting {_dur(w['wait_s'])} for {wants} (session {_session_short(w['session'])})")
 
 
-def _stop_run_envs(workspace: dict, run: dict) -> list[str]:
-    """`env down` for the envs of `run` that factory started from its worktrees (releasing the lease frees the port)."""
+def _stop_run_envs(workspace: dict, run: dict, only: set[str] | None = None) -> list[str]:
+    """`env down` for the envs of `run` that factory started from its worktrees (releasing the lease frees the port).
+    Shared repos belong to their exclusive holder and are never stopped here."""
     lines: list[str] = []
-    for alias in run.get("repos") or {}:
+    for alias in list(run.get("repos") or {}) + [a for a in (run.get("env_slots") or {}) if a not in (run.get("repos") or {})]:
         try:
-            if capability(workspace, alias):
+            if capability(workspace, alias) or (only is not None and alias not in only) or is_shared(workspace, run, alias):
                 continue
-            rec = read_record(workspace["name"], alias)
+            slot = run_slot(run, alias)
+            rec = read_record(workspace["name"], alias, slot)
             if not rec or not _same_path(rec.get("cwd"), _cwd_for(workspace, run, alias)):
                 continue  # not started from this run's worktree
-            lines.append(down(workspace, alias, run["id"]))
+            lines.append(down(workspace, alias, run["id"], slot=slot))
         except FactoryError as err:
             lines.append(f"{alias}: env not stopped: {err}")
     return lines
+
+
+def _flat(values) -> list[str] | None:
+    out = [v for group in values or [] for v in (group if isinstance(group, list) else [group])]
+    return out or None
+
+
+def _record_slots(run_id: str, slots: dict[str, int]) -> None:
+    def put(run):
+        run.setdefault("env_slots", {}).update(slots)
+    run_update(run_id, put)
+
+
+def _forget_slots(run_id: str, aliases: list[str]) -> None:
+    def drop(run):
+        for a in aliases:
+            (run.get("env_slots") or {}).pop(a, None)
+        if "env_slots" in run and not run["env_slots"]:
+            del run["env_slots"]
+    run_update(run_id, drop)
 
 
 def _cmd_lease(args) -> int:
     workspace = workspace_load(args.workspace)
     ws = workspace["name"]
     _, ttl = lease_conf(workspace)
+    repos = _flat(getattr(args, "repo", None))
     if args.action == "status":
-        st = lease_status(ws, ttl)
+        st = lease_status(workspace, ttl, repos)
         if args.json:
             print(json.dumps(st, indent=2))
         else:
@@ -1323,37 +1368,44 @@ def _cmd_lease(args) -> int:
     if run.get("workspace") != ws:
         raise FactoryError(f"run {args.run} belongs to workspace {run.get('workspace')!r}, not {ws!r}")
     if args.action == "release":
-        if lease_read(ws).get("run") == args.run and not getattr(args, "keep_env", False):
-            for line in _stop_run_envs(workspace, run):
-                print(line)
-        msg = lease_release(ws, args.run, args.force)
-        _record(args.run, "env_lease", action="release", workspace=ws, result=msg)
-        print(json.dumps({"released": True, "message": msg}) if args.json else msg)
+        held = lease_held(workspace, args.run)
+        if not getattr(args, "keep_env", False):
+            mine = set(held["exclusive"]) if not held["legacy"] else None
+            if held["legacy"] or mine:
+                chosen = {repo_conf(workspace, r)["alias"] for r in repos} if repos else None
+                only = mine if chosen is None else (chosen if mine is None else chosen & mine)
+                for line in _stop_run_envs(workspace, run, only):
+                    print(line)
+        info = lease_release_info(workspace, args.run, args.force, repos)
+        if info["released"]:
+            _forget_slots(args.run, info["released"])
+        _record(args.run, "env_lease", action="release", workspace=ws, result=info["message"], repos=info["released"])
+        print(json.dumps({"released": True, "message": info["message"]}) if args.json else info["message"])
         return 0
+    reqs = lease_requests(workspace, run, repos)
     deadline = time.monotonic() + args.timeout if args.timeout is not None else None
     last = None
     try:
         while True:
-            res = lease_try(ws, args.run, ttl, wait=args.wait)
+            res = lease_try(workspace, args.run, ttl, wait=args.wait, reqs=reqs)
             for old, reason in res["reclaimed"]:
                 print(f"reclaimed stale lease of {old}: {reason}")
                 _record(old, "env_lease", action="reclaimed", workspace=ws, by=args.run, reason=reason)
-            lease = res["lease"]
             if res["granted"]:
+                _record_slots(args.run, res["slots"])
                 if res["fresh"]:
-                    _record(args.run, "env_lease", action="acquire", workspace=ws)
+                    _record(args.run, "env_lease", action="acquire", workspace=ws, slots=res["slots"], shared=res["shared"])
                 if args.json:
-                    print(json.dumps({"granted": True, "run": args.run, "lease": lease}, indent=2))
+                    print(json.dumps({"granted": True, "run": args.run, "slots": res["slots"], "shared": res["shared"],
+                                      "leases": res["leases"]}, indent=2))
                 else:
-                    print(f"lease {ws}: acquired by {args.run}" + ("" if res["fresh"] else " (already held; heartbeat refreshed)"))
+                    what = ", ".join(f"{slot_key(a, k)}{' (shared)' if a in res['shared'] else ''}" for a, k in res["slots"].items())
+                    print(f"lease {ws}: acquired by {args.run} [{what}]" + ("" if res["fresh"] else " (already held; heartbeat refreshed)"))
                 return 0
-            if lease.get("run"):
-                line = f"held by {lease['run']} since {_hhmm(lease.get('acquired_at'))}"
-            else:
-                line = f"free, but {lease['queue'][0]['run']} is ahead in the queue"
+            line = "; ".join(res["blockers"]) or "queued behind a run ahead"
             if not args.wait:
                 if args.json:
-                    print(json.dumps({"granted": False, "run": args.run, "lease": lease}, indent=2))
+                    print(json.dumps({"granted": False, "run": args.run, "blockers": res["blockers"]}, indent=2))
                 else:
                     print(f"lease {ws}: {line}; not acquired (use --wait to queue)")
                 return 1
@@ -1362,15 +1414,15 @@ def _cmd_lease(args) -> int:
                 print(line, flush=True)
                 last = line
             if deadline is not None and time.monotonic() > deadline:
-                _leave_queue(ws, args.run)
+                _leave_queue(workspace, args.run)
                 if args.json:
-                    print(json.dumps({"granted": False, "run": args.run, "timeout": True, "lease": lease}, indent=2))
+                    print(json.dumps({"granted": False, "run": args.run, "timeout": True, "blockers": res["blockers"]}, indent=2))
                 else:
                     print(f"lease {ws}: timed out after {args.timeout:g}s; left the queue")
                 return 1
             time.sleep(max(0.05, args.poll))
     except KeyboardInterrupt:
-        _leave_queue(ws, args.run)
+        _leave_queue(workspace, args.run)
         raise
 
 
@@ -1391,16 +1443,28 @@ def register(sub) -> None:
         if name == "down":
             sp.add_argument("--run", help="the run stopping its env (must hold the env lease when one is held)")
             sp.add_argument("--force", action="store_true", help="stop even though another run holds the env lease")
+            sp.add_argument("--slot", type=int, help="slot to stop (default: the run's slot, else 0)")
         if name == "login":
             sp.add_argument("--user", help="log in as this e-mail instead of the workspace default user")
             sp.add_argument("--run", help="the run logging in (must hold the env lease when env.lease is on)")
         if name == "logs":
             sp.add_argument("--lines", type=int, default=40)
+            sp.add_argument("--run", help="show the log of this run's slot")
+            sp.add_argument("--slot", type=int, help="slot whose log to show (default: the run's slot, else 0)")
         sp.set_defaults(func=fn)
-    lp = esub.add_parser("lease", help="one env at a time per workspace: acquire/release/status of the env lease")
+    for name in ("seed", "reset-data"):
+        sp = esub.add_parser(name, help="run env.seed.cmd" if name == "seed"
+                             else "run env.seed.reset (idempotent cleanup by FACTORY_DATA_PREFIX)")
+        sp.add_argument("workspace")
+        sp.add_argument("repo")
+        sp.add_argument("--run", required=True, help="run whose ticket gives FACTORY_DATA_PREFIX (UAT<ticket digits>)")
+        sp.set_defaults(func=_cmd_data)
+    lp = esub.add_parser("lease", help="per-repo env leases (slots, shared repos): acquire/release/status")
     lp.add_argument("action", choices=("acquire", "release", "status"))
     lp.add_argument("workspace")
     lp.add_argument("--run", help="run that acquires/releases the lease")
+    lp.add_argument("--repo", nargs="+", action="append", metavar="ALIAS",
+                    help="repos to lease (default: the run's repos plus their env.depends_on closure)")
     lp.add_argument("--wait", action="store_true", help="acquire: queue (FIFO) and poll until granted")
     lp.add_argument("--timeout", type=float, help="acquire --wait: give up after this many seconds")
     lp.add_argument("--poll", type=float, default=LEASE_POLL_S, help="acquire --wait: poll interval in seconds")

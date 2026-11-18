@@ -824,6 +824,11 @@ def _evidence_errors(run_id, run, ws, check: dict, target: str | None = None) ->
         errors.append(f"{cid}: evidence status {ev.get('status')} ({ev.get('summary')})")
     if ev.get("dirty"):
         errors.append(f"{cid}: evidence collected with a dirty worktree")
+    if (ev.get("details") or {}).get("mode") == "fast":
+        errors.append(f"{cid}: evidence came from `prove --fast` (bail + reuse); run `factory prove {run_id} --final`")
+    if (ev.get("details") or {}).get("hot_reload") is True:
+        errors.append(f"{cid}: runtime evidence came from a hot-reloaded env (process started at another HEAD); "
+                      f"run `factory prove {run_id} --final` (it restarts the env at HEAD)")
     alias = check.get("repo")
     if alias:
         try:

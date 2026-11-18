@@ -33,6 +33,8 @@ You do one implementation task or batch in the run worktree the request names (`
 - Read `FACTORY_HOME/runs/<id>/acs.json` and the checks of the ACs you implement. For bugs, read `diagnosis.md` first, write or confirm the failing test, then make the minimum fix of the root cause it names (not a symptom patch). If the diagnosis looks wrong, return `blocked`.
 - Commit per task with a header that matches the workspace `commit.header_regex` and has none of the `commit.forbidden_trailers`. The request gives both. Leave the worktree clean.
 - Iterate with `factory prove <run> --check CHK-n`, plus `factory env check|logs` (the main session runs `env up|down`, `env lease` and `--auto-restart`) when a check needs the app. Read the evidence it writes. Never edit `evidence/`, `reviews/`, `baseline/`, `run.json`, or other CLI-owned files, and never weaken a check to make it pass. If a check is wrong, return `blocked` and say why.
+- If `runs/<id>/notes/design.md` exists, follow it (approach, reuse, complexity limits) and flag every deviation, with the reason, in your report.
+- Fast loops: `factory prove <run> --fast` while iterating; the full `--final` pass belongs to the main session. Check timing/selector problems are reported, not fixed by editing locked checks.
 - You may add browser or api specs under `runs/<id>/checks/` when the request asks. `acs.json` belongs to the author.
 - `factory gate`, `ship`, `feedback`, and `run start|branch|decide|block|human` belong to the main session.
 

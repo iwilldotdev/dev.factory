@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 import traceback
 from pathlib import Path
 
+from ..collectors import browser as browser_collector
 from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
                                weak_pattern_reason)
-from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, evidence_event, evidence_id, git,
+from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
-                    target_worktree, workspace_load, write_evidence, write_json)
-from .. import shots
+                    load_evidence, target_worktree, workspace_load, write_evidence, write_json)
+from .. import integrity, shots
 from . import gate
 
 TSC_RE = re.compile(r"^(?P<p>.+?)\((?P<l>\d+),(?P<c>\d+)\):\s*error\s+(?P<code>[A-Za-z]+\d+):\s*(?P<m>.*?)(?:\s*\[[^\]]*\])?$")
@@ -96,11 +100,42 @@ def parse_failures(output: str, exit_code: int, root: Path, name: str = "cmd") -
     return sorted({_scrub(i, root) for i in ids})
 
 
-def run_quality(root: Path, quality: dict, env_vars: dict | None) -> dict:
+def _quote_file(path: str) -> str:
+    return subprocess.list2cmdline([path]) if os.name == "nt" else shlex.quote(path)
+
+
+def changed_files(root: Path, merge_base: str | None) -> list[str]:
+    """Existing files changed by the run: `git diff --name-only <merge-base>...HEAD`."""
+    if not merge_base:
+        return []
+    try:
+        names = git(root, "diff", "--name-only", f"{merge_base}...HEAD").splitlines()
+    except FactoryError:
+        return []
+    return [n.strip() for n in names if n.strip() and (root / n.strip()).is_file()]
+
+
+def _env_vars(ws: dict, run: dict | None, alias: str) -> dict | None:
+    """The repo's `env_vars` with the run's slot placeholders resolved (raw when the slot env cannot be built)."""
+    try:
+        from .env import slot_env
+        return slot_env(ws, run, alias).get("env_vars")
+    except (ImportError, FactoryError):
+        return (repo_conf(ws, alias).get("env") or {}).get("env_vars")
+
+
+def run_quality(root: Path, quality: dict, env_vars: dict | None, changed: list[str] | None = None) -> dict:
+    """`{changed}` in a command (repo `quality_fast`, fast mode) is the quoted list of changed files; with no changed
+    file the command is skipped as a pass."""
     out = {}
     for name, cmd in quality.items():
         if name == "setup":  # worktree preparation, not a quality command
             continue
+        if "{changed}" in cmd:
+            if not changed:
+                out[name] = {"cmd": cmd, "exit": 0, "failures": [], "skipped": "no changed files"}
+                continue
+            cmd = cmd.replace("{changed}", " ".join(_quote_file(f) for f in changed))
         code, text = run_shell(cmd, root, DEFAULT_TIMEOUT_S, env_vars)
         out[name] = {"cmd": cmd, "exit": code, "failures": parse_failures(text, code, root, name)}
     return out
@@ -118,7 +153,7 @@ def compute_baseline(run: dict, ws: dict, alias: str, force: bool = False) -> di
     base = gate.resolve_base(wt, run_base_branch(run, ws, alias))
     merge_base = git(wt, "merge-base", "HEAD", base)
     main = Path(conf.get("path") or wt)
-    env_vars = (conf.get("env") or {}).get("env_vars")
+    env_vars = _env_vars(ws, run, alias)
     try:
         tmp = temp_worktree(main if (main / ".git").exists() else wt, merge_base, quality.get("setup"), env_vars)
     except RuntimeError as err:
@@ -183,32 +218,63 @@ def log_evidence(run: dict, record: dict) -> None:
     run_update(run["id"], lambda r: evidence_event(r, record))
 
 
-def collect_one(run: dict, ws: dict, check: dict, target: str | None = None, skip_reason: str | None = None) -> dict:
+def check_ctx(run: dict, ws: dict, check: dict, target: str | None) -> tuple[dict, Ctx, str | None, Path | None]:
+    """(check with its evidence id, collector context, repo alias, worktree) of a check at a target."""
     alias = repo_conf(ws, check["repo"])["alias"] if check.get("repo") else None
     repo_path = target_worktree(run, ws, alias, target) if alias else None
     if target and hotfix_of(run):
         check = dict(check, id=evidence_id(run, check["id"], target))
     out_dir = run_dir(run["id"]) / "evidence" / check["id"]
-    env = dict(repo_conf(ws, alias).get("env") or {}) if alias else {}
-    if alias and not env.get("base_url"):
-        try:  # same resolution as `factory env` (base_url, else origin of health)
-            from .env import base_url as env_base_url
-            env["base_url"] = env_base_url(ws, alias)
-        except (ImportError, FactoryError):
-            pass
-    ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path, env=env, out_dir=out_dir)
+    try:
+        env = run_env(ws, run, alias) if alias else {}
+    except FactoryError:
+        env = {}  # collect_one records the slot error (setup) before any collector sees this ctx
+    return check, Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=repo_path, env=env, out_dir=out_dir), alias, repo_path
+
+
+def collect_one(run: dict, ws: dict, check: dict, target: str | None = None, skip_reason: str | None = None,
+                mode: str = "default", retry: bool = False, pre: dict | None = None) -> dict:
+    """`pre` is the result of this check inside a browser batch (`{"body", "duration_s", "started"}`): used instead of
+    running the collector, everything else (digest, retry, evidence record) is the same."""
+    digest = integrity.check_digest(run["id"], check)
+    slot_err = run_env_error(ws, run, repo_conf(ws, check["repo"])["alias"]) if check.get("repo") else None
+    check, ctx, alias, repo_path = check_ctx(run, ws, check, target)
     started, t0 = now(), time.monotonic()
-    bound = None
-    if check.get("type") in gate.RUNTIME_TYPES | {shots.SHOT_TYPE} and alias and repo_path:
-        bound = env_binding(ws, alias, repo_path, git_head(repo_path))
+    bound, hot = None, False
+    runtime = check.get("type") in gate.RUNTIME_TYPES | {shots.SHOT_TYPE}
+    if runtime and alias and repo_path and not slot_err and not skip_reason:
+        head = git_head(repo_path)
+        bound = env_binding(ws, alias, repo_path, head, run, strict=mode == "final")
+        bound = bound or dep_binding(run, ws, alias, target, strict=mode == "final")
+        hot = not bound and mode != "final" and hot_reload_drift(ws, alias, head, run)
     if skip_reason:
         body = {"status": "error", "summary": f"skipped: {skip_reason}", "details": {"skipped": skip_reason.split()[0]}}
+    elif slot_err:
+        body = {"status": "error", "summary": f"slot env of {alias}: {slot_err}",
+                "details": {"fail_kind": "setup", "slot_error": slot_err}}
     elif bound:
         body = {"status": "error", "summary": bound,
                 "details": {"fail_kind": "env", "env_kind": binding_kind(bound)}}
     else:
-        body = dispatch(check, ctx)
-    record = write_evidence(run["id"], check, body, repo_path, started, time.monotonic() - t0)
+        body = pre["body"] if pre else dispatch(check, ctx)
+        if pre:
+            started = pre.get("started") or started
+        if retry and check.get("type") == "browser" and body.get("status") == "fail":
+            probe = {"type": "browser", "status": "fail", "summary": body.get("summary"), "details": body.get("details")}
+            if (classify(probe) or ("",))[0] == "assert":  # an assert failure only: env/timeout/setup are not retried
+                if dispatch(check, ctx).get("status") == "pass":  # same sha, passes now: flaky, never a pass
+                    body = dict(body, summary=f"FLAKY: {body.get('summary', '')}",
+                                details=dict(body.get("details") or {}, flaky=True))
+    body = dict(body, details=dict(body.get("details") or {}, mode=mode, check_digest=digest))
+    if check.get("type") in RUNTIME:
+        body["details"]["run_heads"] = integrity.run_heads(run, target)
+        if hot:  # served by a process started at another HEAD (env.hot_reload): gate prove refuses it, --final restarts
+            body["details"]["hot_reload"] = True
+        shared = shared_env_heads(ws, run)
+        if shared:  # shared repos serve another run's code (DESIGN section 11)
+            body["details"]["shared"] = shared
+    duration = float(pre["duration_s"]) if pre and not (skip_reason or bound) else time.monotonic() - t0
+    record = write_evidence(run["id"], check, body, repo_path, started, duration)
     log_evidence(run, record)
     return record
 
@@ -218,34 +284,143 @@ def binding_kind(message: str) -> str:
     return "stale" if re.search(r"started at|serves|worktree HEAD", message) else "start"
 
 
-def env_binding(ws: dict, alias: str, worktree: Path, head: str | None) -> str | None:
-    """Runtime evidence must come from the env `factory env up` started from this worktree at this HEAD."""
+def run_env(ws: dict, run: dict | None, alias: str) -> dict:
+    """The repo's env block as the run's slot sees it (ports, health, base_url of its slot, DESIGN section 11), with
+    `base_url` resolved like `factory env` does (base_url, else the origin of health). A slot env that cannot be
+    resolved raises FactoryError (never a silent fall back to slot 0: evidence would hit another run's instance)."""
+    env = dict(repo_conf(ws, alias).get("env") or {})
+    slot = 0
+    try:
+        from .env import run_slot, slot_env
+    except ImportError:
+        pass
+    else:
+        env, slot = slot_env(ws, run, alias), run_slot(run, repo_conf(ws, alias)["alias"])
+    if not env.get("base_url"):
+        try:
+            from .env import base_url as env_base_url
+            env["base_url"] = env_base_url(ws, alias, slot) if slot else env_base_url(ws, alias)
+        except (ImportError, FactoryError):
+            pass
+    return env
+
+
+def run_env_error(ws: dict, run: dict | None, alias: str) -> str | None:
+    """Why the run's slot env of `alias` cannot be resolved (bad slot, missing port_stride, unknown {base_url:X}), else None."""
+    try:
+        run_env(ws, run, alias)
+    except FactoryError as err:
+        return str(err)
+    return None
+
+
+def hot_reload_drift(ws: dict, alias: str, head: str | None, run: dict | None) -> bool:
+    try:
+        from .env import hot_reload_drift as drift
+        return bool(drift(ws, alias, head, run))
+    except (ImportError, FactoryError):
+        return False
+
+
+def shared_env_heads(ws: dict, run: dict | None) -> dict:
+    try:
+        from .env import shared_heads
+        return shared_heads(ws, run)
+    except (ImportError, FactoryError):
+        return {}
+
+
+def dep_closure(ws: dict, aliases) -> list[str]:
+    """Aliases in the env.depends_on closure of `aliases` (the aliases themselves excluded): those processes serve
+    the runtime checks of `aliases` too."""
+    seen, out, todo = set(aliases), [], list(aliases)
+    while todo:
+        try:
+            deps = (repo_conf(ws, todo.pop()).get("env") or {}).get("depends_on") or []
+        except FactoryError:
+            continue
+        for dep in deps:
+            try:
+                dep = repo_conf(ws, dep)["alias"]
+            except FactoryError:
+                continue
+            if dep not in seen:
+                seen.add(dep)
+                out.append(dep)
+                todo.append(dep)
+    return sorted(out)
+
+
+def dep_binding(run: dict, ws: dict, alias: str, target: str | None, strict: bool = False) -> str | None:
+    """First binding error of the env.depends_on closure of `alias`, or None."""
+    for dep in dep_closure(ws, [alias]):
+        try:
+            wt = target_worktree(run, ws, dep, target) if dep in run["repos"] else None
+            wt = wt or Path(repo_conf(ws, dep).get("path") or ".")
+            head = git_head(wt) if (Path(wt) / ".git").exists() else None
+        except FactoryError:
+            continue
+        err = env_binding(ws, dep, wt, head, run, strict=strict)
+        if err:
+            return err
+    return None
+
+
+def env_binding(ws: dict, alias: str, worktree: Path, head: str | None, run: dict | None = None,
+                strict: bool = False) -> str | None:
+    """Runtime evidence must come from the env `factory env up` started from this worktree at this HEAD (in the
+    run's slot). `strict` (`--final`): `env.hot_reload` does not excuse a HEAD mismatch."""
     try:
         from .env import binding_error
     except ImportError as err:
         return f"env binding cannot be checked: {err}"
+    import inspect
     try:
-        return binding_error(ws, alias, worktree, head)
+        takes_strict = "strict" in inspect.signature(binding_error).parameters
+    except (TypeError, ValueError):
+        takes_strict = False
+    kw = {"strict": True} if strict and takes_strict else {}  # a stand-in env module without `strict` (tests)
+    try:
+        if run is not None and (run.get("env_slots") or (ws.get("env") or {}).get("lease")):
+            return binding_error(ws, alias, worktree, head, run=run, **kw)
+        return binding_error(ws, alias, worktree, head, **kw)
     except FactoryError as err:
         return str(err)
 
 
-def quality_delta(run: dict, ws: dict, alias: str) -> dict:
+def quality_digest(run: dict, ws: dict, alias: str, mode: str = "default") -> str:
+    """What a quality delta depends on besides the code: the commands and the baseline it is measured against."""
+    import hashlib
+    base = run_dir(run["id"]) / "baseline" / f"{alias}.json"
+    merge_base = read_json(base).get("merge_base") if base.is_file() else None
+    conf = repo_conf(ws, alias)
+    body = {"q": conf.get("quality") or {}, "mb": merge_base}
+    if mode == "fast" and conf.get("quality_fast"):
+        body["qf"] = conf["quality_fast"]
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def quality_delta(run: dict, ws: dict, alias: str, mode: str = "default") -> dict:
     conf = repo_conf(ws, alias)
     wt = repo_path_for_run(run, ws, alias)
     baseline = compute_baseline(run, ws, alias)
     started, t0 = now(), time.monotonic()
-    current = run_quality(wt, conf.get("quality") or {}, (conf.get("env") or {}).get("env_vars"))
+    fast = mode == "fast" and bool(conf.get("quality_fast"))
+    current = run_quality(wt, conf["quality_fast"] if fast else conf.get("quality") or {},
+                          _env_vars(ws, run, alias),
+                          changed_files(wt, baseline.get("merge_base")) if fast else None)
     new, summary = {}, []
     for name, res in current.items():
         old = set((baseline["commands"].get(name) or {}).get("failures", []))
         added = [f for f in res["failures"] if f not in old]
         if added:
             new[name] = added[:50]
-        summary.append(f"{name}: {len(res['failures'])} failing, {len(added)} new")
+        summary.append(f"{name}: {res['skipped']}" if res.get("skipped")
+                       else f"{name}: {len(res['failures'])} failing, {len(added)} new")
     body = {"status": "fail" if new else "pass", "summary": "; ".join(summary),
             "details": {"new_failures": new, "merge_base": baseline["merge_base"],
-                        "current": {k: {"exit": v["exit"], "failures": len(v["failures"])} for k, v in current.items()}}}
+                        "current": {k: {"exit": v["exit"], "failures": len(v["failures"])} for k, v in current.items()},
+                        "mode": mode, "check_digest": quality_digest(run, ws, alias, mode)}}
     check = {"id": gate.quality_id(alias), "type": "quality", "repo": alias}
     record = write_evidence(run["id"], check, body, wt, started, time.monotonic() - t0)
     log_evidence(run, record)
@@ -266,19 +441,17 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
     conf = repo_conf(ws, alias)
     main = Path(conf.get("path") or wt)
     main = main if (main / ".git").exists() else wt
-    env = dict(conf.get("env") or {})
-    if not env.get("base_url"):
-        try:
-            from .env import base_url as env_base_url
-            env["base_url"] = env_base_url(ws, alias)
-        except (ImportError, FactoryError):
-            pass
+    slot_err = run_env_error(ws, run, alias)
+    env = {} if slot_err else run_env(ws, run, alias)
     started, t0 = now(), time.monotonic()
     inner = dict(check, id=rid)
     tmp = None
     ctype = check.get("type")
     try:
-        if ctype in LOCAL_TYPES and not check.get("expect_fail_pattern"):
+        if slot_err:
+            body = {"status": "error", "summary": f"slot env of {alias}: {slot_err}",
+                    "details": {"fail_kind": "setup", "slot_error": slot_err}}
+        elif ctype in LOCAL_TYPES and not check.get("expect_fail_pattern"):
             body = {"status": "error", "summary": "test check has no expect_fail_pattern: a failure on base "
                     "cannot be told from a setup failure"}
         elif check.get("expect_fail_pattern") and (weak := weak_pattern_reason(check["expect_fail_pattern"])):
@@ -295,7 +468,7 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
             elif git_head(wt) != mb or git_dirty(wt):
                 body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
                         "(the running env would not serve the base code)"}
-            elif (bound := env_binding(ws, alias, wt, mb)):
+            elif (bound := env_binding(ws, alias, wt, mb, run)):
                 body = {"status": "error", "summary": bound}
             else:
                 ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
@@ -333,21 +506,19 @@ def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
     target = run_targets(run)[0]
     mb = gate.merge_base_for(run, ws, alias, target)
     bid = shots.before_id(evidence_id(run, check["id"], target))
-    env = dict(repo_conf(ws, alias).get("env") or {})
-    if not env.get("base_url"):
-        try:
-            from .env import base_url as env_base_url
-            env["base_url"] = env_base_url(ws, alias)
-        except (ImportError, FactoryError):
-            pass
+    slot_err = run_env_error(ws, run, alias)
+    env = {} if slot_err else run_env(ws, run, alias)
     started, t0 = now(), time.monotonic()
-    if not assume_env:
+    if slot_err:
+        body = {"status": "error", "summary": f"slot env of {alias}: {slot_err}",
+                "details": {"fail_kind": "setup", "slot_error": slot_err}}
+    elif not assume_env:
         body = {"status": "error", "summary": "screenshot on base needs the env serving the base: rerun with "
                 "--assume-env once the env is up on the unmodified run worktree"}
     elif git_head(wt) != mb or git_dirty(wt):
         body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
                 "(before screenshots show the unfixed code)"}
-    elif (bound := env_binding(ws, alias, wt, mb)):
+    elif (bound := env_binding(ws, alias, wt, mb, run)):
         body = {"status": "error", "summary": bound}
     else:
         ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
@@ -517,16 +688,18 @@ class Reporter:
         self.line(env_fail_line(alias, kind, detail))
 
 
-def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict) -> None:
+def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict, strict: bool = False) -> None:
     """A running env of ours that serves another HEAD/worktree than the run is restarted once (env down + up)
-    when the run holds the lease; nothing else is probed here (the first runtime check does that)."""
+    when the run holds the lease; nothing else is probed here (the first runtime check does that). `strict`
+    (`--final`): a hot_reload repo started at another HEAD is stale too, so final evidence comes from HEAD."""
     try:
         from .env import restart_blocker, restart_env, stale_reason
     except ImportError:
         return
+    kw = {"strict": True} if strict else {}
     for alias in aliases:
         try:
-            reason = stale_reason(ws, run, alias)
+            reason = stale_reason(ws, run, alias, **kw)
             if not reason:
                 continue
             blocked = restart_blocker(ws, run, alias)
@@ -546,6 +719,34 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
             rep.env_fail(alias, "start", f"restart failed: {detail}")
 
 
+def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reuse: bool, rep: Reporter,
+                stopped: dict, prior=None) -> None:
+    """Once before the runtime batch: `env.seed.reset` of every runtime repo that declares it (and still has a runtime
+    check to run). A failing reset is an env failure: the repo's runtime checks are not run."""
+    try:
+        from .env import data_run, seed_conf
+    except ImportError:
+        return
+    for alias in aliases:
+        if not seed_conf(ws, alias).get("reset"):
+            continue
+        pending = [c for c in checks if c.get("type") in RUNTIME and c.get("repo") and repo_conf(ws, c["repo"])["alias"] == alias
+                   and any(not reuse or (prior(c, t) if prior else reusable(run, ws, c, t, integrity.check_digest(run["id"], c))) is None
+                           for t in run_targets(run))]
+        if not pending:
+            continue
+        try:
+            code, text = data_run(ws, run, alias, "reset")
+        except FactoryError as err:
+            code, text = 1, str(err)
+        if code != 0:
+            detail = f"env.seed.reset exited {code}: {_first_line(text)}"
+            stopped[alias] = detail
+            rep.env_fail(alias, "seed", detail)
+        else:
+            rep.line(f"env {alias}: test data reset (env_reset ok)")
+
+
 def _quality_check(run: dict, ws: dict, wanted: str):
     for alias in run["repos"]:
         if gate.quality_id(alias) == wanted and repo_conf(ws, alias).get("quality"):
@@ -553,13 +754,189 @@ def _quality_check(run: dict, ws: dict, wanted: str):
     return None
 
 
+# ---------- fast verification (DESIGN §14) ----------
+
+COST_RANK = {"test": 0, "red-green": 1, "api": 2, "style": 3, "visual": 4, "screenshot": 5, "browser": 6}
+
+
+def prove_mode(args) -> str:
+    fast, final = bool(getattr(args, "fast", False)), bool(getattr(args, "final", False))
+    if fast and final:
+        raise FactoryError("--fast and --final are exclusive (--fast = bail + reuse; --final = run all, no reuse, no bail)")
+    return "fast" if fast else "final" if final else "default"
+
+
+def reusable(run: dict, ws: dict, chk: dict, target: str | None, digest: str, mode: str = "default") -> dict | None:
+    """The latest evidence of `chk` when it is a pass at the current HEAD of a clean worktree for the same check digest
+    and still valid for the gates (event digest, plan lock): `prove` does not run such a check again. Evidence from
+    `--fast` is reused only by another `--fast` run (gate prove refuses it, so a default run must re-collect it)."""
+    cid = evidence_id(run, chk["id"], target)
+    ev = load_evidence(run["id"], cid)
+    if not ev or ev.get("status") != "pass" or ev.get("dirty"):
+        return None
+    if (ev.get("details") or {}).get("mode") == "fast" and mode != "fast":
+        return None
+    if (ev.get("details") or {}).get("hot_reload") and mode != "fast":
+        return None  # served by a process at another HEAD: only a --fast run may reuse it
+    if (ev.get("details") or {}).get("check_digest") != digest:
+        return None
+    head = None
+    if chk.get("repo"):
+        alias = repo_conf(ws, chk["repo"])["alias"]
+        try:
+            wt = target_worktree(run, ws, alias, target)
+            if wt is None or git_dirty(wt):
+                return None
+            head = git_head(wt)
+        except FactoryError:
+            return None
+    if ev.get("git_sha") != head or integrity.evidence_error(run, cid):
+        return None
+    if chk.get("type") in RUNTIME and (ev.get("details") or {}).get("run_heads") != integrity.run_heads(run, target):
+        return None  # runtime evidence also exercises the other repos of the run: reuse only if none of them moved
+    return ev
+
+
+def order_checks(run: dict, ws: dict, checks: list[dict]) -> list[dict]:
+    """Risk order: (a) last evidence fail/error, (b) no evidence or check changed, (c) its repo moved since the
+    evidence, (d) the rest; inside a group the cheapest type first, then the shortest last duration."""
+    target = run_targets(run)[0]
+
+    def key(item):
+        idx, chk = item
+        ev = load_evidence(run["id"], evidence_id(run, chk["id"], target))
+        duration = float((ev or {}).get("duration_s") or 0)
+        if ev and ev.get("status") != "pass":
+            group = 0
+        elif not ev or (ev.get("details") or {}).get("check_digest") != integrity.check_digest(run["id"], chk):
+            group = 1
+        else:
+            group = 3
+            if chk.get("repo"):
+                try:
+                    alias = repo_conf(ws, chk["repo"])["alias"]
+                    wt = target_worktree(run, ws, alias, target)
+                    if wt is not None and git_head(wt) != ev.get("git_sha"):
+                        group = 2
+                except FactoryError:
+                    pass
+        return (group, COST_RANK.get(chk.get("type"), 9), duration, idx)
+
+    return [c for _, c in sorted(enumerate(checks), key=key)]
+
+
+def batch_enabled(ws: dict) -> bool:
+    """Workspace `limits.browser_batch: false` turns browser batching off."""
+    limits = ws.get("limits")
+    return not (isinstance(limits, dict) and limits.get("browser_batch") is False)
+
+
+def quality_prior(run: dict, ws: dict, alias: str, mode: str) -> dict | None:
+    """Latest quality evidence of `alias` when `prove` may reuse it (pass, clean, same HEAD, same digest)."""
+    qid = gate.quality_id(alias)
+    prior = load_evidence(run["id"], qid)
+    wt = repo_path_for_run(run, ws, alias)
+    if (prior and prior.get("status") == "pass" and not prior.get("dirty") and not git_dirty(wt)
+            and ((prior.get("details") or {}).get("mode") != "fast" or mode == "fast")
+            and prior.get("git_sha") == git_head(wt)
+            and (prior.get("details") or {}).get("check_digest") == quality_digest(run, ws, alias, mode)
+            and not integrity.evidence_error(run, qid)):
+        return prior
+    return None
+
+
+# ---------- estimate (prove --estimate) ----------
+
+DEFAULT_SECONDS = {"test": 10, "api": 15, "style": 25, "visual": 25, "screenshot": 30, "browser": 60}
+QUALITY_DEFAULT_S = 30  # quality uses its last duration; this is the guess before any evidence
+FALLBACK_S = 10
+
+
+def _last_duration(run: dict, eid: str) -> float | None:
+    ev = load_evidence(run["id"], eid)
+    try:
+        return float(ev["duration_s"]) if ev and ev.get("duration_s") is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def estimate_rows(run: dict, ws: dict, items: list[tuple[dict, str | None]], reuse: bool, mode: str) -> list[dict]:
+    """One row per check in prove order: REUSED (0 s) or RUN with its expected seconds (last duration_s of its
+    evidence, else the default of its type)."""
+    rows = []
+    for chk, target in items:
+        ctype = chk.get("type")
+        eid = chk["id"] if ctype == "quality" else evidence_id(run, chk["id"], target)
+        last = _last_duration(run, eid)
+        secs = last if last is not None else float(QUALITY_DEFAULT_S if ctype == "quality" else DEFAULT_SECONDS.get(ctype, FALLBACK_S))
+        if not reuse:
+            reused = False
+        elif ctype == "quality":
+            reused = quality_prior(run, ws, chk["repo"], mode) is not None
+        else:
+            reused = reusable(run, ws, chk, target, integrity.check_digest(run["id"], chk), mode) is not None
+        rows.append({"check_id": eid, "type": ctype, "action": "REUSED" if reused else "RUN",
+                     "expected_s": 0.0 if reused else round(secs, 1), "last_s": None if last is None else round(last, 1),
+                     "full_s": round(secs, 1)})
+    return rows
+
+
+def cmd_estimate(args, run: dict, ws: dict, checks: list[dict], only_quality, only_rule, wanted_repo, mode: str) -> int:
+    """`prove --estimate`: nothing runs, nothing is written. Per check in prove order: REUSED or RUN and the expected
+    seconds; totals for the chosen mode, `--fast` (reuse) and `--final` (everything runs)."""
+    reuse = mode != "final" and not getattr(args, "all", False)
+    items: list[tuple[dict, str | None]] = []
+    for chk in checks:
+        for target in run_targets(run):
+            if chk.get("repo") and target_worktree(run, ws, repo_conf(ws, chk["repo"])["alias"], target) is None:
+                continue
+            items.append((chk, target))
+    if only_quality:
+        qaliases = [only_quality]
+    elif args.check:
+        qaliases = []
+    else:
+        qaliases = [a for a in _select_repos(run, ws, wanted_repo) if repo_conf(ws, a).get("quality")]
+    items += [({"id": gate.quality_id(a), "type": "quality", "repo": a}, None) for a in qaliases]
+    if only_rule:
+        rules = only_rule
+    elif args.check:
+        rules = []
+    else:
+        rules = [r for r in gate.rule_checks(ws, run) if not wanted_repo or r["repo"] == wanted_repo]
+    items += [(r, None) for r in rules]
+    rows = estimate_rows(run, ws, items, reuse, mode)
+    total = round(sum(r["expected_s"] for r in rows), 1)
+    fast = round(sum(r["expected_s"] for r in estimate_rows(run, ws, items, True, "fast")), 1)
+    final = round(sum(r["full_s"] for r in rows), 1)
+    out = {"run": run["id"], "mode": mode,
+           "checks": [{k: r[k] for k in ("check_id", "type", "action", "expected_s", "last_s")} for r in rows],
+           "total_s": total, "fast_s": fast, "final_s": final}
+    if getattr(args, "json", False):
+        print(json.dumps(out, indent=2))
+        return 0
+    for r in rows:
+        last = f"last {r['last_s']:g}s" if r["last_s"] is not None else "default"
+        print(f"{r['action']:6} {r['check_id']:24} {r['type']:10} ~{r['expected_s']:g}s ({last})")
+    print(f"total ~{total:g}s ({mode}); --fast ~{fast:g}s (reuse passing evidence); --final ~{final:g}s (everything runs)")
+    return 0
+
+
 def cmd_prove(args) -> int:
     if getattr(args, "repro", False):
         return cmd_repro(args)
+    mode = prove_mode(args)
+    estimate = bool(getattr(args, "estimate", False))
+    reuse = mode != "final" and not getattr(args, "all", False)
+    bail = mode == "fast" or (bool(getattr(args, "bail", False)) and mode != "final")
+    retry = not getattr(args, "no_retry", False)
+    wall0 = time.monotonic()
     run = run_load(args.run)
-    ensure_owner(run)
+    if not estimate:
+        ensure_owner(run)
     ws = workspace_load(run["workspace"])
-    _lease_heartbeat(run)
+    if not estimate:
+        _lease_heartbeat(run)
     acs = gate.load_acs(run["id"])
     wanted_repo = repo_conf(ws, args.repo)["alias"] if args.repo else None
     checks = [c for c in acs.get("checks", []) if c.get("type") != "human"]
@@ -579,22 +956,48 @@ def cmd_prove(args) -> int:
         checks = picked
     if wanted_repo:
         checks = [c for c in checks if c.get("repo") and repo_conf(ws, c["repo"])["alias"] == wanted_repo]
+    checks = order_checks(run, ws, checks)
+    if estimate:
+        return cmd_estimate(args, run, ws, checks, only_quality, only_rule, wanted_repo, mode)
     json_mode = bool(getattr(args, "json", False))
     rep = Reporter(json_mode)
     records: list[dict] = []
+    reused: set[str] = set()
+    bail_stop: str | None = None
     for alias in {repo_conf(ws, c["repo"])["alias"] for c in checks if c.get("repo")}:
         if alias in run["repos"] and git_dirty(repo_path_for_run(run, ws, alias)):
             print(f"warning: {alias} worktree is dirty; evidence will be rejected by the gate")
     stopped: dict[str, str] = {}  # repo alias -> why its remaining runtime checks are skipped
     runtime_aliases = sorted({repo_conf(ws, c["repo"])["alias"] for c in checks
                               if c.get("repo") and c.get("type") in RUNTIME and repo_conf(ws, c["repo"])["alias"] in run["repos"]})
-    _preflight_envs(run, ws, runtime_aliases, rep, stopped)
+    prior_cache: dict[tuple, dict | None] = {}
+
+    def prior_of(chk: dict, target) -> dict | None:
+        """reusable() once per (check, target) per prove invocation: batch planning asks for every later check, and
+        nothing a check's reuse depends on (its evidence, the worktree HEADs) changes before that check runs."""
+        key = (chk["id"], target)
+        if key not in prior_cache:
+            prior_cache[key] = reusable(run, ws, chk, target, integrity.check_digest(run["id"], chk), mode)
+        return prior_cache[key]
+
+    def take_reused(prior: dict | None) -> bool:
+        if prior is None:
+            return False
+        records.append(prior)
+        reused.add(prior["check_id"])
+        rep.line(f"REUSED {prior['check_id']}")
+        return True
+
+    _preflight_envs(run, ws, runtime_aliases + [d for d in dep_closure(ws, runtime_aliases) if d not in runtime_aliases],
+                    rep, stopped, strict=mode == "final")
+    if not args.check:
+        _reset_data(run, ws, checks, runtime_aliases, reuse, rep, stopped, prior=prior_of)
     seen_runtime: set[str] = set()
     last_sig: tuple | None = None
     batch_stop: str | None = None
 
     def handle(record: dict, chk: dict) -> None:
-        nonlocal last_sig, batch_stop
+        nonlocal last_sig, batch_stop, bail_stop
         runtime = chk.get("type") in RUNTIME
         alias = repo_conf(ws, chk["repo"])["alias"] if chk.get("repo") else "-"
         first = runtime and alias not in seen_runtime
@@ -606,7 +1009,7 @@ def cmd_prove(args) -> int:
             return
         kind, env_kind = cls
         detail = _first_line(record.get("summary") or "")
-        rep.prove_fail(record["check_id"], kind, detail)
+        rep.prove_fail(record["check_id"], "flaky" if (record.get("details") or {}).get("flaky") else kind, detail)
         if record.get("details", {}).get("skipped"):
             return
         if runtime and env_kind:
@@ -614,6 +1017,8 @@ def cmd_prove(args) -> int:
             stopped[alias] = f"{record['check_id']}: {detail}"
             last_sig = None
         elif runtime:
+            if bail and kind == "assert" and not bail_stop:
+                bail_stop = f"{record['check_id']} failed: {detail}"
             sig = (kind, detail)
             if sig == last_sig:
                 batch_stop = f"two identical failures ({kind}: {detail})"
@@ -621,16 +1026,72 @@ def cmd_prove(args) -> int:
         else:
             last_sig = None
 
+    batch_on = batch_enabled(ws)
+    batched: dict[str, dict] = {}  # evidence id -> result of the check inside a batch
+    attempted: set[str] = set()    # evidence ids a batch was already tried for (a failed batch is not retried)
+
+    def batch_members(chk: dict, target) -> list[dict]:
+        """`chk` plus the later browser checks of the same repo and target that will run too (not reused)."""
+        alias = repo_conf(ws, chk["repo"])["alias"]
+        members = [chk]
+        for other in checks[checks.index(chk) + 1:]:
+            if other.get("type") != "browser" or not other.get("repo") or repo_conf(ws, other["repo"])["alias"] != alias:
+                continue
+            if reuse and prior_of(other, target) is not None:
+                continue
+            members.append(other)
+        return members
+
+    def run_batch(members: list[dict], target) -> None:
+        items = []
+        for m in members:
+            m2, ctx, alias, wt = check_ctx(run, ws, m, target)
+            items.append((m2, ctx))
+        attempted.update(m2["id"] for m2, _ in items)
+        if run_env_error(ws, run, alias):  # unresolvable slot env: every check records its own setup error
+            return
+        if (env_binding(ws, alias, wt, git_head(wt), run, strict=mode == "final")
+                or dep_binding(run, ws, alias, target, strict=mode == "final")):  # stale/missing env: every check records its own env failure
+            return
+        started = now()
+        _lease_heartbeat(run)
+        try:
+            res = browser_collector.collect_batch(items, bail=bail)
+        except Exception:  # a crashing batch must not crash the run
+            res = None
+            print(f"batch: crashed ({traceback.format_exc().splitlines()[-1]})", file=sys.stderr)
+        if res is None or len(res) != len(items):
+            rep.line(f"batch: {len(items)} browser checks of {alias} could not run as one process; running them one by one")
+            return
+        for (m2, _), r in zip(items, res):
+            batched[m2["id"]] = dict(r, started=started)
+
     def run_checks(chk: dict, target) -> None:
         alias = repo_conf(ws, chk["repo"])["alias"] if chk.get("repo") else None
         runtime = chk.get("type") in RUNTIME
         reason = None
         if runtime and alias and alias in stopped:
             reason = f"env (not run: {stopped[alias]})"
+        elif runtime and bail_stop:
+            reason = f"bail (not run: {bail_stop})"
         elif runtime and batch_stop:
             reason = f"batch-stopped (not run: {batch_stop})"
+        if reason is None and reuse and take_reused(prior_of(chk, target)):
+            return
+        pre = None
+        cid = evidence_id(run, chk["id"], target)
+        if reason is None and batch_on and chk.get("type") == "browser" and alias:
+            if cid not in batched and cid not in attempted:
+                members = batch_members(chk, target)
+                if len(members) >= 2:
+                    run_batch(members, target)
+            pre = batched.pop(cid, None)
+            if pre is not None and not pre.get("ran"):
+                pre = None  # Playwright did not get to it (bail/global timeout) and nothing stops it now: run it alone
+        elif reason:
+            batched.pop(cid, None)  # it ran in a batch but a stop applies now: recorded as skipped, as when run one by one
         _lease_heartbeat(run)
-        record = collect_one(run, ws, chk, target, skip_reason=reason)
+        record = collect_one(run, ws, chk, target, skip_reason=reason, mode=mode, retry=retry, pre=pre)
         records.append(record)
         handle(record, chk)
 
@@ -640,35 +1101,49 @@ def cmd_prove(args) -> int:
                 print(f"warning: {chk['id']}: no worktree for target {target} (factory run mirror); skipped")
                 continue
             run_checks(chk, target)
-    if only_quality:
+    def quality(alias: str) -> None:
+        if reuse and take_reused(quality_prior(run, ws, alias, mode)):
+            return
         _lease_heartbeat(run)
-        records.append(quality_delta(run, ws, only_quality))
-        handle(records[-1], {"type": "quality", "repo": only_quality})
-    for rule in only_rule or []:
+        records.append(quality_delta(run, ws, alias, mode=mode))
+        handle(records[-1], {"type": "quality", "repo": alias})
+
+    def rule_check(rule: dict) -> None:
+        if reuse and take_reused(prior_of(rule, None)):
+            return
         _lease_heartbeat(run)
-        records.append(collect_one(run, ws, rule))
+        records.append(collect_one(run, ws, rule, mode=mode))
         handle(records[-1], rule)
+
+    if only_quality:
+        quality(only_quality)
+    for rule in only_rule or []:
+        rule_check(rule)
     if not args.check:
         for alias in _select_repos(run, ws, wanted_repo):
             if repo_conf(ws, alias).get("quality"):
-                _lease_heartbeat(run)
-                records.append(quality_delta(run, ws, alias))
-                handle(records[-1], {"type": "quality", "repo": alias})
+                quality(alias)
         for rule in gate.rule_checks(ws, run):
             if wanted_repo and rule["repo"] != wanted_repo:
                 continue
-            _lease_heartbeat(run)
-            records.append(collect_one(run, ws, rule))
-            handle(records[-1], rule)
+            rule_check(rule)
     _lease_heartbeat(run)
     failed = [r for r in records if r["status"] != "pass"]
     skipped = [r for r in records if (r.get("details") or {}).get("skipped")]
+    counts = {"ran": len(records) - len(reused), "reused": len(reused), "skipped": len(skipped),
+              "failed": len(failed) - len(skipped)}
+    try:
+        run_update(run["id"], lambda r: event(r, "prove", mode=mode, **counts, wall_s=round(time.monotonic() - wall0, 1),
+                                              bail=bool(bail_stop)))
+    except FactoryError:
+        pass
     if json_mode:
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha", "dirty")} for r in records], indent=2))
     else:
         for r in records:
-            print(f"{r['status'].upper():5} {r['check_id']}  {r['summary']}")
-        print(f"{len(records) - len(failed)}/{len(records)} passed")
+            if r["check_id"] not in reused:
+                print(f"{r['status'].upper():5} {r['check_id']}  {r['summary']}")
+        print(f"{len(records) - len(failed)}/{len(records)} passed" + (f" ({len(reused)} reused)" if reused else ""))
         if skipped:
             print(f"fail-fast: {len(skipped)} runtime check(s) not run; fix the cause, then `factory prove {run['id']}` again")
     if rep.env_failed:
@@ -686,6 +1161,14 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("--check")
     p.add_argument("--repo")
+    p.add_argument("--fast", action="store_true", help="bail at the first runtime assert failure + reuse passing evidence "
+                   "(gate prove refuses fast evidence: finish with --final)")
+    p.add_argument("--final", action="store_true", help="run every check: no reuse, no bail (the run gate prove wants)")
+    p.add_argument("--bail", action="store_true", help="skip the remaining runtime checks after the first assert failure")
+    p.add_argument("--no-retry", action="store_true", help="do not re-run a failed browser assert once to detect a flaky check")
+    p.add_argument("--all", action="store_true", help="do not reuse evidence of the same HEAD and check digest")
+    p.add_argument("--estimate", action="store_true", help="run nothing: per check REUSED or RUN with its expected seconds, "
+                   "and the --fast / --final totals (--json supported)")
     p.add_argument("--repro", action="store_true", help="bug runs: run bug-AC checks against the merge-base (must fail)")
     p.add_argument("--assume-env", action="store_true", help="with --repro: api/browser checks use the running env (must serve the unmodified base)")
     p.set_defaults(func=cmd_prove)

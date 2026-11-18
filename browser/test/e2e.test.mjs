@@ -20,6 +20,12 @@ const DRAWER = `<!doctype html><meta charset="utf-8"><style>html,body{margin:0}#
 const LOGIN = `<!doctype html><form onsubmit="event.preventDefault();location.href='/app?ok=1'">
 <input id="u"><input id="p" type="password"><button type="submit">go</button></form>`;
 
+// hand-off (slot > 0): the login sends the browser to a fixed origin; the CLI moves it to the slot's port
+const FIXED_PORT = 1; // nothing listens there
+const LOGIN_REDIRECT = `<form method="post" action="/do"><input id="u"><input id="p" type="password"><button type="submit">go</button></form>`;
+const LOGIN_JS = `<form onsubmit="event.preventDefault();location.href='http://127.0.0.1:${FIXED_PORT}/portal/coming?token=js'">
+<input id="u"><input id="p" type="password"><button type="submit">go</button></form>`;
+
 let server;
 let base;
 let skipReason;
@@ -35,6 +41,14 @@ test.before(async () => {
   }
   server = http.createServer((req, res) => {
     res.setHeader("content-type", "text/html");
+    if (req.url.startsWith("/login-redirect")) return res.end(LOGIN_REDIRECT);
+    if (req.url.startsWith("/login-js")) return res.end(LOGIN_JS);
+    if (req.url === "/do") {
+      res.statusCode = 302;
+      res.setHeader("location", `http://127.0.0.1:${FIXED_PORT}/portal/coming?token=redirect`);
+      return res.end();
+    }
+    if (req.url.startsWith("/portal/coming")) res.setHeader("set-cookie", "__session=ok; Path=/");
     res.end(req.url.startsWith("/login") ? LOGIN : req.url.startsWith("/app") ? "<title>app</title><p>in</p>" : req.url.startsWith("/drawer") ? DRAWER : PAGE);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -157,6 +171,25 @@ test("run-spec --screenshot on keeps an end-of-test screenshot of a passing spec
   p = await run("run-spec", "--spec", spec, "--base-url", base, "--out", path.join(dir, "bad"), "--screenshot", "always");
   assert.equal(p.status, 1);
 });
+
+for (const [name, loginPath, token] of [["a redirect", "/login-redirect", "redirect"], ["a script navigation", "/login-js", "js"]]) {
+  test(`login hand-off to the slot port after ${name}`, async (t) => {
+    if (skipReason) return t.skip(skipReason);
+    const dir = await tmp();
+    const cfg = path.join(dir, "login.json");
+    const port = Number(new URL(base).port);
+    await writeFile(cfg, JSON.stringify({
+      url: loginPath, user_field: "#u", pass_field: "#p", submit: "button[type=submit]",
+      success_url_contains: `127.0.0.1:${port}/portal/coming?token=${token}`,
+      handoff: { host: "127.0.0.1", from_port: FIXED_PORT, to_port: port },
+    }));
+    const out = path.join(dir, "storage.json");
+    const p = await runEnv({ FACTORY_LOGIN_USER: "someuser", FACTORY_LOGIN_PASS: "s3cretpw" },
+      "login", "--base-url", base, "--login-json", cfg, "--out", out);
+    assert.equal(p.status, 0, p.stderr);
+    assert.ok(JSON.parse(await readFile(out, "utf8")).cookies.some((c) => c.name === "__session"));
+  });
+}
 
 test("login saves storage state without leaking credentials", async (t) => {
   if (skipReason) return t.skip(skipReason);

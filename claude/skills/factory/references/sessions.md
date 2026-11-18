@@ -4,11 +4,13 @@ A batch (epic or review-batch) is followed in the Claude desktop app as linked s
 
 Parallel children are capped by `orchestration.max_parallel` (default 3): start at most that many child sessions at once and start the next as one finishes. A child that stops for any reason (usage limit, block, user stop) releases its lease and env first: `factory env down <ws> <repo> --run <id>` for envs it started, then `factory env lease release <ws> --run <id>`; a held lease of a stopped child blocks everyone else.
 
-Only one run at a time holds the workspace env (env lease). ACs, unit/api checks and code review run in parallel; `env up` plus browser/visual proof wait their turn.
+Only one run at a time holds a given repo slot of the local env (per-repo env lease; `slots` and `shareable` repos let several runs share the env). ACs, unit/api checks and code review run in parallel; `env up` plus browser/visual proof wait their turn.
 
 ## When
 
 - `workspace.json` has `orchestration: {sessions: true, per: "ticket"}` **and** the batch has 2+ tickets → session mode.
+- Epic with 3+ tickets or expected to exceed a working day, `sessions` not set: recommend it to the user anyway (context limits; one session loses detail on compaction). Use one session only if they decline.
+- Compaction/resume brief (parent or child): include the `factory batch status <parent>` output and the open decisions/blockers from run.json.
 - Otherwise (single ticket, no opt-in) → normal run in this session with workers.
 - `mcp__ccd_session__start_session` missing (plain CLI, not the app) or refused → fallback: subagent mode as in epic.md / review.md, still following the Progress rule (task list per child, one line per phase/worker, worker summaries). Say in one line that sessions were unavailable and why.
 

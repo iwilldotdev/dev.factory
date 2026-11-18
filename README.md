@@ -74,13 +74,14 @@ Fill what `workspace check` reports:
 | Key | What |
 |---|---|
 | `worktree_root` | Where run worktrees are created, for example `C:/Code/wt` |
-| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors), optional `ui` (`true`/`false`: is this a UI repo, for the visual-evidence question; set it explicitly on every repo with an `env` block, `workspace check` warns otherwise and fails if it is not a boolean) |
+| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors, `hot_reload`, `seed` {cmd, cwd, reset}, `preflight` [{name, cmd}], `slots` + `port_stride` (several runs of the repo at once, each on its own ports), `shareable` (runs that do not change the repo share one process), `login.handoff_rewrite`; `env_vars` and `start` may use `{base_url:<ALIAS>}` / `{port:<ALIAS>}` to point at another repo's instance in the run's slot), optional `quality_fast` (scoped quality for `prove --fast`, commands may use `{changed}`), optional `ui` (`true`/`false`: is this a UI repo, for the visual-evidence question; set it explicitly on every repo with an `env` block, `workspace check` warns otherwise and fails if it is not a boolean) |
 | `ship` | `targets` (branches MRs go to), `draft_default`, Jira transition, optional `hotfix: {base, mirror}` |
 | `branch_format`, `commit.header_regex` | Branch names and commit header rule |
 | `autonomy` | `ship: ask` or `draft-auto`, loop caps |
 | `rules[]` | Project checks that run in every prove, for example forbidden imports |
+| `limits` | Optional caps: `max_diff_ratio`, `max_tolerance_px`, `check_timeout_s`, `expect_timeout_ms`, and `browser_batch` (`false` runs every browser check in its own Playwright process; default: checks of one repo run together in one) |
 | `orchestration` | `{sessions: true, per: "ticket"}` turns on one app session per ticket for batches (section 4) |
-| `env.lease` | `true` when several runs share one local env with fixed ports: they queue for it |
+| `env.lease` | `true` when several runs share the local env: each repo is leased on its own (runs that touch different repos run together, `slots` give a repo several instances, `shareable` repos are shared); runs queue for a repo that is taken |
 
 Credentials go in `FACTORY_HOME/secrets/<ws>.env`, never in chat: `<ALIAS>_USER` and `<ALIAS>_PASS` (or plain `USER`/`PASS`), plus `<ALIAS>_PASS_<slug>` for a ticket-specific user. Run `factory workspace check acme` again until it prints `OK`.
 
@@ -140,11 +141,12 @@ Without the app's session tool, for example in the plain CLI, the same batch run
 |---|---|
 | `factory run list` | Every run with its phase |
 | `factory run status <run>` | Phase, loops, open blockers, owner session and the next required action |
-| `factory env check <ws> [--run <run>]` | Whether the env is healthy, stale, or blocked by a port or the lease (exit 0/1/3/4) |
+| `factory env check <ws> [--run <run>]` | Whether the env is healthy, stale, or blocked by a port or the lease (exit 0/1/3/4); runs `env.preflight` after the health probe |
+| `factory env seed\|reset-data <ws> <repo> --run <run>` | Run `env.seed.cmd` / `env.seed.reset` with `FACTORY_DATA_PREFIX=UAT<ticket digits>`; `prove` resets once before the runtime batch |
 | `factory workspace list` / `workspace show <ws>` | Workspaces and their config, with secrets redacted |
 | `factory run log <run> --tail 30` | The timeline of gates, evidence, reviews, steering and lease events |
 | `factory batch status <parent>` | Children of an epic or review batch: phase, next gate, blockers, open `human` checks, owner, lease holder |
-| `factory env lease status <ws>` | Who holds the local env and who is queued |
+| `factory env lease status <ws> [--repo A]` | Who holds each repo slot, who shares it, and who is queued |
 | `factory metrics <run>` / `factory metrics report` | Wall time, human messages, gate failures, loops |
 
 Run artefacts live in `FACTORY_HOME/runs/<run>/`: `acs.json`, `evidence/`, `reviews/`, `review-report.md` and `ship-plan.json`. Hooks keep them CLI-written.
@@ -166,10 +168,11 @@ factory run close <run> --reason "abandoned"               # end a run you will 
 | `FETCH <tool> … save_to=…` | A remote file is missing | Nothing: the skill runs that dev.mcp call as printed |
 | `workspace changed after plan; replan` | `workspace.json` was edited after the plan lock | Let the skill replan, with your decision recorded |
 | `the proof no longer matches the worktrees` | A commit or edit came after prove | `factory run rewind <run> prove "<reason>"`, then prove again |
-| `env … already up … for <other worktree>` / `lease held by …` | Another run has the env | Wait in the queue, or `env down` and release it if that run is finished |
+| `env … already up … for <other worktree>` / `lease held by …` | Another run has that repo or slot | Wait in the queue, or `env down` and release it if that run is finished |
 | `run … is claimed by session …` | Another session drives this run | Continue there, or `factory run claim <run> --takeover` |
 | `missing secrets file` / login failure | Credentials not set | Add the keys to `FACTORY_HOME/secrets/<ws>.env` |
 | `ENV-FAIL repo=… kind=unhealthy\|start\|timeout` | The env did not come up or answer | Fix what `detail=` names (port, SDK, DB), then `factory env check <ws> --run <run>` |
+| `ENV-FAIL … kind=seed\|preflight` | `env.seed` command or an `env.preflight` entry exited non-zero | Fix the data or DB state `detail=` names, then re-run `env check` / `prove` |
 | `ENV-FAIL … kind=stale` | The env runs an older commit | `factory env check <ws> --run <run> --auto-restart` (prove also does it once) |
 | `ENV-FAIL … kind=port` | The port is held by something factory did not start | Stop that process yourself. Factory never kills it |
 | `PROVE-FAIL check=… kind=timeout` | A check hit its cap | Fix the check, or raise `timeout_s` on it |

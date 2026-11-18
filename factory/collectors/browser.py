@@ -19,9 +19,22 @@ GOTO_TIMEOUT_MS = 30000
 CLI_MARGIN_S = 3  # the CLI stops itself this long before the cap, so it can still write result.json
 
 
+def apply_expect_timeout(ctx: Ctx | None) -> None:
+    """Workspace `limits.expect_timeout_ms` becomes the Playwright assertion timeout of browser specs
+    (FACTORY_EXPECT_TIMEOUT_MS for the browser CLI); an explicit environment value wins."""
+    if ctx is None or os.environ.get("FACTORY_EXPECT_TIMEOUT_MS"):
+        return
+    limits = (ctx.workspace or {}).get("limits")
+    value = limits.get("expect_timeout_ms") if isinstance(limits, dict) else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        os.environ["FACTORY_EXPECT_TIMEOUT_MS"] = str(int(value))
+
+
 def check_cap(check: dict, ctx: Ctx | None = None) -> float:
     """Wall-clock cap (seconds) of one check: its `timeout_s`, else workspace `limits.check_timeout_s`, else the
     default of its type (browser/visual/style/screenshot 120, api 60)."""
+    apply_expect_timeout(ctx)
+
     def num(v):
         return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
     cap = num(check.get("timeout_s"))

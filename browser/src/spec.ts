@@ -36,6 +36,11 @@ export type ScreenshotMode = "only-on-failure" | "on" | "off";
 
 export const DEFAULT_GOTO_TIMEOUT_MS = 30000;
 
+export function expectTimeoutMs(): number | undefined {
+  const value = Number(process.env.FACTORY_EXPECT_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
 /** Per-test and global caps: a spec cannot outlive `timeoutMs` (the check's wall-clock cap minus a margin). */
 export function timeoutConfig(timeoutMs?: number, gotoTimeoutMs?: number): { test: number; global: number; nav: number } {
   const total = timeoutMs && timeoutMs > 0 ? Math.floor(timeoutMs) : 0;
@@ -59,6 +64,7 @@ export async function runSpec(o: { spec: string; baseUrl: string; storageState?:
   workers: 1,
   ${to.test ? `timeout: ${to.test},` : ""}
   ${to.global ? `globalTimeout: ${to.global},` : ""}
+  ${expectTimeoutMs() ? `expect: { timeout: ${expectTimeoutMs()} },` : ""}
   use: {
     baseURL: ${JSON.stringify(o.baseUrl)},
     navigationTimeout: ${to.nav},

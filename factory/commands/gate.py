@@ -720,9 +720,28 @@ def inherited_allow(run: dict, ws: dict, alias: str) -> set[str]:
     return names
 
 
+def merged_mr_heads(run: dict) -> list[str]:
+    """Head shas of MRs read back into remote/ as merged: their commits stay inherited after the source branch is
+    deleted (squash merges leave the original commits only in the stacked branch)."""
+    shas: list[str] = []
+    remote = run_dir(run["id"]) / "remote"
+    for p in sorted(remote.glob("mr-*.json")) if remote.is_dir() else []:
+        if p.name.endswith("-discussions.json"):
+            continue
+        try:
+            data = read_json(p)
+        except FactoryError:
+            continue
+        if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
+            data = data["merge_request"]
+        if isinstance(data, dict) and data.get("state") == "merged" and isinstance(data.get("sha"), str):
+            shas.append(data["sha"])
+    return shas
+
+
 def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str | None = None, *,
                    own: tuple[str, ...] = (), origin_head: str | None = None,
-                   allow: set[str] | None = None) -> list[str]:
+                   allow: set[str] | None = None, merged_heads: tuple[str, ...] = ()) -> list[str]:
     """Commit header/trailer rules over the commits the run added.
 
     `origin_head` (a review-fix run: the MR head recorded at conversion) limits the span to
@@ -746,6 +765,9 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
     else:
         origin_head = None
     refs = [] if origin_head else _remote_branch_refs(path, {b for b in (branch, *own) if b}, allow)
+    if not origin_head:
+        refs += [sha for sha in merged_heads
+                 if git(path, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", check=False)]
     if refs:
         span += ["--not", *refs]
         total = git(path, "rev-list", "--count", f"{base_ref}..HEAD", check=False)
@@ -784,7 +806,8 @@ def _build(run_id, run, ws) -> list[str]:
             origin = ((run.get("review_origin") or {}).get("head_sha") or {}).get(alias)
             own = tuple(v for v in (rec.get("branches") or {}).values() if v)
             errors.extend(commits_errors(path, base, ws, alias, rec.get("branch"), own=own, origin_head=origin,
-                                         allow=inherited_allow(run, ws, alias)))
+                                         allow=inherited_allow(run, ws, alias),
+                                         merged_heads=tuple(merged_mr_heads(run))))
     return errors
 
 

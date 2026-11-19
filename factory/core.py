@@ -313,6 +313,17 @@ def event(run: dict, kind: str, **data: Any) -> None:
     run.setdefault("events", []).append({"at": now(), "kind": kind, "data": data})
 
 
+def is_env_only(run: dict, alias: str) -> bool:
+    """A repo registered only to serve the local env from a run worktree (`run branch --env-only`, `run env-only`)."""
+    return bool(((run.get("repos") or {}).get(alias) or {}).get("env_only"))
+
+
+def code_repos(run: dict) -> dict:
+    """The run's repos that carry code: every repo except env_only ones. Gates, prove, review, ship and mirror use
+    these; env up/check/login use every repo (env_only included) so the env starts from the run worktrees."""
+    return {a: r for a, r in (run.get("repos") or {}).items() if not (r or {}).get("env_only")}
+
+
 def repo_path_for_run(run: dict, workspace: dict, alias: str) -> Path:
     """Worktree of the run when recorded, else the repo's main path."""
     rec = run.get("repos", {}).get(alias) or {}

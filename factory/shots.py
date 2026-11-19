@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .core import FactoryError, evidence_id, git, load_evidence, repo_conf, repo_path_for_run, run_dir, run_targets
+from .core import FactoryError, code_repos, evidence_id, git, load_evidence, repo_conf, repo_path_for_run, run_dir, run_targets
 
 SHOT_TYPE = "screenshot"
 UI_CHECK_TYPES = {"browser", "visual", "style", SHOT_TYPE}
@@ -49,7 +49,7 @@ def changed_files(run: dict, ws: dict, alias: str) -> list[str]:
 
 def touched_repos(run: dict, ws: dict) -> list[str]:
     """Branched repos with changes vs the merge-base; before anything is changed (plan time) every branched repo."""
-    branched = list(run.get("repos") or {})
+    branched = list(code_repos(run))
     changed = [a for a in branched if changed_files(run, ws, a)]
     return changed or branched
 

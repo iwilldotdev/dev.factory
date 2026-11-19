@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .. import integrity, shots
 from ..collectors.test import weak_pattern_reason
-from ..core import (FactoryError, GateFailed, _dep_run_ids, ensure_owner, event, evidence_id, git, git_dirty,
+from ..core import (FactoryError, GateFailed, _dep_run_ids, code_repos, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
                     run_base_branch, run_resync, run_save, run_targets, target_branch, target_worktree, workspace_load)
@@ -36,7 +36,8 @@ def quality_id(alias: str) -> str:
 
 
 def touched_repos(run: dict) -> list[str]:
-    return list(run.get("repos", {}).keys())
+    """Repos with code in the run; env_only repos (only serve the env) are not touched."""
+    return list(code_repos(run))
 
 
 def resolve_base(repo_path: Path, base: str) -> str:
@@ -791,7 +792,9 @@ def _build(run_id, run, ws) -> list[str]:
     errors = []
     if not run.get("repos"):
         return ["no repos in run (factory run branch)"]
-    for alias, rec in run["repos"].items():
+    if not code_repos(run):
+        return ["every repo of the run is env_only; no code to build (factory run env-only <run> <repo> --off)"]
+    for alias, rec in code_repos(run).items():
         path = repo_path_for_run(run, ws, alias)
         if not path.is_dir():
             errors.append(f"{alias}: worktree missing: {path}")

@@ -16,7 +16,7 @@ from pathlib import Path
 from ..collectors import browser as browser_collector
 from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
                                weak_pattern_reason)
-from ..core import (SCHEMA_VERSION, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
+from ..core import (SCHEMA_VERSION, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
                     load_evidence, target_worktree, workspace_load, write_evidence, write_json)
@@ -193,8 +193,10 @@ def _select_repos(run: dict, ws: dict, repo: str | None) -> list[str]:
         alias = repo_conf(ws, repo)["alias"]
         if alias not in run["repos"]:
             raise FactoryError(f"repo {alias} has no branch in run {run['id']}")
+        if alias not in code_repos(run):
+            raise FactoryError(f"repo {alias} is env_only in run {run['id']} (serves the env, carries no code)")
         return [alias]
-    return list(run["repos"])
+    return list(code_repos(run))
 
 
 # ---------- prove ----------
@@ -748,7 +750,7 @@ def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reu
 
 
 def _quality_check(run: dict, ws: dict, wanted: str):
-    for alias in run["repos"]:
+    for alias in code_repos(run):
         if gate.quality_id(alias) == wanted and repo_conf(ws, alias).get("quality"):
             return alias
     return None
@@ -965,7 +967,7 @@ def cmd_prove(args) -> int:
     reused: set[str] = set()
     bail_stop: str | None = None
     for alias in {repo_conf(ws, c["repo"])["alias"] for c in checks if c.get("repo")}:
-        if alias in run["repos"] and git_dirty(repo_path_for_run(run, ws, alias)):
+        if alias in code_repos(run) and git_dirty(repo_path_for_run(run, ws, alias)):
             print(f"warning: {alias} worktree is dirty; evidence will be rejected by the gate")
     stopped: dict[str, str] = {}  # repo alias -> why its remaining runtime checks are skipped
     runtime_aliases = sorted({repo_conf(ws, c["repo"])["alias"] for c in checks

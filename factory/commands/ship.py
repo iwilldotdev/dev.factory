@@ -10,6 +10,7 @@ from .. import fetches, shots
 from ..core import (
     FactoryError,
     GateFailed,
+    code_repos,
     event,
     load_evidence,
     read_json,
@@ -40,7 +41,7 @@ def _ordered_targets(run: dict, workspace: dict) -> list[str]:
 
 def _ordered_repos(run: dict, workspace: dict) -> list[str]:
     aliases = []
-    for key in run.get("repos", {}):
+    for key in code_repos(run):  # env_only repos only serve the env: no push, no MR
         try:
             aliases.append(repo_conf(workspace, key))
         except FactoryError:

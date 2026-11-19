@@ -6,7 +6,7 @@ import json
 import re
 from pathlib import Path
 
-from ..core import fetch_call, event, file_sha256, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
+from ..core import code_repos, fetch_call, event, file_sha256, now, git_head, read_json, repo_path_for_run, run_dir, run_load, run_save, workspace_load, write_json
 from ..fetches import feedback_fetches
 
 
@@ -115,7 +115,7 @@ def ingest(run_id: str) -> tuple[int, Path | None]:
     for i, f in enumerate(fresh, 1):
         findings.append({"id": f"F{i}", **f})
     shas = {}
-    for alias in run.get("repos", {}):
+    for alias in code_repos(run):
         try:
             shas[alias] = git_head(repo_path_for_run(run, workspace, alias))
         except Exception:

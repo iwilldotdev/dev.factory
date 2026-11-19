@@ -375,6 +375,8 @@ def cmd_branch(args) -> int:
     if not args.base:
         raise FactoryError("--base is required (or --mr <iid> for a review run)")
     if args.for_target:
+        if getattr(args, "env_only", False):
+            raise FactoryError("--env-only does not combine with --for-target")
         return _for_target(args, run, ws, conf, main)
     if alias in run["repos"]:
         raise FactoryError(f"repo {alias} already has a branch in run {run['id']}")
@@ -408,11 +410,50 @@ def cmd_branch(args) -> int:
     if base_branch:
         run["repos"][alias]["base_branch"] = base_branch
         run["repos"][alias]["base_run"] = args.from_run
+    if getattr(args, "env_only", False):
+        run["repos"][alias]["env_only"] = True
+        event(run, "env_only", repo=alias, on=True, phase=run.get("phase"), via="branch")
     run_save(run)
     warn = _prepare(ws, conf, main, worktree)
     _emit(args, dict(run["repos"][alias], **({"setup_error": warn} if warn else {})),
           f"{alias}: branch {branch} from {base} at {worktree}" + (f"\nWARNING: {warn}" if warn else ""))
     return 1 if warn else 0
+
+
+def cmd_env_only(args) -> int:
+    """Mark (or unmark with --off) an already registered repo as env_only: it only serves the env from its run
+    worktree and carries no code, so gate build, prove, review, mirror and ship skip it. acs/checks do not change,
+    so no replan is needed; the change is logged as an `env_only` event."""
+    on = not args.off
+
+    def mutate(run: dict) -> None:
+        ws = workspace_load(run["workspace"])
+        alias = repo_conf(ws, args.repo)["alias"]
+        rec = (run.get("repos") or {}).get(alias)
+        if not rec:
+            raise FactoryError(f"repo {alias} has no branch in run {run['id']} (factory run branch {run['id']} {alias} "
+                               "--base <b> --env-only)")
+        if run.get("kind") == "review" and any(m.get("repo") == alias for m in run.get("mrs") or []):
+            raise FactoryError(f"repo {alias} holds an MR under review in run {run['id']}; it cannot be env_only")
+        if on and rec.get("worktrees"):
+            raise FactoryError(f"repo {alias} already has mirror worktrees ({', '.join(rec['worktrees'])}); "
+                               "it carries code and cannot be env_only")
+        if bool(rec.get("env_only")) == on:
+            return
+        if on:
+            rec["env_only"] = True
+        else:
+            rec.pop("env_only", None)
+        event(run, "env_only", repo=alias, on=on, phase=run.get("phase"))
+        args._alias = alias
+
+    args._alias = None
+    run = run_update(args.run, mutate)
+    alias = args._alias or repo_conf(workspace_load(run["workspace"]), args.repo)["alias"]
+    state = "env_only (serves the env, skipped by build/prove/review/mirror/ship)" if on else "a code repo again"
+    _emit(args, {"repo": alias, "env_only": on, "changed": args._alias is not None},
+          f"{alias}: {state} in run {run['id']}" + ("" if args._alias else " (unchanged)"))
+    return 0
 
 
 def _prepare(ws: dict, conf: dict, main: Path, worktree: Path) -> str | None:
@@ -438,6 +479,8 @@ def cmd_mirror(args) -> int:
     rec = run["repos"].get(alias)
     if not rec:
         raise FactoryError(f"repo {alias} has no branch in run {run['id']}")
+    if rec.get("env_only"):
+        raise FactoryError(f"repo {alias} is env_only in run {run['id']}: it carries no code to mirror")
     if target in (rec.get("worktrees") or {}):
         raise FactoryError(f"{alias} already mirrored to {target} ({rec['worktrees'][target]}); "
                            "if a cherry-pick is in progress there, resolve it and `git cherry-pick --continue`")
@@ -820,6 +863,8 @@ def event_summary(e: dict) -> str:
         return f"rewind {d.get('from')} -> {d.get('to')}: {d.get('reason')}"
     if kind == "close":
         return f"closed from {d.get('from')}: {d.get('reason')}"
+    if kind == "env_only":
+        return f"{d.get('repo')}: env_only {'on' if d.get('on') else 'off'} (phase {d.get('phase')})"
     if kind == "retype":
         return f"retyped to {d.get('to')} (phase {d.get('phase')})"
     if kind == "claim":
@@ -965,7 +1010,14 @@ def register(sub) -> None:
     p.add_argument("--name")
     p.add_argument("--from-run", help="child run id whose branch (same repo) this branch stacks on")
     p.add_argument("--for-target", help="record a per-target source branch (branches[target]) instead of the main branch")
+    p.add_argument("--env-only", action="store_true",
+                   help="the worktree only serves the env (no code): build/prove/review/mirror/ship skip this repo")
     p.set_defaults(func=cmd_branch)
+    p = rs.add_parser("env-only", help="mark a registered repo as env_only (serves the env, carries no code); --off undoes")
+    p.add_argument("run")
+    p.add_argument("repo")
+    p.add_argument("--off", action="store_true", help="make the repo a code repo again")
+    p.set_defaults(func=cmd_env_only)
     p = rs.add_parser("mirror", help="hotfix: cherry-pick the base-target commits into a mirror target worktree")
     p.add_argument("run")
     p.add_argument("repo")

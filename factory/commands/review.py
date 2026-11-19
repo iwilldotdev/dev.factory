@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .. import integrity
 from ..collectors.test import prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, SESSION_HINT_VARS, session_hint, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
+from ..core import (SCHEMA_VERSION, SESSION_HINT_VARS, code_repos, session_hint, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
                     git_head, load_evidence, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save,
                     workspace_load, write_json)
@@ -74,14 +74,14 @@ def cmd_record(args) -> int:
     rec = read_json(Path(args.file))
     if not isinstance(rec, dict):
         raise FactoryError("review file must be a JSON object")
-    if not run.get("repos"):
-        raise FactoryError("run has no repos to bind the review to")
+    if not code_repos(run):
+        raise FactoryError("run has no code repos to bind the review to (env_only repos are not reviewed)")
     acs: list[str] = []
     acs_path = run_dir(run["id"]) / "acs.json"
     if acs_path.is_file():
         acs = [a["id"] for a in read_json(acs_path).get("acs", []) if a.get("id")]
     errors = validate(rec, args.kind, acs)
-    shas = {alias: git_head(repo_path_for_run(run, ws, alias)) for alias in run["repos"]}
+    shas = {alias: git_head(repo_path_for_run(run, ws, alias)) for alias in code_repos(run)}
     claimed = rec.get("repos")
     if claimed:
         for alias, sha in shas.items():

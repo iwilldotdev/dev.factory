@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- env_only repos (from the DEV-9431 hotfix run, where API, Legado and IA were registered only so the env would start from homolog worktrees and `gate build` then demanded commits from them): `factory run branch <run> <repo> --base <b> --env-only` registers a worktree marked `env_only: true`, and `factory run env-only <run> <repo> [--off]` marks or unmarks a repo already registered (any phase, no replan, logged as an `env_only` event). `env up/check/login --run` still use those worktrees. `gate build` (commits, dirty, header/trailers), `gate prove`/`review` (touched repos, quality and rule checks, review head binding), `prove` repo selection, `review record`, feedback shas, `run mirror`, `shots` UI-repo detection and `ship plan`/`verify` skip them (new `core.code_repos`). A dirty env_only worktree blocks nothing. `gate build` fails when every repo is env_only. Tests: `tests/test_env_only.py`.
+
 Fast verification, parallel envs and engineering review (DESIGN §11, §14). Driven by the DEV-7853 epic evaluation (session "[Tarefas | Personalização de campos]"): the 9451 run spent 21.8 h in prove with 762 check executions, passing checks rerun 15–20× at the same sha, a new check failing only after 27 min, React restarted on every HEAD, and test data piling up in the dump. Audited independently twice (opus); the first audit's 2 blockers and 3 majors are fixed with regression tests (`tests/test_verification_audit.py`).
 
 - prove fail fast / pass fast:

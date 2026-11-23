@@ -14,13 +14,27 @@ import json
 import pkgutil
 import sys
 
-from . import commands
+from . import commands, dist_info
 from .core import VERSION, FactoryError, GateFailed, fetch_call
+
+
+class _Version(argparse.Action):
+    """`--version`: version, sha, snapshot or source, path; stderr notice when the snapshot is behind its source."""
+
+    def __init__(self, option_strings, dest, **kw):
+        super().__init__(option_strings, dest, nargs=0, **kw)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        print(dist_info.describe(VERSION))
+        notice = dist_info.behind_source()
+        if notice:
+            print(notice, file=sys.stderr)
+        parser.exit()
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="factory", description="dev.factory CLI")
-    parser.add_argument("--version", action="version", version=f"factory {VERSION}")
+    parser.add_argument("--version", action=_Version, help="show version, sha and where the CLI runs from")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     sub = parser.add_subparsers(dest="command", required=True)
     for mod in sorted(pkgutil.iter_modules(commands.__path__), key=lambda m: m.name):
@@ -46,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
     args = build_parser().parse_args(argv)
+    if getattr(args.func, "__name__", "") == "cmd_status" and args.command == "run":
+        notice = dist_info.behind_source()  # `run status` is the cheap, frequent entry point; stderr, never fatal
+        if notice:
+            print(notice, file=sys.stderr)
     try:
         return int(args.func(args) or 0)
     except GateFailed as err:

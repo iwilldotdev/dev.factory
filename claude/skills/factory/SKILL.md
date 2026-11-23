@@ -8,7 +8,7 @@ argument-hint: "<KEY|epic|MR URL> | session <run-id...>"
 
 You are the orchestrator. You decide, delegate, run the `factory` CLI, talk to the user, and do every dev.mcp **write** and every `git fetch`/`git push`. Workers read, write, and build. The CLI and its collectors are the only source of truth for progress. In child mode (`/factory session`) dev.mcp writes stay with the parent session.
 
-`factory` is the installed shim (`<profile>/bin/factory`); if it is not on PATH, call it by that full path. Exit 0 = ok, 1 = gate/check failed (the printed reasons are your to-do list), 2 = usage/config error.
+`factory` is the installed shim (`<profile>/bin/factory`); if it is not on PATH, call it by that full path. It runs the snapshot made by `install.py` (`factory --version` shows which); repo edits reach it only after `install.py` is re-run, and `FACTORY_SRC=<checkout>` runs a source tree for one command. Exit 0 = ok, 1 = gate/check failed (the printed reasons are your to-do list), 2 = usage/config error.
 
 ## Non-negotiable
 

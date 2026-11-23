@@ -128,7 +128,8 @@ class InstallTest(unittest.TestCase):
         self.assertIn(install.MARK_START, md)
         self.assertIn("factory-scout", md)
         self.assertTrue((p / "bin" / "factory").is_file())
-        self.assertIn("python -m factory", (p / "bin" / "factory.cmd").read_text(encoding="utf-8"))
+        self.assertIn("factory-dist", (p / "bin" / "factory.cmd").read_text(encoding="utf-8"))
+        self.assertTrue((p / "factory-dist" / "provenance.json").is_file())
         for sub in install.FACTORY_DIRS:
             self.assertTrue((self.fh / sub).is_dir())
 

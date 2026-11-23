@@ -5,7 +5,7 @@
 
 Installs: skills/factory, agents/factory-*.md (hook paths substituted), hooks/*.js,
 the protect.js PreToolUse entry in settings.json, the delegation snippet in CLAUDE.md
-(between markers), bin/factory(.cmd) shims, and the FACTORY_HOME directories.
+(between markers), the runtime snapshot <profile>/factory-dist, bin/factory(.cmd) shims, and the FACTORY_HOME directories.
 
 --mcp-config (default: ~/.claude.json for the profile ~/.claude, <profile>/.claude.json for any other
 profile; when that default file is absent it is skipped with a note, exit 0) is the Claude MCP config. When it has a dev.mcp server entry, its `env` gets the
@@ -50,6 +50,12 @@ HARNESS_SECTIONS = ("## Delegation to workers", "## dev.harness flows")
 HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js", "failfast.js")
 # regex: file/shell tools plus every MCP tool (protect.js checks `save_to` on mcp__* calls)
 PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
+DIST_NAME = "factory-dist"
+# `python -m factory` puts the current directory first on sys.path, so inside a source checkout it would run the
+# working tree instead of the snapshot; this entry drops the cwd entries and keeps PYTHONPATH in charge
+PYRUN = "import sys; sys.path[:] = [p for p in sys.path if p not in ('', '.')]; from factory.cli import main; sys.exit(main())"
+# browser files the CLI reads relative to its own root (factory/collectors/browser.py, factory/commands/env.py)
+DIST_BROWSER_FILES = ("package.json",)
 FACTORY_DIRS = ("workspaces", "runs", "env", "secrets")
 SECRET_KEY = re.compile(r"TOKEN|SECRET|PASS|KEY|AUTH", re.I)
 _JSON_PAIR = re.compile(r'("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,\n}\]]+)')
@@ -135,6 +141,7 @@ class Installer:
         self.factory_home = Path(home).expanduser().resolve()
         self.explicit_home = bool(args.factory_home)
         self.hooks_dir = self.profile / "hooks"
+        self.dist_dir = self.profile / DIST_NAME
         self.skipped: list[str] = []
         stamp = f"{_dt.datetime.now():%Y%m%d-%H%M%S}"
         self.backup_dir = self.profile / "backups" / f"harness-{stamp}"
@@ -251,6 +258,7 @@ class Installer:
         self.install_hooks()
         self.merge_settings()
         self.write_snippet()
+        self.install_dist()
         self.write_shims()
         self.merge_mcp_config()
         for sub in FACTORY_DIRS:
@@ -390,6 +398,65 @@ class Installer:
             return
         self.write_text(path, new, "CLAUDE.md dev.factory block")
 
+    # ---------- snapshot ----------
+
+    def provenance(self) -> dict:
+        def git(*a: str) -> str:
+            try:
+                p = subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                return ""
+            return p.stdout.strip() if p.returncode == 0 else ""
+        return {"source": fwd(REPO), "sha": git("rev-parse", "HEAD") or None,
+                "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
+                "installed_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+
+    def build_dist(self, tmp: Path) -> None:
+        """Fill tmp with the runtime snapshot: factory/, browser/dist + package.json, node_modules, provenance."""
+        ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+        shutil.copytree(REPO / "factory", tmp / "factory", ignore=ignore)
+        browser = REPO / "browser"
+        if (browser / "dist").is_dir():
+            shutil.copytree(browser / "dist", tmp / "browser" / "dist", ignore=ignore)
+        else:
+            self.note(f"{browser / 'dist'} is not built (npm install && npm run build); the snapshot has no browser CLI")
+        for name in DIST_BROWSER_FILES:
+            if (browser / name).is_file():
+                (tmp / "browser").mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(browser / name, tmp / "browser" / name)
+        nm = browser / "node_modules"
+        if nm.is_dir():
+            self.note(f"browser/node_modules: {link_or_copy_dir(nm, tmp / 'browser' / 'node_modules')} ({nm})")
+        else:
+            self.note(f"{nm} not found; run `npm ci` in {browser} and re-run install.py for browser checks")
+        (tmp / "provenance.json").write_text(json.dumps(self.provenance(), indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    def install_dist(self) -> None:
+        """Replace <profile>/factory-dist: build beside it, move the old one into the backup, rename the new one in."""
+        dest = self.dist_dir
+        tmp = self.profile / f"{DIST_NAME}.new"
+        old_backup = self.install_backup_dir / DIST_NAME
+
+        def go():
+            drop_dir(tmp)
+            try:
+                tmp.mkdir(parents=True)
+                self.build_dist(tmp)
+                if dest.exists() or is_link(dest):
+                    old_backup.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(dest, old_backup)
+                    drop_dir(old_backup / "browser" / "node_modules")  # reproducible, can be large
+                try:
+                    os.replace(tmp, dest)
+                except OSError:
+                    if old_backup.exists() and not dest.exists():
+                        os.replace(old_backup, dest)
+                    raise
+            except BaseException:
+                drop_dir(tmp)
+                raise
+        self.act(f"snapshot runtime {REPO} -> {dest} (a previous one moves to {old_backup})", go)
+
     def write_shims(self) -> None:
         bin_dir = self.profile / "bin"
         fh_sh = f"FACTORY_HOME='{fwd(self.factory_home)}'\nexport FACTORY_HOME\n" if self.explicit_home else ""
@@ -397,23 +464,30 @@ class Installer:
         sh = (
             "#!/bin/sh\n"
             "# dev.factory CLI shim (generated by install.py)\n"
-            f"REPO='{fwd(REPO)}'\n"
+            "# runs the snapshot <profile>/factory-dist; FACTORY_SRC=<checkout> runs that source tree instead\n"
+            f"REPO='{fwd(self.dist_dir)}'\n"
+            '[ -n "$FACTORY_SRC" ] && REPO="$FACTORY_SRC"\n'
             'case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) SEP=";" ;; *) SEP=":" ;; esac\n'
             'PYTHONPATH="$REPO${PYTHONPATH:+$SEP$PYTHONPATH}"\n'
             "export PYTHONPATH\n"
+            f'PYRUN="{PYRUN}"\n'
             f"{fh_sh}"
             "if command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then\n"
-            '  exec python -m factory "$@"\n'
+            '  exec python -c "$PYRUN" "$@"\n'
             "fi\n"
-            'exec python3 -m factory "$@"\n'
+            'exec python3 -c "$PYRUN" "$@"\n'
         )
         cmd = (
             "@echo off\r\n"
             "rem dev.factory CLI shim (generated by install.py)\r\n"
             "setlocal\r\n"
-            f'set "PYTHONPATH={REPO};%PYTHONPATH%"\r\n'
+            "rem runs the snapshot <profile>\\factory-dist; FACTORY_SRC=<checkout> runs that source tree instead\r\n"
+            f'set "FACTORY_ROOT={self.dist_dir}"\r\n'
+            'if defined FACTORY_SRC set "FACTORY_ROOT=%FACTORY_SRC%"\r\n'
+            'set "PYTHONPATH=%FACTORY_ROOT%;%PYTHONPATH%"\r\n'
             f"{fh_cmd}"
-            "python -m factory %*\r\n"
+            f'set "PYRUN={PYRUN}"\r\n'
+            'python -c "%PYRUN%" %*\r\n'
             "exit /b %ERRORLEVEL%\r\n"
         )
         self.write_text(bin_dir / "factory", sh, "shim (sh)")
@@ -430,6 +504,35 @@ class Installer:
             self.note(f"{bin_dir} is not on PATH; to make `factory` resolve, run this yourself (not executed here):")
             for ln in path_hint(bin_dir):
                 print("     " + ln)
+
+
+def drop_dir(path: Path) -> None:
+    """Remove a directory, link or junction (links are unlinked, never followed)."""
+    if is_link(path):
+        remove_link(path)
+    elif path.is_dir():
+        for root, dirs, _ in os.walk(path):
+            for d in list(dirs):
+                if is_link(Path(root) / d):
+                    remove_link(Path(root) / d)
+                    dirs.remove(d)
+        shutil.rmtree(path)
+
+
+def link_or_copy_dir(src: Path, dest: Path) -> str:
+    """Point dest at src: symlink, else Windows junction (no privilege needed), else a full copy."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(src, dest, target_is_directory=True)
+        return "symlink to the source checkout"
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(dest), str(src)], capture_output=True)
+        if proc.returncode == 0:
+            return "junction to the source checkout"
+    shutil.copytree(src, dest, symlinks=True)
+    return "copied (link not possible)"
 
 
 def _same(a: str, b: Path) -> bool:

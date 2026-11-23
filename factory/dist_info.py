@@ -6,6 +6,7 @@ that file is a source checkout (also what `FACTORY_SRC` selects in the shims). S
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -34,6 +35,39 @@ def _git(repo: Path, *args: str) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
+def runtime_state(repo: Path) -> str | None:
+    """Digest of the runtime-relevant state of a source repo: HEAD plus the diff of dirty tracked runtime paths and the
+    content of untracked ones. install.py stores it in provenance.json; an install from a dirty tree is only "behind"
+    once that state changes again. None when `repo` is not a git work tree."""
+    head = _git(repo, "rev-parse", "HEAD")
+    if head is None:
+        return None
+    h = hashlib.sha256(head.encode())
+    h.update(b"\0diff\0" + (_git(repo, "diff", "HEAD", "--", *RUNTIME_PATHS) or "").encode("utf-8", "replace"))
+    listing = _git(repo, "ls-files", "--others", "--exclude-standard", "--", *RUNTIME_PATHS) or ""
+    for rel in sorted(r for r in listing.splitlines() if r):
+        h.update(b"\0new\0" + rel.encode("utf-8", "replace") + b"\0")
+        try:
+            h.update((repo / rel).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+def browser_dist_stale(browser: Path) -> bool:
+    """True when a browser/src .ts file is newer than the newest browser/dist .js (the gitignored build is out of date)."""
+    def newest(folder: Path, pattern: str) -> float | None:
+        times = []
+        for f in folder.rglob(pattern):
+            try:
+                times.append(f.stat().st_mtime)
+            except OSError:
+                pass
+        return max(times) if times else None
+    src, built = newest(browser / "src", "*.ts"), newest(browser / "dist", "*.js")
+    return src is not None and built is not None and src > built
+
+
 def describe(version: str, root: Path = ROOT) -> str:
     """One line for `--version`: version, sha, snapshot or source, path."""
     prov = provenance(root)
@@ -58,7 +92,16 @@ def behind_source(root: Path = ROOT) -> str | None:
     head = _git(src, "rev-parse", "HEAD")
     if head is None:
         return None
-    dirty = _git(src, "status", "--porcelain", "--untracked-files=normal", "--", *RUNTIME_PATHS)
-    if head != prov["sha"] or dirty:
-        return "installed snapshot is behind source (run install.py)"
+    state = prov.get("state")
+    if state:
+        moved = head != prov["sha"] or runtime_state(src) != state
+    else:  # provenance from an older install.py
+        dirty = _git(src, "status", "--porcelain", "--untracked-files=normal", "--", *RUNTIME_PATHS)
+        moved = head != prov["sha"] or bool(dirty)
+    note = "browser/dist was older than browser/src when installed: run `npm run build` in browser/ first"
+    stale = f" ({note})" if prov.get("dist_stale") else ""
+    if moved:
+        return "installed snapshot is behind source (run install.py)" + stale
+    if stale:
+        return f"installed snapshot has a stale browser/dist ({note})"
     return None

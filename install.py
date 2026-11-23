@@ -42,6 +42,9 @@ import tempfile
 import difflib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from factory import dist_info  # noqa: E402
+
 REPO = Path(__file__).resolve().parent
 SRC = REPO / "claude"
 MARK_START = "<!-- dev.factory:start -->"
@@ -52,8 +55,13 @@ HOOK_FILES = ("protect.js", "protect-lib.js", "worker-guard.js", "failfast.js")
 PROTECT_MATCHER = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*"
 DIST_NAME = "factory-dist"
 # `python -m factory` puts the current directory first on sys.path, so inside a source checkout it would run the
-# working tree instead of the snapshot; this entry drops the cwd entries and keeps PYTHONPATH in charge
-PYRUN = "import sys; sys.path[:] = [p for p in sys.path if p not in ('', '.')]; from factory.cli import main; sys.exit(main())"
+# working tree instead of the snapshot; this entry drops every cwd entry ('', '.', and the absolute cwd that an empty
+# PYTHONPATH item turns into) unless the cwd IS the chosen root (FACTORY_SHIM_ROOT). No double quotes, percent, caret,
+# ampersand, pipe or angle bracket in it: it is embedded in both shims.
+PYRUN = ("import os, sys; r = os.path.normcase(os.path.abspath(os.environ.get('FACTORY_SHIM_ROOT', 'x'))); "
+         "c = os.path.normcase(os.getcwd()); "
+         "sys.path[:] = [p for p in sys.path if p not in ('', '.') and (c == r or os.path.normcase(os.path.abspath(p)) != c)]; "
+         "from factory.cli import main; sys.exit(main())")
 # browser files the CLI reads relative to its own root (factory/collectors/browser.py, factory/commands/env.py)
 DIST_BROWSER_FILES = ("package.json",)
 FACTORY_DIRS = ("workspaces", "runs", "env", "secrets")
@@ -253,13 +261,15 @@ class Installer:
         if not self.dry:
             self.profile.mkdir(parents=True, exist_ok=True)
         self.backup_install_targets()
+        # the snapshot and its shims first: a snapshot that cannot be replaced (locked by a running process) stops the
+        # install before hooks/settings change, with the old shim and old snapshot still working together
+        self.install_dist()
+        self.write_shims()
         self.install_skill()
         self.install_agents()
         self.install_hooks()
         self.merge_settings()
         self.write_snippet()
-        self.install_dist()
-        self.write_shims()
         self.merge_mcp_config()
         for sub in FACTORY_DIRS:
             d = self.factory_home / sub
@@ -400,7 +410,7 @@ class Installer:
 
     # ---------- snapshot ----------
 
-    def provenance(self) -> dict:
+    def provenance(self, dist_stale: bool = False) -> dict:
         def git(*a: str) -> str:
             try:
                 p = subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True, timeout=30)
@@ -409,6 +419,8 @@ class Installer:
             return p.stdout.strip() if p.returncode == 0 else ""
         return {"source": fwd(REPO), "sha": git("rev-parse", "HEAD") or None,
                 "dirty": bool(git("status", "--porcelain", "--untracked-files=normal")),
+                "state": dist_info.runtime_state(REPO),
+                "dist_stale": dist_stale,
                 "installed_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds")}
 
     def build_dist(self, tmp: Path) -> None:
@@ -416,8 +428,13 @@ class Installer:
         ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
         shutil.copytree(REPO / "factory", tmp / "factory", ignore=ignore)
         browser = REPO / "browser"
+        stale = False
         if (browser / "dist").is_dir():
             shutil.copytree(browser / "dist", tmp / "browser" / "dist", ignore=ignore)
+            stale = dist_info.browser_dist_stale(browser)
+            if stale:
+                self.note(f"WARNING {browser / 'dist'} is older than {browser / 'src'}: the snapshot gets an out-of-date browser build. "
+                          "Run `npm run build` in browser/ and re-run install.py (not run automatically)")
         else:
             self.note(f"{browser / 'dist'} is not built (npm install && npm run build); the snapshot has no browser CLI")
         for name in DIST_BROWSER_FILES:
@@ -429,7 +446,7 @@ class Installer:
             self.note(f"browser/node_modules: {link_or_copy_dir(nm, tmp / 'browser' / 'node_modules')} ({nm})")
         else:
             self.note(f"{nm} not found; run `npm ci` in {browser} and re-run install.py for browser checks")
-        (tmp / "provenance.json").write_text(json.dumps(self.provenance(), indent=2) + "\n", encoding="utf-8", newline="\n")
+        (tmp / "provenance.json").write_text(json.dumps(self.provenance(stale), indent=2) + "\n", encoding="utf-8", newline="\n")
 
     def install_dist(self) -> None:
         """Replace <profile>/factory-dist: build beside it, move the old one into the backup, rename the new one in."""
@@ -438,23 +455,35 @@ class Installer:
         old_backup = self.install_backup_dir / DIST_NAME
 
         def go():
-            drop_dir(tmp)
+            had_old = False
             try:
+                drop_dir(tmp)
                 tmp.mkdir(parents=True)
                 self.build_dist(tmp)
-                if dest.exists() or is_link(dest):
+                had_old = dest.exists() or is_link(dest)
+                if had_old:
                     old_backup.parent.mkdir(parents=True, exist_ok=True)
                     os.replace(dest, old_backup)
-                    drop_dir(old_backup / "browser" / "node_modules")  # reproducible, can be large
                 try:
                     os.replace(tmp, dest)
                 except OSError:
                     if old_backup.exists() and not dest.exists():
                         os.replace(old_backup, dest)
                     raise
+            except OSError as err:
+                drop_dir_quiet(tmp)
+                raise OSError(
+                    f"cannot replace the installed snapshot {dest}: {err}. A process is probably using it: close shells "
+                    "whose cwd is inside it and any running env that was started through the installed factory, then "
+                    "re-run install.py. The previous snapshot and shims were left as they were.") from err
             except BaseException:
-                drop_dir(tmp)
+                drop_dir_quiet(tmp)
                 raise
+            if had_old:  # after the swap, best effort: a failure here must not lose the new snapshot
+                try:
+                    drop_dir(old_backup / "browser" / "node_modules")  # a link or a reproducible, large copy
+                except OSError as err:
+                    self.note(f"could not prune {old_backup / 'browser' / 'node_modules'} ({err}); delete it by hand")
         self.act(f"snapshot runtime {REPO} -> {dest} (a previous one moves to {old_backup})", go)
 
     def write_shims(self) -> None:
@@ -467,6 +496,12 @@ class Installer:
             "# runs the snapshot <profile>/factory-dist; FACTORY_SRC=<checkout> runs that source tree instead\n"
             f"REPO='{fwd(self.dist_dir)}'\n"
             '[ -n "$FACTORY_SRC" ] && REPO="$FACTORY_SRC"\n'
+            'if [ ! -f "$REPO/factory/cli.py" ]; then\n'
+            '  echo "factory: no factory/ package in $REPO (re-run install.py; unset FACTORY_SRC to use the snapshot)" >&2\n'
+            "  exit 2\n"
+            "fi\n"
+            'FACTORY_SHIM_ROOT="$REPO"\n'
+            "export FACTORY_SHIM_ROOT\n"
             'case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) SEP=";" ;; *) SEP=":" ;; esac\n'
             'PYTHONPATH="$REPO${PYTHONPATH:+$SEP$PYTHONPATH}"\n'
             "export PYTHONPATH\n"
@@ -484,7 +519,15 @@ class Installer:
             "rem runs the snapshot <profile>\\factory-dist; FACTORY_SRC=<checkout> runs that source tree instead\r\n"
             f'set "FACTORY_ROOT={self.dist_dir}"\r\n'
             'if defined FACTORY_SRC set "FACTORY_ROOT=%FACTORY_SRC%"\r\n'
-            'set "PYTHONPATH=%FACTORY_ROOT%;%PYTHONPATH%"\r\n'
+            'if exist "%FACTORY_ROOT%\\factory\\cli.py" goto fx_ok\r\n'
+            'echo factory: no factory\\ package in "%FACTORY_ROOT%" (re-run install.py; unset FACTORY_SRC to use the snapshot) 1>&2\r\n'
+            "exit /b 2\r\n"
+            ":fx_ok\r\n"
+            'set "FACTORY_SHIM_ROOT=%FACTORY_ROOT%"\r\n'
+            "rem no empty PYTHONPATH item: Python resolves it to the cwd, ahead of the stdlib\r\n"
+            'set "FX_PP=%FACTORY_ROOT%"\r\n'
+            'if defined PYTHONPATH set "FX_PP=%FACTORY_ROOT%;%PYTHONPATH%"\r\n'
+            'set "PYTHONPATH=%FX_PP%"\r\n'
             f"{fh_cmd}"
             f'set "PYRUN={PYRUN}"\r\n'
             'python -c "%PYRUN%" %*\r\n'
@@ -504,6 +547,13 @@ class Installer:
             self.note(f"{bin_dir} is not on PATH; to make `factory` resolve, run this yourself (not executed here):")
             for ln in path_hint(bin_dir):
                 print("     " + ln)
+
+
+def drop_dir_quiet(path: Path) -> None:
+    try:
+        drop_dir(path)
+    except OSError:
+        pass
 
 
 def drop_dir(path: Path) -> None:

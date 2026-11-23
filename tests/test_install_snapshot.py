@@ -23,6 +23,17 @@ from factory import dist_info  # noqa: E402
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
 
 
+def _find_bash() -> str | None:
+    """A POSIX bash (Git Bash on Windows). The bare name would resolve to the WSL launcher in System32 there."""
+    found = shutil.which("bash")
+    if found and "system32" in found.lower():
+        found = None
+    return found
+
+
+BASH = _find_bash()
+
+
 def git(repo: Path, *args: str) -> str:
     return subprocess.run([*GIT, "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
 
@@ -180,6 +191,182 @@ class SnapshotTest(unittest.TestCase):
         self.assertIn('[ -n "$FACTORY_SRC" ]', sh)
         self.assertIn("if defined FACTORY_SRC", cmd)
         self.assertNotIn(str(self.src), cmd)
+
+
+    # ---------- cwd checkout never wins ----------
+
+    def shim_env(self, pythonpath: str | None, src: str | None = None) -> dict:
+        env = {k: v for k, v in os.environ.items() if k not in ("FACTORY_SRC", "PYTHONPATH")}
+        if pythonpath is not None:
+            env["PYTHONPATH"] = pythonpath
+        if src is not None:
+            env["FACTORY_SRC"] = src
+        return env
+
+    def run_shim_in(self, kind: str, args, *, env: dict, cwd: Path, stdin: str | None = None):
+        bin_dir = self.profile / "bin"
+        cmdline = [str(bin_dir / "factory.cmd")] if kind == "cmd" else [BASH, install.fwd(bin_dir / "factory")]
+        return subprocess.run([*cmdline, *args], capture_output=True, text=True, encoding="utf-8", env=env, cwd=cwd,
+                              input=stdin, timeout=60)
+
+    def kinds(self) -> list[str]:
+        """Shims runnable here: factory.cmd on Windows, the sh shim through bash when there is one."""
+        return (["cmd"] if os.name == "nt" else []) + (["sh"] if BASH else [])
+
+    def test_cwd_checkout_never_wins_pythonpath_unset_and_set(self):
+        self.set_version(self.src, "9.9.9")
+        other = self.tmp / "other"
+        other.mkdir()
+        for kind in self.kinds():
+            for pp in (None, str(other)):
+                with self.subTest(kind=kind, pythonpath=pp):
+                    proc = self.run_shim_in(kind, ["--version"], env=self.shim_env(pp), cwd=self.src)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertIn("snapshot", proc.stdout)
+                    self.assertIn("factory 0.1.0", proc.stdout)
+
+    def test_missing_root_fails_clearly_instead_of_using_the_cwd_checkout(self):
+        for kind in self.kinds():
+            for pp in (None, str(self.tmp / "other")):
+                with self.subTest(kind=kind, pythonpath=pp, case="FACTORY_SRC"):
+                    env = self.shim_env(pp, src=str(self.tmp / "no" / "such"))
+                    proc = self.run_shim_in(kind, ["--version"], env=env, cwd=self.src)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("no factory", proc.stderr)
+                    self.assertNotIn("factory 0.1.0", proc.stdout)
+        install.drop_dir(self.profile / "factory-dist")
+        for kind in self.kinds():
+            for pp in (None, str(self.tmp / "other")):
+                with self.subTest(kind=kind, pythonpath=pp, case="missing snapshot"):
+                    proc = self.run_shim_in(kind, ["--version"], env=self.shim_env(pp), cwd=self.src)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("no factory", proc.stderr)
+                    self.assertIn("factory-dist", proc.stderr)
+                    self.assertNotIn("factory 0.1.0", proc.stdout)
+
+    def test_shims_text_has_no_empty_pythonpath_entry(self):
+        cmd = (self.profile / "bin" / "factory.cmd").read_text(encoding="utf-8")
+        self.assertNotIn('set "PYTHONPATH=%FACTORY_ROOT%;%PYTHONPATH%"', cmd)
+        self.assertIn("if defined PYTHONPATH", cmd)
+
+    # ---------- argument, stdin and exit code passthrough ----------
+
+    def probe_root(self) -> Path:
+        root = self.tmp / "probe"
+        (root / "factory").mkdir(parents=True)
+        (root / "factory" / "__init__.py").write_text("", encoding="utf-8")
+        (root / "factory" / "cli.py").write_text(
+            "import json, sys\n"
+            "def main():\n"
+            "    data = sys.stdin.read()\n"
+            "    sys.stdout.write(json.dumps({'argv': sys.argv[1:], 'stdin': data}))\n"
+            "    return int(sys.argv[2]) if sys.argv[1:2] == ['exit'] else 0\n", encoding="utf-8")
+        return root
+
+    def test_shims_pass_arguments_stdin_and_exit_code(self):
+        root = self.probe_root()
+        cases = [["plain"], ["has space", "b"], ['say "hi" there'], ["a=b", "--flag=x y"], ["it's"]]
+        for kind in self.kinds():
+            for args in cases:
+                if kind == "sh" and "'" in args[0]:
+                    continue  # Windows -> MSYS argument conversion eats the apostrophe before the shim runs
+                with self.subTest(kind=kind, args=args):
+                    proc = self.run_shim_in(kind, args, env=self.shim_env(None, src=str(root)), cwd=self.tmp, stdin="in\nput")
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual(json.loads(proc.stdout), {"argv": args, "stdin": "in\nput"})
+            with self.subTest(kind=kind, case="exit code"):
+                proc = self.run_shim_in(kind, ["exit", "7"], env=self.shim_env(None, src=str(root)), cwd=self.tmp)
+                self.assertEqual(proc.returncode, 7)
+
+    # ---------- swap robustness ----------
+
+    def test_locked_snapshot_stops_the_install_before_anything_else_changes(self):
+        dist = self.profile / "factory-dist"
+        shim_before = (self.profile / "bin" / "factory.cmd").read_bytes()
+        prov_before = (dist / "provenance.json").read_text(encoding="utf-8")
+        (self.profile / "hooks" / "protect.js").unlink()  # a later install step would put it back
+        self.set_version(self.src, "9.9.9")
+        real = os.replace
+
+        def locked(src, dst, *a, **k):
+            if Path(src) == dist:
+                raise PermissionError(5, "Access is denied", str(src))
+            return real(src, dst, *a, **k)
+        err = io.StringIO()
+        with mock.patch.object(install.os, "replace", locked), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            code = install.main(["--profile", str(self.profile), "--factory-home", str(self.fh), "--mcp-config", str(self.tmp / "none")])
+        self.assertEqual(code, 2)
+        self.assertIn(str(dist), err.getvalue())
+        self.assertIn("close", err.getvalue())
+        self.assertEqual((dist / "provenance.json").read_text(encoding="utf-8"), prov_before)
+        self.assertEqual((self.profile / "bin" / "factory.cmd").read_bytes(), shim_before)
+        self.assertFalse((self.profile / "hooks" / "protect.js").exists())
+        self.assertFalse((self.profile / "factory-dist.new").exists())
+        self.assertIn("factory 0.1.0", self.shim("--version").stdout)
+
+    def test_failed_second_replace_restores_the_old_snapshot_with_its_node_modules(self):
+        dist = self.profile / "factory-dist"
+        real = os.replace
+
+        def fail_swap_in(src, dst, *a, **k):
+            if Path(dst) == dist and Path(src).name == "factory-dist.new":
+                raise PermissionError(5, "Access is denied", str(dst))
+            return real(src, dst, *a, **k)
+        with mock.patch.object(install.os, "replace", fail_swap_in), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = install.main(["--profile", str(self.profile), "--factory-home", str(self.fh), "--mcp-config", str(self.tmp / "none")])
+        self.assertEqual(code, 2)
+        self.assertTrue((dist / "browser" / "node_modules" / "dep" / "index.js").is_file())
+        self.assertIn("snapshot", self.shim("--version").stdout)
+        self.assertTrue((self.src / "browser" / "node_modules" / "dep" / "index.js").is_file())
+
+    def test_backup_prune_failure_keeps_the_new_snapshot(self):
+        self.set_version(self.src, "9.9.9")
+        real = install.drop_dir
+
+        def flaky(path):
+            if Path(path).name == "node_modules":
+                raise PermissionError(5, "Access is denied", str(path))
+            return real(path)
+        with mock.patch.object(install, "drop_dir", flaky):
+            out = self.install()
+        self.assertIn("could not prune", out)
+        self.assertIn("factory 9.9.9", self.shim("--version").stdout)
+        self.assertTrue((self.src / "browser" / "node_modules" / "dep" / "index.js").is_file())
+
+    # ---------- provenance state and stale browser build ----------
+
+    def test_install_from_a_dirty_tree_is_not_behind_until_it_changes_again(self):
+        self.set_version(self.src, "9.9.9")
+        self.install()
+        dist = self.profile / "factory-dist"
+        self.assertIsNone(dist_info.behind_source(dist))
+        self.assertEqual(self.shim("--version").stderr.strip(), "")
+        self.set_version(self.src, "9.9.9")  # same content again
+        self.assertIsNone(dist_info.behind_source(dist))
+        (self.src / "factory" / "new_module.py").write_text("x = 1\n", encoding="utf-8")  # untracked runtime file
+        self.assertIn("behind source", dist_info.behind_source(dist))
+        (self.src / "factory" / "new_module.py").unlink()
+        self.assertIsNone(dist_info.behind_source(dist))
+        core = self.src / "factory" / "core.py"
+        core.write_text(core.read_text(encoding="utf-8").replace("9.9.9", "8.8.8"), encoding="utf-8")
+        self.assertIn("behind source", self.shim("--version").stderr)
+
+    def test_stale_browser_dist_is_flagged(self):
+        src_ts = self.src / "browser" / "src" / "cli.ts"
+        src_ts.parent.mkdir(parents=True)
+        src_ts.write_text("export {}\n", encoding="utf-8")
+        js = self.src / "browser" / "dist" / "cli.js"
+        os.utime(js, (1_000_000_000, 1_000_000_000))
+        out = self.install()
+        self.assertIn("npm run build", out)
+        prov = json.loads((self.profile / "factory-dist" / "provenance.json").read_text(encoding="utf-8"))
+        self.assertIs(prov["dist_stale"], True)
+        self.assertIn("npm run build", dist_info.behind_source(self.profile / "factory-dist"))
+        os.utime(js, None)  # rebuilt
+        out = self.install()
+        self.assertNotIn("npm run build", out)
+        prov = json.loads((self.profile / "factory-dist" / "provenance.json").read_text(encoding="utf-8"))
+        self.assertIs(prov["dist_stale"], False)
 
 
 if __name__ == "__main__":

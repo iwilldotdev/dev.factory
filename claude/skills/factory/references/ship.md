@@ -22,7 +22,7 @@ Never un-draft, merge, or close an MR without an explicit user request for that 
 
 ## Hotfix runs
 
-`ship plan` orders MRs base target first (homolog), then mirrors (pack). Descriptions end with `Mirrored to {mr_url:<repo>:<mirror>}` (base MR) and `Mirror of {mr_url:<repo>:<base>}` (mirror MR): after creating both MRs, replace the placeholders with `!N`/URLs in the descriptions (update the first MR once the second exists). Post one Jira comment listing both MRs. Push and create the base MR first.
+`ship plan` orders MRs base target first (homolog), then mirrors (pack). Descriptions end with `Mirrored to {mr_url:<repo>:<mirror>}` (base MR) and `Mirror of {mr_url:<repo>:<base>}` (mirror MR): after creating both MRs, replace the placeholders with `!N`/URLs in the descriptions (update the first MR once the second exists). Post one Jira comment listing both MRs. Push and create the base MR first. Runtime checks on a mirror: `factory env down <ws> <repo> --run <run> --target <current target>` (also stops the deps this run started for it) then `factory env up <ws> <repo> --run <run> --target <mirror>` and `factory prove <run> --target <mirror> --final`; prove the base target the same way.
 
 Repos marked `env_only` in run.json (`run branch --env-only`, `run env-only`) only served the env: `ship plan` lists no push, MR or readback for them, and you do not fetch or push them.
 

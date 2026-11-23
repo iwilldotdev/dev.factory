@@ -447,6 +447,33 @@ def target_worktree(run: dict, workspace: dict, alias: str, target: str | None =
     return repo_path_for_run(run, workspace, alias)
 
 
+def target_serve_path(run: dict, workspace: dict, alias: str, target: str | None) -> Path | None:
+    """Where a mirror target's runtime is served for `alias`: its mirror worktree, else the repo's `target_paths[target]`;
+    None for the base target/None, or when the repo has neither (it keeps the run's own resolution)."""
+    hf = hotfix_of(run)
+    if not (hf and target and target != hf["base"]):
+        return None
+    wt = target_worktree(run, workspace, alias, target)
+    if wt:
+        return wt
+    try:
+        extra = (repo_conf(workspace, alias).get("target_paths") or {}).get(target)
+    except FactoryError:
+        return None
+    return Path(extra) if isinstance(extra, str) and extra else None
+
+
+def check_target(run: dict, target: str | None) -> str | None:
+    """`--target` value of a command: None for absent or the base target (today's behaviour), the mirror name otherwise;
+    FactoryError when it is not one of the run's targets."""
+    if not target:
+        return None
+    targets = run_targets(run)
+    if target not in targets:
+        raise FactoryError(f"--target {target}: not a target of run {run.get('id')} (targets: {', '.join(t for t in targets if t) or 'none, not a hotfix run'})")
+    return None if target == targets[0] else target
+
+
 # ---------- git ----------
 
 def git(repo: Path, *args: str, check: bool = True) -> str:

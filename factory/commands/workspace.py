@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import string
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, factory_home, read_json, secrets_path,
                     workspace_load, workspace_path, write_json)
@@ -225,8 +225,8 @@ def hotfix_config_errors(ws: dict) -> list[str]:
     return errors
 
 
-def target_branches_errors(ws: dict) -> list[str]:
-    """Optional per-repo `target_branches`: {logical target: git branch}; keys must be known targets."""
+def known_targets(ws: dict) -> set[str]:
+    """Logical targets of the workspace: `ship.targets` plus the hotfix base and mirrors."""
     ship = ws.get("ship") or {}
     hf = ship.get("hotfix") if isinstance(ship.get("hotfix"), dict) else {}
     targets = ship.get("targets")
@@ -235,6 +235,12 @@ def target_branches_errors(ws: dict) -> list[str]:
     if isinstance(hf.get("base"), str):
         known.add(hf["base"])
     known.update(t for t in (mirror if isinstance(mirror, list) else []) if isinstance(t, str))
+    return known
+
+
+def target_branches_errors(ws: dict) -> list[str]:
+    """Optional per-repo `target_branches`: {logical target: git branch}; keys must be known targets."""
+    known = known_targets(ws)
     errors = []
     for repo in ws.get("repos", []):
         alias = repo.get("alias") or "?"
@@ -249,6 +255,34 @@ def target_branches_errors(ws: dict) -> list[str]:
                 errors.append(f"{alias}: target_branches key {key!r} is not a known target ({sorted(known)})")
             if not isinstance(branch, str) or not branch or any(c.isspace() for c in branch):
                 errors.append(f"{alias}: target_branches[{key!r}] must be a non-empty string without whitespace")
+    return errors
+
+
+def target_paths_errors(ws: dict) -> list[str]:
+    """Optional per-repo `target_paths`: {logical target: absolute directory served for that mirror target}; keys must
+    be known mirror targets (not the hotfix base, which serves the run worktree)."""
+    known = known_targets(ws)
+    hf = (ws.get("ship") or {}).get("hotfix")
+    base = hf.get("base") if isinstance(hf, dict) else None
+    errors = []
+    for repo in ws.get("repos", []):
+        alias = repo.get("alias") or "?"
+        tp = repo.get("target_paths")
+        if tp is None:
+            continue
+        if not isinstance(tp, dict):
+            errors.append(f"{alias}: target_paths must be an object {{target: path}}")
+            continue
+        for key, path in tp.items():
+            if key not in known:
+                errors.append(f"{alias}: target_paths key {key!r} is not a known target ({sorted(known)})")
+            elif key == base:
+                errors.append(f"{alias}: target_paths key {key!r} is the hotfix base target (it serves the run worktree; "
+                              "target_paths only applies to mirror targets)")
+            if not isinstance(path, str) or not path.strip():
+                errors.append(f"{alias}: target_paths[{key!r}] must be a non-empty string")
+            elif not (Path(path).is_absolute() or PureWindowsPath(path).is_absolute() or PurePosixPath(path).is_absolute()):
+                errors.append(f"{alias}: target_paths[{key!r}] must be an absolute path (got {path!r})")
     return errors
 
 
@@ -353,6 +387,7 @@ def check_workspace(ws: dict) -> list[str]:
         missing.append("limits.browser_batch must be true or false")
     missing.extend(hotfix_config_errors(ws))
     missing.extend(target_branches_errors(ws))
+    missing.extend(target_paths_errors(ws))
     missing.extend(orchestration_config_errors(ws))
     for rule in ws.get("rules", []):
         if not rule.get("id") or not isinstance(rule.get("check"), dict):

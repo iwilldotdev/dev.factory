@@ -25,6 +25,10 @@ from ..core import (ensure_owner,
     repo_conf,
     repo_path_for_env,
     run_load,
+    target_serve_path,
+    check_target,
+    hotfix_of,
+    run_targets,
     run_update,
     secrets_path,
     workspace_load,
@@ -549,13 +553,15 @@ def env_fail_line(alias: str, kind: str, detail: str) -> str:
 
 # ---------- up / down / check ----------
 
-def _cwd_for(workspace: dict, run: dict | None, alias: str) -> Path:
+def _cwd_for(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> Path:
     repo = repo_conf(workspace, alias)
-    base = repo_path_for_env(run, workspace, alias) if run else Path(repo["path"])
+    base = (target_serve_path(run, workspace, alias, target) if run and target else None) \
+        or (repo_path_for_env(run, workspace, alias) if run else Path(repo["path"]))
     return (base / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
 
 
-def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: list[str]) -> bool:
+def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: list[str],
+            target: str | None = None) -> bool:
     if alias in seen:
         return True
     seen.add(alias)
@@ -568,7 +574,7 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     ws = workspace["name"]
     require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     for dep in env.get("depends_on") or []:
-        if not _up_one(workspace, run, dep, seen, out):
+        if not _up_one(workspace, run, dep, seen, out, target):
             return False
 
     shared = is_shared(workspace, run, alias)
@@ -583,11 +589,11 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
         out.append(f"{alias}: {detail}")
         out.append(env_fail_line(alias, "lease", detail))
         return False
-    cwd = _cwd_for(workspace, run, alias)
+    cwd = _cwd_for(workspace, run, alias, target)
     head = _head_of(cwd) if cwd.is_dir() else None
     # record check -> port checks -> Popen -> pid write under the env lock: two concurrent ups cannot both start
     with _file_lock(_lock_path(ws)):
-        status, proc = _start_locked(env, ws, alias, health, cwd, head, out, slot)
+        status, proc = _start_locked(env, ws, alias, health, cwd, head, out, slot, target)
     if status != "started":
         return status == "up"
     log = log_path(ws, alias, slot)
@@ -618,7 +624,7 @@ def _http_sys_healthy(env: dict, health: str) -> bool:
 
 
 def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: str | None,
-                  out: list[str], slot: int = 0) -> tuple[str, subprocess.Popen | None]:
+                  out: list[str], slot: int = 0, target: str | None = None) -> tuple[str, subprocess.Popen | None]:
     """("up", None) already running for this request, ("fail", None) refused, ("started", proc). `env` is the slot's
     env block (see `slot_env`)."""
     rec = read_record(ws, alias, slot)
@@ -698,16 +704,20 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
             cmd, cwd=str(cwd), env=proc_env, stdin=subprocess.DEVNULL,
             stdout=logf, stderr=subprocess.STDOUT, shell=shell, **kwargs,
         )
-    pid_path(ws, alias, slot).write_text(json.dumps({
-        "pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
-        "create_time": process_create_time(proc.pid), "env_digest": env_digest(env)}), encoding="utf-8")
+    record = {"pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
+              "create_time": process_create_time(proc.pid), "env_digest": env_digest(env)}
+    if target:
+        record["target"] = target
+    pid_path(ws, alias, slot).write_text(json.dumps(record), encoding="utf-8")
     return "started", proc
 
 
-def up(workspace: dict, alias: str, run: dict | None = None) -> tuple[bool, list[str]]:
+def up(workspace: dict, alias: str, run: dict | None = None, target: str | None = None) -> tuple[bool, list[str]]:
+    """Start the env of `alias` for `run`; `target` (a hotfix mirror) serves that target's worktree and is recorded."""
     require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     out: list[str] = []
-    ok = _up_one(workspace, run, alias, set(), out)
+    target = check_target(run, target) if run else None
+    ok = _up_one(workspace, run, alias, set(), out, target)
     return ok, out
 
 
@@ -822,12 +832,12 @@ def data_run(workspace: dict, run: dict | None, alias: str, which: str) -> tuple
     return code, text
 
 
-def run_preflights(workspace: dict, run: dict | None, alias: str) -> list[tuple[str, int, str]]:
+def run_preflights(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> list[tuple[str, int, str]]:
     """Failed `env.preflight` entries of the repo: [(name, exit, output)]. Empty when all pass."""
     repo = repo_conf(workspace, alias)
     out = []
     for item in (repo.get("env") or {}).get("preflight") or []:
-        code, text = _run_argv(workspace, run, repo["alias"], item["cmd"], _cwd_for(workspace, run, repo["alias"]))
+        code, text = _run_argv(workspace, run, repo["alias"], item["cmd"], _cwd_for(workspace, run, repo["alias"], target))
         if code != 0:
             out.append((str(item.get("name") or "preflight"), code, text))
     return out
@@ -932,9 +942,11 @@ def shared_heads(workspace: dict, run: dict | None) -> dict:
 EXIT_UNHEALTHY, EXIT_USAGE, EXIT_STALE, EXIT_CONFLICT = 1, 2, 3, 4
 
 
-def stale_reason(workspace: dict, run: dict | None, alias: str, strict: bool = False) -> str | None:
+def stale_reason(workspace: dict, run: dict | None, alias: str, strict: bool = False,
+                 target: str | None = None) -> str | None:
     """Why a running env of ours no longer serves the run worktree (other cwd, another resolved slot env, or started at
-    another HEAD; `strict` = `prove --final`: a HEAD change is stale even with `env.hot_reload`)."""
+    another HEAD; `strict` = `prove --final`: a HEAD change is stale even with `env.hot_reload`). `target`: the hotfix
+    mirror it must serve; absent, the target the record says it was started for (so a restart keeps it)."""
     if not run or is_shared(workspace, run, alias):
         return None  # a shared repo serves its holder's code: this run never restarts it
     repo = repo_conf(workspace, alias)
@@ -943,7 +955,7 @@ def stale_reason(workspace: dict, run: dict | None, alias: str, strict: bool = F
         return None
     if is_protected_pid(rec["pid"]):
         return None  # not a process factory may restart; the binding check reports the mismatch
-    cwd = _cwd_for(workspace, run, repo["alias"])
+    cwd = _cwd_for(workspace, run, repo["alias"], target or rec.get("target"))
     if not _same_path(rec.get("cwd"), cwd):
         return f"serves {rec.get('cwd') or '?'}, run worktree is {cwd}"
     try:
@@ -971,6 +983,18 @@ def _run_worktrees(run: dict) -> list[str]:
     return out
 
 
+def _started_for_target(workspace: dict, run: dict, alias: str, rec: dict) -> bool:
+    """The record is a hotfix env of `run`: its cwd is what one of the run's targets resolves to for `alias` (a mirror
+    worktree, a `target_paths` directory, or the plain resolution of a dependency without a worktree), so switching
+    targets may stop it."""
+    if not hotfix_of(run):
+        return False
+    try:
+        return any(_same_path(rec.get("cwd"), _cwd_for(workspace, run, alias, t)) for t in run_targets(run))
+    except FactoryError:
+        return False
+
+
 def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
     """Why factory must NOT restart this stale env for `run`: it serves a worktree that is not the run's own (another
     run, or a hand-started checkout), so env down would kill someone else's process. None when the record's cwd is
@@ -982,7 +1006,9 @@ def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
         cwd = rec.get("cwd")
         here = os.path.normcase(os.path.abspath(str(cwd))) if cwd else None
         own = [os.path.normcase(os.path.abspath(w)) for w in _run_worktrees(run)]
-        if not here or not any(here == w or here.startswith(w.rstrip("\\/") + os.sep) for w in own):
+        if _started_for_target(workspace, run, repo_conf(workspace, alias)["alias"], rec):
+            pass  # a hotfix env of this run (e.g. a dependency served from `target_paths`): the run's own
+        elif not here or not any(here == w or here.startswith(w.rstrip("\\/") + os.sep) for w in own):
             other = find_run_for_cwd(workspace["name"], Path(cwd)) if cwd else None
             return f"env serves {cwd or '?'} (run {other[0]['id'] if other else 'none'})"
     if not can_restart(workspace, run, alias):
@@ -991,7 +1017,8 @@ def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
     return None
 
 
-def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: float = CHECK_HEALTH_TIMEOUT_S) -> dict:
+def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: float = CHECK_HEALTH_TIMEOUT_S,
+              target: str | None = None) -> dict:
     """One repo's preflight: {code, kind, detail, health}. code 0 healthy, 1 unhealthy, 2 usage (bad env block),
     3 stale (our process serves another cwd/HEAD than the run worktree), 4 port or lease conflict."""
     repo = repo_conf(workspace, alias)
@@ -1012,7 +1039,7 @@ def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: floa
     status = health_status(health, probe_timeout)
     healthy = status is not None and status < 500
     out = {"health": health}
-    stale = stale_reason(workspace, run, alias)
+    stale = stale_reason(workspace, run, alias, target=target)
     if stale:
         return {**out, "code": EXIT_STALE, "kind": "stale", "detail": f"{alias}: {stale}"}
     rec = read_record(ws, alias, slot)
@@ -1044,12 +1071,15 @@ def env_state(workspace: dict, run: dict | None, alias: str, probe_timeout: floa
             "detail": f"{health} -> {status if status is not None else 'no answer'} (no env started for {alias})"}
 
 
-def restart_env(workspace: dict, run: dict, alias: str) -> tuple[bool, list[str]]:
-    """env down + up for `run` (the run must hold the lease when env.lease is on)."""
+def restart_env(workspace: dict, run: dict, alias: str, target: str | None = None) -> tuple[bool, list[str]]:
+    """env down + up for `run` (the run must hold the lease when env.lease is on), for the same hotfix target:
+    `target`, else the one the running env was started for."""
     alias = repo_conf(workspace, alias)["alias"]
     require_lease(workspace, run["id"], f"env restart {alias}", alias)
+    rec = read_record(workspace["name"], alias, run_slot(run, alias))
+    target = target or (rec or {}).get("target")
     lines = [down(workspace, alias, run["id"])]
-    ok, up_lines = up(workspace, alias, run)
+    ok, up_lines = up(workspace, alias, run, target)
     return ok, lines + up_lines
 
 
@@ -1176,17 +1206,53 @@ def _load(args) -> tuple[dict, dict | None]:
     return ws, run
 
 
+def _arg_target(args, run: dict | None) -> str | None:
+    """`--target` of env up/check/login/down: a mirror of the hotfix run, None for absent or the base target."""
+    target = getattr(args, "target", None)
+    if target and not run:
+        raise FactoryError("--target needs --run (a hotfix run)")
+    return check_target(run, target) if run else None
+
+
 def _cmd_up(args) -> int:
     ws, run = _load(args)
-    ok, lines = up(ws, args.repo, run)
+    ok, lines = up(ws, args.repo, run, _arg_target(args, run))
     print("\n".join(lines))
     return 0 if ok else 1
 
 
 def _cmd_down(args) -> int:
-    ws, _ = _load(args)
+    ws, run = _load(args)
+    target = _arg_target(args, run)
     print(down(ws, args.repo, getattr(args, "run", None), getattr(args, "force", False), getattr(args, "slot", None)))
+    if target:
+        for line in _down_target_deps(ws, run, repo_conf(ws, args.repo)["alias"], target):
+            print(line)
     return 0
+
+
+def _down_target_deps(ws: dict, run: dict, alias: str, target: str) -> list[str]:
+    """`env down --run --target`: also stop the `depends_on` closure of `alias` that this run started for `target` (its
+    record carries the target and serves what the target resolves to), so the next `env up` can serve another target.
+    A dependency another run holds (lease, shared) or one started for another target is left running."""
+    lines: list[str] = []
+    todo, seen = [alias], {alias}
+    while todo:
+        for dep in (repo_conf(ws, todo.pop()).get("env") or {}).get("depends_on") or []:
+            dep = repo_conf(ws, dep)["alias"]
+            if dep in seen:
+                continue
+            seen.add(dep)
+            todo.append(dep)
+            slot = run_slot(run, dep)
+            rec = read_record(ws["name"], dep, slot)
+            if not rec or rec.get("target") != target or not _started_for_target(ws, run, dep, rec):
+                continue
+            try:
+                lines.append(down(ws, dep, run["id"], slot=slot))
+            except FactoryError as err:
+                lines.append(f"{dep}: left running ({err})")
+    return lines
 
 
 def _cmd_check(args) -> int:
@@ -1201,6 +1267,8 @@ def _cmd_check(args) -> int:
         found = find_run_for_cwd(ws["name"], Path.cwd())
         if found:
             run, inferred_alias = found
+    _arg_target(args, run)
+    target = getattr(args, "target", None) if run else None
     if run:
         try:
             lease_heartbeat(ws["name"], run["id"])
@@ -1218,7 +1286,7 @@ def _cmd_check(args) -> int:
         raise FactoryError("env check: no repo to check (pass <repo>, or --run, or run inside a run worktree)")
     worst = 0
     for alias in aliases:
-        st = env_state(ws, run, alias)
+        st = env_state(ws, run, alias, target=target)
         if st["code"] == EXIT_STALE and getattr(args, "auto_restart", False):
             if not run:
                 raise FactoryError("env check --auto-restart needs --run (or a cwd inside a run worktree)")
@@ -1230,13 +1298,13 @@ def _cmd_check(args) -> int:
                 worst = max(worst, st["code"])
                 continue
             print(f"{alias}: stale ({st['detail']}); restarting (env down + up)")
-            ok, lines = restart_env(ws, run, alias)
+            ok, lines = restart_env(ws, run, alias, target)
             print("\n".join(lines))
-            st = env_state(ws, run, alias) if ok else {"code": EXIT_UNHEALTHY, "kind": "start",
+            st = env_state(ws, run, alias, target=target) if ok else {"code": EXIT_UNHEALTHY, "kind": "start",
                                                       "detail": f"{alias}: restart failed", "health": ""}
         if st["code"] == 0:
-            print(f"{alias}: healthy {st.get('health', '')}")
-            for name, code, text in run_preflights(ws, run, alias):
+            print(f"{alias}: healthy {st.get('health', '')}{_served_target(ws, run, alias)}")
+            for name, code, text in run_preflights(ws, run, alias, target):
                 detail = f"{name} exited {code}" + (f": {text.splitlines()[-1]}" if text else "")
                 print(f"{alias}: preflight {name} FAILED ({detail})")
                 print(f"ENV-FAIL repo={alias} kind=preflight detail={name}")
@@ -1246,6 +1314,14 @@ def _cmd_check(args) -> int:
             print(env_fail_line(alias, st["kind"], st["detail"]))
         worst = max(worst, st["code"])
     return worst
+
+
+def _served_target(ws: dict, run: dict | None, alias: str) -> str:
+    """` (target <t>)` when the running env of `alias` was started for a hotfix mirror."""
+    if not run or is_shared(ws, run, alias):
+        return ""
+    rec = read_record(ws["name"], alias, run_slot(run, alias))
+    return f" (target {rec['target']})" if rec and rec.get("target") else ""
 
 
 def _cmd_data(args) -> int:
@@ -1278,6 +1354,7 @@ def _cmd_logs(args) -> int:
 def _cmd_login(args) -> int:
     ws, run = _load(args)
     user = getattr(args, "user", None)
+    _arg_target(args, run)
     ok, text = login(ws, args.repo, user, getattr(args, "run", None))
     if text:
         print(text)
@@ -1321,7 +1398,7 @@ def _stop_run_envs(workspace: dict, run: dict, only: set[str] | None = None) -> 
                 continue
             slot = run_slot(run, alias)
             rec = read_record(workspace["name"], alias, slot)
-            if not rec or not _same_path(rec.get("cwd"), _cwd_for(workspace, run, alias)):
+            if not rec or not _same_path(rec.get("cwd"), _cwd_for(workspace, run, alias, rec.get("target"))):
                 continue  # not started from this run's worktree
             lines.append(down(workspace, alias, run["id"], slot=slot))
         except FactoryError as err:
@@ -1440,6 +1517,15 @@ def register(sub) -> None:
             sp.add_argument("--auto-restart", action="store_true", help="stale env: env down + up for the run (needs the lease)")
         if name in ("up", "check"):
             sp.add_argument("--run", help="use the worktree of this run (with env.lease on, up needs the run to hold the lease)")
+        if name in ("up", "check"):
+            sp.add_argument("--target", help="hotfix run: serve/check this mirror target's worktree "
+                            "(repos without a worktree for it keep the run's; `target_paths` of the repo applies)")
+        if name == "down":
+            sp.add_argument("--target", help="hotfix run (with --run): after stopping the repo, also stop its depends_on "
+                            "repos this run started for this target, so `env up` can serve another target; "
+                            "deps held by another run or started for another target stay up")
+        if name == "login":
+            sp.add_argument("--target", help="hotfix run: only validated (login uses the running env); accepted for symmetry")
         if name == "down":
             sp.add_argument("--run", help="the run stopping its env (must hold the env lease when one is held)")
             sp.add_argument("--force", action="store_true", help="stop even though another run holds the env lease")

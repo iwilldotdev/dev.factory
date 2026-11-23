@@ -16,10 +16,10 @@ from pathlib import Path
 from ..collectors import browser as browser_collector
 from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
                                weak_pattern_reason)
-from ..core import (SCHEMA_VERSION, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
+from ..core import (SCHEMA_VERSION, check_target, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
-                    load_evidence, target_worktree, workspace_load, write_evidence, write_json)
+                    load_evidence, target_serve_path, target_worktree, workspace_load, write_evidence, write_json)
 from .. import integrity, shots
 from . import gate
 
@@ -357,7 +357,7 @@ def dep_binding(run: dict, ws: dict, alias: str, target: str | None, strict: boo
     """First binding error of the env.depends_on closure of `alias`, or None."""
     for dep in dep_closure(ws, [alias]):
         try:
-            wt = target_worktree(run, ws, dep, target) if dep in run["repos"] else None
+            wt = target_serve_path(run, ws, dep, target) or (repo_path_for_run(run, ws, dep) if dep in run["repos"] else None)
             wt = wt or Path(repo_conf(ws, dep).get("path") or ".")
             head = git_head(wt) if (Path(wt) / ".git").exists() else None
         except FactoryError:
@@ -690,7 +690,8 @@ class Reporter:
         self.line(env_fail_line(alias, kind, detail))
 
 
-def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict, strict: bool = False) -> None:
+def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict, strict: bool = False,
+                    target: str | None = None) -> None:
     """A running env of ours that serves another HEAD/worktree than the run is restarted once (env down + up)
     when the run holds the lease; nothing else is probed here (the first runtime check does that). `strict`
     (`--final`): a hot_reload repo started at another HEAD is stale too, so final evidence comes from HEAD."""
@@ -699,18 +700,29 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
     except ImportError:
         return
     kw = {"strict": True} if strict else {}
+    tkw = {"target": target} if target else {}
+    todo: list[tuple[str, str]] = []
     for alias in aliases:
         try:
-            reason = stale_reason(ws, run, alias, **kw)
+            reason = stale_reason(ws, run, alias, **kw, **tkw)
             if not reason:
                 continue
             blocked = restart_blocker(ws, run, alias)
-            if blocked:  # another run's (or a hand-started) env, or the lease is not ours: never touched
-                stopped[alias] = f"env not restarted: {blocked}"
-                rep.env_fail(alias, "stale", blocked)
-                continue
+        except FactoryError as err:
+            stopped[alias] = f"env restart refused: {err}"
+            rep.env_fail(alias, "lease" if "lease" in str(err) else "start", str(err))
+            continue
+        if blocked:  # another run's (or a hand-started) env, or the lease is not ours: never touched
+            stopped[alias] = f"env not restarted: {blocked}"
+            rep.env_fail(alias, "stale", blocked)
+            continue
+        todo.append((alias, reason))
+    # dependencies first (`aliases` lists dependents before their dependencies): a dependent restarts onto its fresh
+    # dependency; one still serving another target would make `env up` of the dependent refuse
+    for alias, reason in reversed(todo):
+        try:
             print(f"env {alias}: stale ({reason}); auto-restarting once (env down + up)", flush=True)
-            ok, lines = restart_env(ws, run, alias)
+            ok, lines = restart_env(ws, run, alias, **tkw)
         except FactoryError as err:
             stopped[alias] = f"env restart refused: {err}"
             rep.env_fail(alias, "lease" if "lease" in str(err) else "start", str(err))
@@ -722,7 +734,7 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
 
 
 def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reuse: bool, rep: Reporter,
-                stopped: dict, prior=None) -> None:
+                stopped: dict, prior=None, targets: list | None = None) -> None:
     """Once before the runtime batch: `env.seed.reset` of every runtime repo that declares it (and still has a runtime
     check to run). A failing reset is an env failure: the repo's runtime checks are not run."""
     try:
@@ -734,7 +746,7 @@ def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reu
             continue
         pending = [c for c in checks if c.get("type") in RUNTIME and c.get("repo") and repo_conf(ws, c["repo"])["alias"] == alias
                    and any(not reuse or (prior(c, t) if prior else reusable(run, ws, c, t, integrity.check_digest(run["id"], c))) is None
-                           for t in run_targets(run))]
+                           for t in (targets or run_targets(run)))]
         if not pending:
             continue
         try:
@@ -883,26 +895,29 @@ def estimate_rows(run: dict, ws: dict, items: list[tuple[dict, str | None]], reu
     return rows
 
 
-def cmd_estimate(args, run: dict, ws: dict, checks: list[dict], only_quality, only_rule, wanted_repo, mode: str) -> int:
+def cmd_estimate(args, run: dict, ws: dict, checks: list[dict], only_quality, only_rule, wanted_repo, mode: str,
+                 targets: list | None = None, base_only: bool = True) -> int:
     """`prove --estimate`: nothing runs, nothing is written. Per check in prove order: REUSED or RUN and the expected
     seconds; totals for the chosen mode, `--fast` (reuse) and `--final` (everything runs)."""
     reuse = mode != "final" and not getattr(args, "all", False)
     items: list[tuple[dict, str | None]] = []
     for chk in checks:
-        for target in run_targets(run):
+        for target in targets or run_targets(run):
             if chk.get("repo") and target_worktree(run, ws, repo_conf(ws, chk["repo"])["alias"], target) is None:
                 continue
             items.append((chk, target))
+    if not base_only:
+        only_quality, only_rule = None, None
     if only_quality:
         qaliases = [only_quality]
-    elif args.check:
+    elif args.check or not base_only:
         qaliases = []
     else:
         qaliases = [a for a in _select_repos(run, ws, wanted_repo) if repo_conf(ws, a).get("quality")]
     items += [({"id": gate.quality_id(a), "type": "quality", "repo": a}, None) for a in qaliases]
     if only_rule:
         rules = only_rule
-    elif args.check:
+    elif args.check or not base_only:
         rules = []
     else:
         rules = [r for r in gate.rule_checks(ws, run) if not wanted_repo or r["repo"] == wanted_repo]
@@ -959,8 +974,14 @@ def cmd_prove(args) -> int:
     if wanted_repo:
         checks = [c for c in checks if c.get("repo") and repo_conf(ws, c["repo"])["alias"] == wanted_repo]
     checks = order_checks(run, ws, checks)
+    only_target = check_target(run, getattr(args, "target", None))
+    targets = [only_target or run_targets(run)[0]] if getattr(args, "target", None) else run_targets(run)
+    base_only = not only_target
+    if not base_only and (only_quality or only_rule):
+        raise FactoryError(f"{args.check}: quality and rule checks run only for the base target "
+                           f"({run_targets(run)[0]}); --target {args.target} would run nothing")
     if estimate:
-        return cmd_estimate(args, run, ws, checks, only_quality, only_rule, wanted_repo, mode)
+        return cmd_estimate(args, run, ws, checks, only_quality, only_rule, wanted_repo, mode, targets, base_only)
     json_mode = bool(getattr(args, "json", False))
     rep = Reporter(json_mode)
     records: list[dict] = []
@@ -991,9 +1012,10 @@ def cmd_prove(args) -> int:
         return True
 
     _preflight_envs(run, ws, runtime_aliases + [d for d in dep_closure(ws, runtime_aliases) if d not in runtime_aliases],
-                    rep, stopped, strict=mode == "final")
+                    rep, stopped, strict=mode == "final",
+                    target=(only_target or targets[0]) if hotfix_of(run) else None)
     if not args.check:
-        _reset_data(run, ws, checks, runtime_aliases, reuse, rep, stopped, prior=prior_of)
+        _reset_data(run, ws, checks, runtime_aliases, reuse, rep, stopped, prior=prior_of, targets=targets)
     seen_runtime: set[str] = set()
     last_sig: tuple | None = None
     batch_stop: str | None = None
@@ -1098,7 +1120,7 @@ def cmd_prove(args) -> int:
         handle(record, chk)
 
     for chk in checks:
-        for target in run_targets(run):
+        for target in targets:
             if chk.get("repo") and target_worktree(run, ws, repo_conf(ws, chk["repo"])["alias"], target) is None:
                 print(f"warning: {chk['id']}: no worktree for target {target} (factory run mirror); skipped")
                 continue
@@ -1121,7 +1143,7 @@ def cmd_prove(args) -> int:
         quality(only_quality)
     for rule in only_rule or []:
         rule_check(rule)
-    if not args.check:
+    if not args.check and base_only:
         for alias in _select_repos(run, ws, wanted_repo):
             if repo_conf(ws, alias).get("quality"):
                 quality(alias)
@@ -1163,6 +1185,8 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("--check")
     p.add_argument("--repo")
+    p.add_argument("--target", help="hotfix run: only the checks of this target (a mirror also skips quality and rules); "
+                   "start its env first: `env up --run <run> --target <target>`")
     p.add_argument("--fast", action="store_true", help="bail at the first runtime assert failure + reuse passing evidence "
                    "(gate prove refuses fast evidence: finish with --final)")
     p.add_argument("--final", action="store_true", help="run every check: no reuse, no bail (the run gate prove wants)")

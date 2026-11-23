@@ -593,7 +593,7 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     head = _head_of(cwd) if cwd.is_dir() else None
     # record check -> port checks -> Popen -> pid write under the env lock: two concurrent ups cannot both start
     with _file_lock(_lock_path(ws)):
-        status, proc = _start_locked(env, ws, alias, health, cwd, head, out, slot, target)
+        status, proc = _start_locked(env, ws, alias, health, cwd, head, out, slot, target, run["id"] if run else None)
     if status != "started":
         return status == "up"
     log = log_path(ws, alias, slot)
@@ -624,7 +624,8 @@ def _http_sys_healthy(env: dict, health: str) -> bool:
 
 
 def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: str | None,
-                  out: list[str], slot: int = 0, target: str | None = None) -> tuple[str, subprocess.Popen | None]:
+                  out: list[str], slot: int = 0, target: str | None = None,
+                  run_id: str | None = None) -> tuple[str, subprocess.Popen | None]:
     """("up", None) already running for this request, ("fail", None) refused, ("started", proc). `env` is the slot's
     env block (see `slot_env`)."""
     rec = read_record(ws, alias, slot)
@@ -708,6 +709,8 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
               "create_time": process_create_time(proc.pid), "env_digest": env_digest(env)}
     if target:
         record["target"] = target
+    if run_id:  # who started it: a hotfix run only switches targets of envs it started itself
+        record["run"] = run_id
     pid_path(ws, alias, slot).write_text(json.dumps(record), encoding="utf-8")
     return "started", proc
 
@@ -983,16 +986,52 @@ def _run_worktrees(run: dict) -> list[str]:
     return out
 
 
-def _started_for_target(workspace: dict, run: dict, alias: str, rec: dict) -> bool:
-    """The record is a hotfix env of `run`: its cwd is what one of the run's targets resolves to for `alias` (a mirror
-    worktree, a `target_paths` directory, or the plain resolution of a dependency without a worktree), so switching
-    targets may stop it."""
-    if not hotfix_of(run):
-        return False
+def _serves_a_target_of(workspace: dict, run: dict, alias: str, rec: dict) -> bool:
+    """The record's cwd is what one of the run's targets resolves to for `alias` (a mirror worktree, a `target_paths`
+    directory, or the plain resolution of a dependency without a worktree). Geometry only: who started it is
+    `_started_for_target`."""
     try:
         return any(_same_path(rec.get("cwd"), _cwd_for(workspace, run, alias, t)) for t in run_targets(run))
     except FactoryError:
         return False
+
+
+def _started_for_target(workspace: dict, run: dict, alias: str, rec: dict) -> bool:
+    """The record is a hotfix env of `run`, so switching targets may stop it: (a) its cwd is the run's own worktree of
+    `alias` for one of its targets, or (b) the record names this run as the one that started it (`run` field) and its cwd
+    is what one of the run's targets resolves to (a `target_paths` directory, the main checkout of a dependency). A record
+    without a run id, or another run's, served from outside this run's worktrees is someone else's, whatever it serves."""
+    if not hotfix_of(run):
+        return False
+    rrec = (run.get("repos") or {}).get(alias) or {}
+    own = [rrec.get("worktree"), *(rrec.get("worktrees") or {}).values()] if isinstance(rrec, dict) else []
+    sub = ((repo_conf(workspace, alias).get("env") or {}).get("cwd") or ".")
+    for wt in own:
+        if wt and _same_path(rec.get("cwd"), (Path(wt) / sub).resolve()):
+            return True
+    return rec.get("run") == run.get("id") and _serves_a_target_of(workspace, run, alias, rec)
+
+
+def deps_first(workspace: dict, aliases: list[str]) -> list[str]:
+    """`aliases` ordered so that every repo comes after the `depends_on` repos it needs (stable for unrelated ones)."""
+    wanted, seen, out = set(aliases), set(), []
+
+    def visit(alias: str) -> None:
+        if alias in seen:
+            return
+        seen.add(alias)
+        try:
+            deps = (repo_conf(workspace, alias).get("env") or {}).get("depends_on") or []
+            for dep in deps:
+                visit(repo_conf(workspace, dep)["alias"])
+        except FactoryError:
+            pass
+        if alias in wanted:
+            out.append(alias)
+
+    for alias in aliases:
+        visit(alias)
+    return out
 
 
 def restart_blocker(workspace: dict, run: dict, alias: str) -> str | None:
@@ -1233,7 +1272,7 @@ def _cmd_down(args) -> int:
 
 def _down_target_deps(ws: dict, run: dict, alias: str, target: str) -> list[str]:
     """`env down --run --target`: also stop the `depends_on` closure of `alias` that this run started for `target` (its
-    record carries the target and serves what the target resolves to), so the next `env up` can serve another target.
+    record carries the target and this run's id), so the next `env up` can serve another target.
     A dependency another run holds (lease, shared) or one started for another target is left running."""
     lines: list[str] = []
     todo, seen = [alias], {alias}
@@ -1246,7 +1285,10 @@ def _down_target_deps(ws: dict, run: dict, alias: str, target: str) -> list[str]
             todo.append(dep)
             slot = run_slot(run, dep)
             rec = read_record(ws["name"], dep, slot)
-            if not rec or rec.get("target") != target or not _started_for_target(ws, run, dep, rec):
+            if not rec or rec.get("target") != target or not _serves_a_target_of(ws, run, dep, rec):
+                continue
+            if rec.get("run") != run["id"]:  # same directory, started by another run (or by hand): never stopped
+                lines.append(f"{dep}: left running (run {rec.get('run') or 'none'})")
                 continue
             try:
                 lines.append(down(ws, dep, run["id"], slot=slot))
@@ -1291,7 +1333,8 @@ def _cmd_check(args) -> int:
             if not run:
                 raise FactoryError("env check --auto-restart needs --run (or a cwd inside a run worktree)")
             ensure_owner(run)
-            blocked = restart_blocker(ws, run, alias)
+            blocked = _restart_deps(ws, run, alias, target) if hotfix_of(run) else None
+            blocked = blocked or restart_blocker(ws, run, alias)
             if blocked:
                 print(f"{alias}: NOT restarted ({blocked})")
                 print(env_fail_line(alias, "stale", blocked))
@@ -1314,6 +1357,40 @@ def _cmd_check(args) -> int:
             print(env_fail_line(alias, st["kind"], st["detail"]))
         worst = max(worst, st["code"])
     return worst
+
+
+def _restart_deps(ws: dict, run: dict, alias: str, target: str | None) -> str | None:
+    """`env check --auto-restart` of a hotfix run: before `alias`, restart its stale `depends_on` closure (dependencies
+    first) that this run started, so `alias` comes back up onto them. A stale dependency that is not the run's own is not
+    touched; its blocker is returned and `alias` is left as it is."""
+    closure = deps_first(ws, dep_aliases(ws, alias))
+    for dep in closure:
+        st = env_state(ws, run, dep, target=target)
+        if st["code"] != EXIT_STALE:
+            continue
+        blocked = restart_blocker(ws, run, dep)
+        if blocked:
+            print(f"{dep}: NOT restarted ({blocked})")
+            print(env_fail_line(dep, "stale", blocked))
+            return f"dependency {dep}: {blocked}"
+        print(f"{dep}: stale ({st['detail']}); restarting (env down + up)")
+        ok, lines = restart_env(ws, run, dep, target)
+        print("\n".join(lines))
+        if not ok:
+            return f"dependency {dep}: restart failed"
+    return None
+
+
+def dep_aliases(ws: dict, alias: str) -> list[str]:
+    """The `depends_on` closure of `alias` (itself excluded)."""
+    out, todo = [], [alias]
+    while todo:
+        for dep in (repo_conf(ws, todo.pop()).get("env") or {}).get("depends_on") or []:
+            dep = repo_conf(ws, dep)["alias"]
+            if dep != alias and dep not in out:
+                out.append(dep)
+                todo.append(dep)
+    return out
 
 
 def _served_target(ws: dict, run: dict | None, alias: str) -> str:

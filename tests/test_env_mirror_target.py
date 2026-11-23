@@ -188,6 +188,134 @@ class EnvTargetTests(MirrorEnvCase):
         self.assertEqual(rc, 2, out)
 
 
+    # --- review fixes: restart order, ownership of a record, check --auto-restart, down --target ---
+
+    def preflight(self, run, aliases, target=None):
+        from factory.commands import prove
+        rep, stopped = prove.Reporter(False), {}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            prove._preflight_envs(run, self.ws, aliases, rep, stopped, target=target)
+        return rep, stopped, out.getvalue()
+
+    def set_record(self, alias, **changes):
+        rec = envmod.read_record("ws", alias)
+        for k, v in changes.items():
+            if v is None:
+                rec.pop(k, None)
+            else:
+                rec[k] = v
+        envmod.pid_path("ws", alias, 0).write_text(json.dumps(rec), encoding="utf-8")
+
+    def test_prove_preflight_orders_restarts_by_depends_on_not_alphabet(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1")  # base target: React, and API from the main checkout
+        aliases = sorted(["React", "API"])  # what prove passes: alphabetical, so the dependent is not last by design
+        rep, stopped, out = self.preflight(core.run_load("r1"), aliases, target="pack")
+        self.assertEqual(stopped, {}, out)
+        self.assertFalse(rep.env_failed, out)
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "React")["cwd"], self.mirror))
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "API")["cwd"], self.api_pack))
+        self.assertLess(out.index("env API: stale"), out.index("env React: stale"))
+
+    def test_non_hotfix_preflight_restarts_the_dependency_before_its_dependent(self):
+        from ops_helpers import git
+        self.make_run("r2", repos={"React": {"worktree": str(self.base), "branch": "b"},
+                                   "API": {"worktree": str(self.api_main), "branch": "b"}})
+        rc, out = quiet_cli("env", "up", "ws", "React", "--run", "r2")
+        self.assertEqual(rc, 0, out)
+        for repo in (self.base, self.api_main):
+            git(repo, "commit", "--allow-empty", "-qm", "moved")
+        rep, stopped, out = self.preflight(core.run_load("r2"), sorted(["React", "API"]))
+        self.assertEqual(stopped, {}, out)
+        self.assertFalse(rep.env_failed, out)
+        for alias, repo in (("React", self.base), ("API", self.api_main)):
+            self.assertEqual(envmod.read_record("ws", alias)["head"], self.head(repo), alias)
+
+    def test_deps_first_orders_a_dependent_after_its_dependency(self):
+        self.assertEqual(envmod.deps_first(self.ws, ["React", "API"]), ["API", "React"])
+        self.assertEqual(envmod.deps_first(self.ws, ["API", "React"]), ["API", "React"])
+
+    def test_record_carries_the_run_that_started_it(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1")
+        self.assertEqual(envmod.read_record("ws", "React")["run"], "r1")
+        self.assertEqual(envmod.read_record("ws", "API")["run"], "r1")
+        envmod.down(self.ws, "React", "r1")
+        envmod.down(self.ws, "API", "r1")
+        ok, _ = envmod.up(self.ws, "API")
+        self.assertTrue(ok)
+        self.assertNotIn("run", envmod.read_record("ws", "API"))
+
+    def test_hotfix_run_never_takes_over_an_env_started_by_another_run_or_by_hand(self):
+        self.make_run("rA", repos={"React": {"worktree": str(self.base), "branch": "b"}})
+        for starter in (None, core.run_load("rA")):
+            ok, _ = envmod.up(self.ws, "API", starter)  # served from the main checkout, which r1 resolves to as well
+            self.assertTrue(ok)
+            run = core.run_load("r1")
+            self.assertTrue(envmod.stale_reason(self.ws, run, "API", target="pack"))
+            blocked = envmod.restart_blocker(self.ws, run, "API")
+            self.assertIn("env serves", blocked or "")
+            _, stopped, _ = self.preflight(run, ["React", "API"], target="pack")
+            self.assertIn("env not restarted", stopped.get("API", ""))
+            self.assertTrue(envmod._same_path(envmod.read_record("ws", "API")["cwd"], self.api_main))
+            envmod.down(self.ws, "API", force=True)
+
+    def test_a_record_without_run_id_in_a_target_path_is_not_the_runs_own(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1", "--target", "pack")
+        run = core.run_load("r1")
+        self.assertIsNone(envmod.restart_blocker(self.ws, run, "API"))
+        self.set_record("API", run=None)  # an old record, or a manual start
+        self.assertIn("env serves", envmod.restart_blocker(self.ws, run, "API") or "")
+        self.set_record("API", run="someone-else")
+        self.assertIn("env serves", envmod.restart_blocker(self.ws, run, "API") or "")
+
+    def test_dependency_run_worktree_is_not_the_runs_own_unless_it_started_it(self):
+        dep_api = make_repo(self.tmp / "api-dep-run").resolve()
+        self.make_run("dep", tickets=[{"key": "DEV-2", "type": "bug", "summary": "s", "area": "a"}],
+                      repos={"API": {"worktree": str(dep_api), "branch": "b"}})
+        self.make_run("child", parent="epic", targets=["homolog", "pack"], hotfix={"base": "homolog", "mirror": ["pack"]},
+                      tickets=[{"key": "DEV-1", "type": "bug", "summary": "s", "area": "a", "depends_on": ["DEV-2"]}],
+                      repos={"React": {"worktree": str(self.base), "branch": "b", "worktrees": {"pack": str(self.mirror)}}})
+        run = core.run_load("child")
+        self.assertTrue(envmod._same_path(envmod._cwd_for(self.ws, run, "API"), dep_api))  # the dependency run's worktree
+        rec = {"pid": 1, "cwd": str(dep_api), "head": "x", "started": "x", "create_time": None, "run": "dep"}
+        pid = envmod.pid_path("ws", "API", 0)
+        pid.parent.mkdir(parents=True, exist_ok=True)
+        pid.write_text(json.dumps(rec), encoding="utf-8")
+        self.addCleanup(lambda: pid.unlink(missing_ok=True))  # a fake pid must never reach stop_all
+        self.assertFalse(envmod._started_for_target(self.ws, run, "API", rec))
+        self.assertTrue(envmod._serves_a_target_of(self.ws, run, "API", rec))
+        self.assertIn("env serves", envmod.restart_blocker(self.ws, run, "API") or "")
+        self.assertTrue(envmod._started_for_target(self.ws, run, "API", {**rec, "run": "child"}))
+
+    def test_check_auto_restart_with_target_restarts_the_stale_dependencies_first(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1", "--target", "pack")
+        rc, out = quiet_cli("env", "check", "ws", "React", "--run", "r1", "--target", "homolog", "--auto-restart")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "React")["cwd"], self.base))
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "API")["cwd"], self.api_main))
+        self.assertLess(out.index("API: stale"), out.index("React: stale"))
+
+    def test_check_auto_restart_leaves_a_dependency_it_did_not_start(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1", "--target", "pack")
+        self.set_record("API", run=None)
+        rc, out = quiet_cli("env", "check", "ws", "React", "--run", "r1", "--target", "homolog", "--auto-restart")
+        self.assertEqual(rc, 3, out)
+        self.assertIn("API: NOT restarted", out)
+        self.assertIn("React: NOT restarted", out)
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "API")["cwd"], self.api_pack))
+        self.assertTrue(envmod._same_path(envmod.read_record("ws", "React")["cwd"], self.mirror))
+
+    def test_down_target_leaves_a_dep_another_run_started_in_the_same_target_path(self):
+        quiet_cli("env", "up", "ws", "React", "--run", "r1", "--target", "pack")
+        for owner in ("run-b", None):
+            self.set_record("API", run=owner)
+            rc, out = quiet_cli("env", "down", "ws", "React", "--run", "r1", "--target", "pack")
+            self.assertEqual(rc, 0, out)
+            self.assertIn(f"API: left running (run {owner or 'none'})", out)
+            self.assertIsNotNone(envmod.read_record("ws", "API"))
+            quiet_cli("env", "up", "ws", "React", "--run", "r1", "--target", "pack")
+
+
 class WorkspaceCheckTests(unittest.TestCase):
     WS = {"ship": {"targets": ["pack", "homolog"], "hotfix": {"base": "homolog", "mirror": ["pack"]}}}
 

@@ -696,7 +696,7 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
     when the run holds the lease; nothing else is probed here (the first runtime check does that). `strict`
     (`--final`): a hot_reload repo started at another HEAD is stale too, so final evidence comes from HEAD."""
     try:
-        from .env import restart_blocker, restart_env, stale_reason
+        from .env import deps_first, restart_blocker, restart_env, stale_reason
     except ImportError:
         return
     kw = {"strict": True} if strict else {}
@@ -717,9 +717,11 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
             rep.env_fail(alias, "stale", blocked)
             continue
         todo.append((alias, reason))
-    # dependencies first (`aliases` lists dependents before their dependencies): a dependent restarts onto its fresh
-    # dependency; one still serving another target would make `env up` of the dependent refuse
-    for alias, reason in reversed(todo):
+    # dependencies first (`depends_on` order; `aliases` is alphabetical): a dependent restarts onto its fresh dependency,
+    # and one still serving another target would make `env up` of the dependent refuse
+    reasons = dict(todo)
+    for alias in deps_first(ws, [a for a, _ in todo]):
+        reason = reasons[alias]
         try:
             print(f"env {alias}: stale ({reason}); auto-restarting once (env down + up)", flush=True)
             ok, lines = restart_env(ws, run, alias, **tkw)

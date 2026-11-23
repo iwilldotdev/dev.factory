@@ -63,7 +63,9 @@ test('factory subcommands reserved for the main session', () => {
     'factory run human r "x"', 'factory run start acme DEV-1', 'python -m factory gate r plan',
     'factory --json gate r build', 'C:/p/bin/factory.cmd ship verify r', 'factory workspace import a --from x',
     'factory run replan r "x"', 'factory run rewind r prove "x"', 'factory run decide r "x" --by user',
-    'python -m factory run unblock r 0', 'factory run delete r --yes', 'factory run claim r'];
+    'python -m factory run unblock r 0', 'factory run delete r --yes', 'factory run claim r',
+    'factory run target-ticket r pack BUG-2', 'factory run env-only r React', 'factory run env-only r React --off',
+    'factory run mirror r React --to pack'];
   for (const role of ['builder', 'author', 'auditor']) {
     for (const cmd of reserved) assert.ok(denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
   }

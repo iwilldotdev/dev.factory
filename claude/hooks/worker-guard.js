@@ -45,6 +45,7 @@ const ORCHESTRATOR_ONLY = [
   [factory(String.raw`run\s+(?:start|branch|decide|block|unblock|human|replan|rewind|delete|claim)\b`), 'run state changes (incl. replan/rewind/decide/unblock/delete/claim) belong to the main session'],
   [factory(String.raw`workspace\s+(?:init|import)\b`), 'workspace changes belong to the main session'],
   [factory(String.raw`run\s+(?:verify-human|retype|close)\b`), 'recording human checks, retyping and closing runs belong to the main session'],
+  [factory(String.raw`run\s+(?:target-ticket|env-only|mirror)\b`), 'run state changes (target-ticket, env-only, mirror) belong to the main session'],
   [factory(String.raw`env\s+lease\b[^;&|\n]*\b(?:release|acquire)\b`), 'env lease changes belong to the main session'],
   [factory(String.raw`env\s+down\b`), 'env lifecycle (down) belongs to the main session'],
   [factory(String.raw`env\s+up\b`), 'env lifecycle (up) belongs to the main session; run `factory env check` (no --auto-restart) and hand back blocked if the env is down'],

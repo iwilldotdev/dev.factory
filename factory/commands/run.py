@@ -13,7 +13,7 @@ import zipfile
 from pathlib import Path
 
 from ..collectors.test import prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
+from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home,
                     git, git_dirty, git_head, now, repo_conf, run_dir, target_branch, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
@@ -456,6 +456,31 @@ def cmd_env_only(args) -> int:
     return 0
 
 
+def cmd_target_ticket(args) -> int:
+    """Hotfix with several tickets: the MR of `target` is titled with ticket KEY (default: the first ticket)."""
+    def mutate(run: dict) -> None:
+        hf = hotfix_of(run)
+        if not hf:
+            raise FactoryError(f"run {run['id']} is not a hotfix run; target-ticket needs one")
+        if args.target not in run_targets(run):
+            raise FactoryError(f"{args.target}: not a target of run {run['id']} ({', '.join(run_targets(run))})")
+        keys = {str(t.get("key", "")).upper(): t["key"] for t in run.get("tickets") or [] if t.get("key")}
+        if args.key.upper() not in keys:
+            raise FactoryError(f"{args.key}: not a ticket of run {run['id']} ({', '.join(keys.values())})")
+        if run.get("phase") in ("done", "blocked"):
+            raise FactoryError(f"run {run['id']} is {run['phase']}; target-ticket is not allowed")
+        key = keys[args.key.upper()]
+        if (hf.get("tickets") or {}).get(args.target) == key:
+            return
+        hf.setdefault("tickets", {})[args.target] = key
+        event(run, "target_ticket", target=args.target, ticket=key, phase=run.get("phase"))
+
+    run = run_update(args.run, mutate)
+    _emit(args, {"target": args.target, "ticket": run["hotfix"]["tickets"][args.target]},
+          f"{args.target}: MR titled with {run['hotfix']['tickets'][args.target]} in run {run['id']} (re-run `ship plan`)")
+    return 0
+
+
 def _prepare(ws: dict, conf: dict, main: Path, worktree: Path) -> str | None:
     """Same preparation as the temp worktrees of baseline/repro/red-green (quality.setup or node_modules link)."""
     try:
@@ -865,6 +890,8 @@ def event_summary(e: dict) -> str:
         return f"closed from {d.get('from')}: {d.get('reason')}"
     if kind == "env_only":
         return f"{d.get('repo')}: env_only {'on' if d.get('on') else 'off'} (phase {d.get('phase')})"
+    if kind == "target_ticket":
+        return f"{d.get('target')}: MR ticket {d.get('ticket')} (phase {d.get('phase')})"
     if kind == "retype":
         return f"retyped to {d.get('to')} (phase {d.get('phase')})"
     if kind == "claim":
@@ -1018,6 +1045,11 @@ def register(sub) -> None:
     p.add_argument("repo")
     p.add_argument("--off", action="store_true", help="make the repo a code repo again")
     p.set_defaults(func=cmd_env_only)
+    p = rs.add_parser("target-ticket", help="hotfix: title the MR of a target with this ticket (default: the first)")
+    p.add_argument("run")
+    p.add_argument("target")
+    p.add_argument("key")
+    p.set_defaults(func=cmd_target_ticket)
     p = rs.add_parser("mirror", help="hotfix: cherry-pick the base-target commits into a mirror target worktree")
     p.add_argument("run")
     p.add_argument("repo")

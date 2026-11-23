@@ -104,7 +104,8 @@ def validate_title_format(fmt: str, allowed: tuple[str, ...]) -> None:
 
 def _title(fmt: str, run: dict, alias: str, target: str) -> str:
     tickets = run.get("tickets") or [{}]
-    first = tickets[0]
+    wanted = ((run.get("hotfix") or {}).get("tickets") or {}).get(target)
+    first = next((t for t in tickets if wanted and t.get("key") == wanted), tickets[0])
     key = first.get("key", run["id"])
     summary = _ticket_summary(run, first)
     out = fmt.format(key=key, summary=summary, repo=alias, target=target, target_upper=target.upper(),

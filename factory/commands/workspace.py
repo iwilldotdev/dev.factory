@@ -370,11 +370,9 @@ def target_branches_errors(ws: dict) -> list[str]:
 
 
 def target_paths_errors(ws: dict) -> list[str]:
-    """Optional per-repo `target_paths`: {logical target: absolute directory served for that mirror target}; keys must
-    be known mirror targets (not the hotfix base, which serves the run worktree)."""
+    """Optional per-repo `target_paths`: {logical target: absolute directory}; keys must be known targets (a mirror target,
+    or the hotfix base, served only for a repo without a run worktree). No filesystem check, like the other paths here."""
     known = known_targets(ws)
-    hf = (ws.get("ship") or {}).get("hotfix")
-    base = hf.get("base") if isinstance(hf, dict) else None
     errors = []
     for repo in ws.get("repos", []):
         alias = repo.get("alias") or "?"
@@ -387,9 +385,6 @@ def target_paths_errors(ws: dict) -> list[str]:
         for key, path in tp.items():
             if key not in known:
                 errors.append(f"{alias}: target_paths key {key!r} is not a known target ({sorted(known)})")
-            elif key == base:
-                errors.append(f"{alias}: target_paths key {key!r} is the hotfix base target (it serves the run worktree; "
-                              "target_paths only applies to mirror targets)")
             if not isinstance(path, str) or not path.strip():
                 errors.append(f"{alias}: target_paths[{key!r}] must be a non-empty string")
             elif not (Path(path).is_absolute() or PureWindowsPath(path).is_absolute() or PurePosixPath(path).is_absolute()):

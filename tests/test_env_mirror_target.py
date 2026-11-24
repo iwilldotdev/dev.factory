@@ -335,10 +335,8 @@ class WorkspaceCheckTests(unittest.TestCase):
         self.assertEqual(len(errs), 1)
         self.assertIn("not a known target", errs[0])
 
-    def test_hotfix_base_key_is_rejected(self):
-        errs = self.errors({"homolog": str(Path(sys.executable).resolve())})
-        self.assertEqual(len(errs), 1)
-        self.assertIn("base", errs[0])
+    def test_hotfix_base_key_is_accepted(self):  # served for a repo without a run worktree: tests/test_target_paths_base.py
+        self.assertEqual(self.errors({"homolog": str(Path(sys.executable).resolve())}), [])
 
     def test_relative_path_is_rejected(self):
         errs = self.errors({"pack": "../api-pack"})

@@ -481,19 +481,32 @@ def target_worktree(run: dict, workspace: dict, alias: str, target: str | None =
 
 
 def target_serve_path(run: dict, workspace: dict, alias: str, target: str | None) -> Path | None:
-    """Where a mirror target's runtime is served for `alias`: its mirror worktree, else the repo's `target_paths[target]`;
-    None for the base target/None, or when the repo has neither (it keeps the run's own resolution)."""
+    """Where the runtime of a hotfix run is served for `alias` when it is not the run's own resolution: a mirror target's
+    worktree, else the repo's `target_paths[target]`. For the BASE target (None or the hotfix base) only a repo WITHOUT a
+    run worktree is served from `target_paths[base]`; a repo with a run worktree always keeps it. None for non-hotfix
+    runs (`target_paths` is not consulted) and when the repo has nothing for the target (it keeps the run's resolution)."""
     hf = hotfix_of(run)
-    if not (hf and target and target != hf["base"]):
+    if not hf:
         return None
-    wt = target_worktree(run, workspace, alias, target)
-    if wt:
-        return wt
+    if not target or target == hf["base"]:
+        if ((run.get("repos") or {}).get(alias) or {}).get("worktree"):
+            return None
+        target = hf["base"]
+    else:
+        wt = target_worktree(run, workspace, alias, target)
+        if wt:
+            return wt
     try:
         extra = (repo_conf(workspace, alias).get("target_paths") or {}).get(target)
     except FactoryError:
         return None
     return Path(extra) if isinstance(extra, str) and extra else None
+
+
+def repo_serve_path(run: dict, workspace: dict, alias: str, target: str | None = None, warn=None) -> Path:
+    """The one answer to "which directory does `env up` serve for `alias`": `target_serve_path`, else `repo_path_for_env`.
+    Everything that compares with what is served (stale check, `dep_binding`, restarts) must use this resolution."""
+    return target_serve_path(run, workspace, alias, target) or repo_path_for_env(run, workspace, alias, warn=warn)
 
 
 def check_target(run: dict, target: str | None) -> str | None:

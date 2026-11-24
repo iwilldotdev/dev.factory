@@ -25,9 +25,8 @@ from ..core import (ensure_owner, url_origin,
     git,
     now,
     repo_conf,
-    repo_path_for_env,
+    repo_serve_path,
     run_load,
-    target_serve_path,
     check_target,
     hotfix_of,
     run_targets,
@@ -559,8 +558,7 @@ def env_fail_line(alias: str, kind: str, detail: str) -> str:
 def _serve_root(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> Path:
     """Root of the worktree (or checkout) the env of `alias` is served from, before `env.cwd`."""
     repo = repo_conf(workspace, alias)
-    return (target_serve_path(run, workspace, alias, target) if run and target else None) \
-        or (repo_path_for_env(run, workspace, alias) if run else Path(repo["path"]))
+    return repo_serve_path(run, workspace, alias, target) if run else Path(repo["path"])
 
 
 def _cwd_for(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> Path:
@@ -1012,7 +1010,7 @@ def data_run(workspace: dict, run: dict | None, alias: str, which: str) -> tuple
     argv = seed.get(which)
     if not argv:
         raise FactoryError(f"{alias}: env.seed.{which} is not configured")
-    base = repo_path_for_env(run, workspace, alias) if run else Path(repo["path"])
+    base = _serve_root(workspace, run, alias)
     code, text = _run_argv(workspace, run, alias, argv, (base / (seed.get("cwd") or ".")).resolve())
     _record((run or {}).get("id"), "env_seed" if which == "cmd" else "env_reset", repo=alias, exit=code)
     return code, text

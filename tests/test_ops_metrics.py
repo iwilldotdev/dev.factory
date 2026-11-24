@@ -22,7 +22,7 @@ class MetricsTests(FactoryCase):
         super().setUp()
         self.root = self.tmp / "claude" / "projects" / "proj"
         self.root.mkdir(parents=True)
-        p = mock.patch.object(metrics, "claude_roots", lambda: [self.root.parent])
+        p = mock.patch.object(metrics, "claude_roots", lambda *_a: [self.root.parent])
         p.start()
         self.addCleanup(p.stop)
 
@@ -77,15 +77,15 @@ class MetricsTests(FactoryCase):
         self.assertEqual(len(rows), 1)
         self.assertIn("ws-dev-1", metrics._table(rows))
 
-    def test_discover_by_marker(self):
+    def test_discover_by_marker_needs_a_registered_session(self):
         self.make_run("ws-dev-2")
         f = self.root / "other.jsonl"
         f.write_text(line(type="user", timestamp="2026-02-01T00:00:00Z", message={"role": "user", "content": "factory-run: ws-dev-2"}),
                      encoding="utf-8")
         (self.root / "unrelated.jsonl").write_text(line(type="user", message={"content": "hi"}), encoding="utf-8")
-        self.assertEqual([Path(p).name for p in metrics.find_transcripts({"id": "ws-dev-2", "created": "2026-01-01T00:00:00+00:00"})],
-                         ["other.jsonl"])
-
+        base = {"id": "ws-dev-2", "created": "2026-01-01T00:00:00+00:00"}
+        self.assertEqual(metrics.find_transcripts(base), [])  # no session registered: unknown, not a guess
+        self.assertEqual([Path(p).name for p in metrics.find_transcripts(dict(base, sessions=["gone"]))], ["other.jsonl"])
 
 if __name__ == "__main__":
     unittest.main()

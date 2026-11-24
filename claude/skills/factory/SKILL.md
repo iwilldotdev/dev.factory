@@ -30,8 +30,8 @@ Any file the CLI needs from Jira, GitLab, or Figma is written by the dev.mcp rea
 ## Start
 
 1. Identify the workspace (`factory workspace check <ws>`; if none exists: `factory workspace init|import`, then put the missing fields in the question round).
-2. Single ticket: `factory run start <ws> <KEY> [--bug KEY] [--risk high]`. Jira issuetype Bug → a bug run (`--bug`); ask "hotfix?" (homolog + pack) in the question round, and `factory run retype <run> --bug|--hotfix` if the type turns out wrong. Abandoned run: `factory run close <run> --reason "..."`. Epic: `factory epic start <ws> <EPIC> --tickets …` (see Epics). Resume: `factory run status <run>` / `factory epic status <parent>`.
-3. Print exactly once: `factory-run: <run-id>`. Metrics use it to find this transcript.
+2. Single ticket: `factory run start <ws> <KEY> [--bug KEY] [--risk high]`. Jira issuetype Bug → a bug run (`--bug`); ask "hotfix?" (homolog + pack) in the question round, and `factory run retype <run> --bug|--hotfix` if the type turns out wrong. Abandoned run: `factory run close <run> --reason "..."`. Epic: `factory epic start <ws> <EPIC> --tickets …` (see Epics). Resume: `factory run status <run>` / `factory epic status <parent>`, and `factory run session <run>` (registers this session for metrics).
+3. Print exactly once: `factory-run: <run-id>`. `run start` registers this session id; metrics find the transcript only through registered sessions.
 
 Risk is **high** when the work touches auth, money, data, migration, concurrency, a public contract, or security. High risk: auditors and diagnosis on `model: opus`, both review rounds always.
 

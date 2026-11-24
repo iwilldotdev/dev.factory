@@ -376,7 +376,7 @@ class MetricsChildAttributionTests(FactoryCase):
     def test_parent_includes_child_transcripts_once(self):
         root = self.tmp / "claude" / "projects" / "proj"
         root.mkdir(parents=True)
-        p = mock.patch.object(metrics, "claude_roots", lambda: [root.parent])
+        p = mock.patch.object(metrics, "claude_roots", lambda *_a: [root.parent])
         p.start()
         self.addCleanup(p.stop)
         self.make_run("ws-ep", kind="epic", children=["ws-dev-1", "ws-dev-2"], sessions=["s-parent"])

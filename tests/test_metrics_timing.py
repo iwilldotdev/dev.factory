@@ -24,7 +24,7 @@ class TimingMetricsTests(FactoryCase):
         super().setUp()
         self.root = self.tmp / "claude" / "projects" / "proj"
         self.root.mkdir(parents=True)
-        p = mock.patch.object(metrics, "claude_roots", lambda: [self.root.parent])
+        p = mock.patch.object(metrics, "claude_roots", lambda *_a: [self.root.parent])
         p.start()
         self.addCleanup(p.stop)
 

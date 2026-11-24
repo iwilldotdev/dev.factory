@@ -278,6 +278,26 @@ def session_short(sid: str | None) -> str:
     return (sid or "")[:8]
 
 
+def register_session(run: dict, sid: str | None = None) -> bool:
+    """Record a Claude session id (default: this session's) in run["sessions"] as a plain id, so metrics can find its
+    transcript. Not a claim: it grants and takes no ownership. Idempotent. The profile dir (`CLAUDE_CONFIG_DIR`) the
+    session runs under is kept in run["transcript_roots"]. Returns True when something was added."""
+    sid = (sid or session_id() or "").strip()
+    if not sid:
+        return False
+    changed = False
+    known = {(s.get("session") if isinstance(s, dict) else s) for s in run.get("sessions") or []}
+    if sid not in known:
+        run.setdefault("sessions", []).append(sid)
+        event(run, "session", session=sid)
+        changed = True
+    profile = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if profile and profile not in (run.get("transcript_roots") or []):
+        run.setdefault("transcript_roots", []).append(profile)
+        changed = True
+    return changed
+
+
 def claims(run: dict) -> list[dict]:
     """Claim records in run["sessions"] (that list may also hold plain transcript ids/paths for metrics)."""
     return [s for s in run.get("sessions") or [] if isinstance(s, dict) and s.get("session")]

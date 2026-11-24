@@ -16,7 +16,7 @@ from pathlib import Path
 from ..collectors.test import copy_main_files, files_from_main_of, prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home, flaky_checks,
-                    git, git_dirty, git_head, now, repo_conf, run_dir, target_branch, run_load,
+                    git, git_dirty, git_head, now, register_session, repo_conf, run_dir, target_branch, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
 from .. import integrity
 from . import gate
@@ -147,6 +147,7 @@ def cmd_start(args) -> int:
     for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
+    register_session(run)
     if derived:
         event(run, "retype", to="bug", tickets=derived, source="jira issuetype")
     run_save(run)
@@ -879,6 +880,22 @@ def cmd_human(args) -> int:
 
 # ---------- claim / log ----------
 
+def cmd_session(args) -> int:
+    """Register a Claude session id for metrics (default: this session's). Idempotent; claims no ownership."""
+    sid = args.session or session_id()
+    if not sid:
+        raise FactoryError("no session id given and none in the environment (CLAUDE_CODE_SESSION_ID); pass <session-id>")
+    out: dict = {}
+
+    def mutate(run: dict) -> None:
+        out["added"] = register_session(run, sid)
+
+    run_update(args.run, mutate)
+    _emit(args, {"run": args.run, "session": sid, "added": out["added"]},
+          f"{args.run}: session {session_short(sid)} " + ("registered" if out["added"] else "already registered"))
+    return 0
+
+
 def cmd_claim(args) -> int:
     sid = session_id()
     if not sid:
@@ -1150,6 +1167,11 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("email")
     p.set_defaults(func=cmd_login_user)
+    p = rs.add_parser("session", help="register a Claude session id on the run so metrics find its transcript (idempotent, no ownership)")
+    p.add_argument("run")
+    p.add_argument("session", nargs="?", help="session id (default: CLAUDE_CODE_SESSION_ID)")
+    p.set_defaults(func=cmd_session)
+
     p = rs.add_parser("claim", help="record this Claude session as the owner of run(s) (parallel sessions)")
     p.add_argument("runs", nargs="+", metavar="run")
     p.add_argument("--takeover", action="store_true", help="take over a run claimed by another recent session")

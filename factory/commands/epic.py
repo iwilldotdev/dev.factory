@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, event,
-                    now, read_json, repo_conf, run_dir,
+                    now, read_json, register_session, repo_conf, run_dir,
                     run_load, run_save, workspace_load, write_json)
 from . import ship
 
@@ -36,6 +36,8 @@ def _new_run(ws: dict, run_id: str, tickets: list[dict], kind: str, risk: str, *
     for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
+    if not extra.get("parent"):  # a child never owns the parent's session
+        register_session(run)
     run_save(run)
     return run
 

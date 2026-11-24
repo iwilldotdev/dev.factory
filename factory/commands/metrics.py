@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -22,19 +23,44 @@ def _ts(text) -> _dt.datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=_dt.timezone.utc)
 
 
-def claude_roots() -> list[Path]:
-    """Claude Code `projects` dirs of every profile (~/.claude, ~/.claude-work, ...)."""
-    return [p / "projects" for p in sorted(Path.home().glob(".claude*")) if (p / "projects").is_dir()]
+def _projects(path: Path) -> Path | None:
+    """`path` itself when it is a `projects` dir, else its `projects` child."""
+    p = path.expanduser()
+    if p.name == "projects" and p.is_dir():
+        return p
+    return p / "projects" if (p / "projects").is_dir() else None
+
+
+def claude_roots(run: dict | None = None) -> list[Path]:
+    """Claude Code `projects` dirs where transcripts may live. Never a glob of the home folder: only the profile of this
+    process (`CLAUDE_CONFIG_DIR`), the profile this CLI was installed into (provenance), the profiles the run recorded
+    (`run.transcript_roots`), the `FACTORY_TRANSCRIPT_ROOTS` list (profile or `projects` dirs, os.pathsep separated)
+    and the default `~/.claude`."""
+    from ..dist_info import ROOT, provenance
+    cands: list[str] = list((run or {}).get("transcript_roots") or [])
+    cands += [x for x in os.environ.get("FACTORY_TRANSCRIPT_ROOTS", "").split(os.pathsep) if x.strip()]
+    cands.append(os.environ.get("CLAUDE_CONFIG_DIR", ""))
+    if provenance(ROOT):
+        cands.append(str(ROOT.parent))  # <profile>/factory-dist
+    cands.append(str(Path.home() / ".claude"))
+    out: dict[Path, None] = {}
+    for c in cands:
+        if str(c).strip() and (p := _projects(Path(c))):
+            out[p] = None
+    return list(out)
 
 
 def find_transcripts(run: dict) -> list[Path]:
+    """Transcripts of the sessions registered on the run (`run start` / `run session` / `run claim`), plus transcripts
+    that carry the run marker when at least one session is registered. No registered session: nothing (metrics show
+    "unknown" instead of attributing someone else's tokens)."""
+    sessions = [s.get("session") if isinstance(s, dict) else s for s in run.get("sessions") or []]
+    sessions = [s for s in sessions if s]
+    if not sessions:
+        return []
     found: dict[Path, None] = {}
-    roots = claude_roots()
-    for s in run.get("sessions") or []:
-        if isinstance(s, dict):  # ownership claim ({session, claimed_at, pid})
-            s = s.get("session")
-        if not s:
-            continue
+    roots = claude_roots(run)
+    for s in sessions:
         p = Path(s)
         if p.suffix == ".jsonl" and p.is_file():
             found[p] = None

@@ -190,6 +190,18 @@ def _files_errors(alias: str, env: dict) -> list[str]:
             for i, f in enumerate(files) if not (isinstance(f, str) and safe_rel(f))]
 
 
+def _warmup_errors(alias: str, env: dict) -> list[str]:
+    """env.warmup: an array of paths (starting with /, resolved against the slot's base_url) or http(s) URLs, requested
+    once after a cold `env up`."""
+    paths = env.get("warmup")
+    if paths is None:
+        return []
+    if not isinstance(paths, list):
+        return [f"{alias}: env.warmup must be an array of paths (starting with /) or http(s) URLs"]
+    return [f"{alias}: env.warmup[{i}] must be a path starting with / or an http(s) URL, got {p!r}"
+            for i, p in enumerate(paths) if not (isinstance(p, str) and (p.startswith("/") or re.match(r"^https?://", p)))]
+
+
 def _slot_errors(alias: str, env: dict) -> list[str]:
     """env.slots / port_stride / shareable / login.handoff_rewrite (DESIGN section 11: slots, shared repos, hand-off)."""
     import re
@@ -440,6 +452,7 @@ def check_workspace(ws: dict) -> list[str]:
                 missing.append(f"{alias}: env.hot_reload must be true or false")
             missing.extend(_data_errors(alias, env))
             missing.extend(_files_errors(alias, env))
+            missing.extend(_warmup_errors(alias, env))
             missing.extend(_slot_errors(alias, env))
     autonomy = ws.get("autonomy") or {}
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):

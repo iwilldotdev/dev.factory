@@ -622,10 +622,72 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
         return status == "up"
     log = log_path(ws, alias, slot)
 
+    try:
+        return _wait_healthy(workspace, env, alias, slot, health, proc, log, out)
+    finally:
+        close_log(proc)
+
+
+def close_log(proc) -> None:
+    """Close the log handle `_start_locked` kept for a warm-up (the process keeps its own inherited copy)."""
+    handle = getattr(proc, "factory_log", None)
+    if handle is not None:
+        try:
+            handle.close()
+        except OSError:
+            pass
+        proc.factory_log = None
+
+
+WARMUP_TIMEOUT_S = 20.0    # per path
+WARMUP_BUDGET_S = 120.0    # all paths of one `env up`
+
+
+def _log_line(proc, text: str) -> None:
+    handle = getattr(proc, "factory_log", None)
+    if handle is not None:
+        try:
+            handle.write((text + os.linesep).encode("utf-8", errors="replace"))
+        except (OSError, ValueError):
+            pass
+
+
+def warm_up(workspace: dict, env: dict, alias: str, slot: int, proc, out: list[str]) -> int:
+    """`env.warmup: [paths]`: GET each path once on the freshly started env (status ignored, bounded timeouts) so the first
+    check does not pay a cold start (a dev server optimizing dependencies answers 504 until it is done). Each request is
+    logged to the env log. Returns the number of paths requested."""
+    paths = [p for p in env.get("warmup") or [] if isinstance(p, str) and p]
+    if not paths:
+        return 0
+    root = base_url(workspace, alias, slot)
+    end = time.monotonic() + WARMUP_BUDGET_S
+    done = 0
+    for path in paths:
+        left = end - time.monotonic()
+        if left <= 0:
+            _log_line(proc, f"[factory] warmup stopped: {WARMUP_BUDGET_S:g}s budget used")
+            break
+        url = path if re.match(r"^https?://", path) else root + "/" + path.lstrip("/")
+        t0 = time.monotonic()
+        status, _, err = http_fetch(url, "GET", None, min(WARMUP_TIMEOUT_S, left))
+        _log_line(proc, f"[factory] warmup GET {url} -> {status if status is not None else 'no answer (' + str(err) + ')'} "
+                        f"({time.monotonic() - t0:.1f}s)")
+        done += 1
+    out.append(f"{alias}: warm-up requested {done} path(s) (see the env log)")
+    return done
+
+
+def _wait_healthy(workspace: dict, env: dict, alias: str, slot: int, health: str, proc, log: Path, out: list[str]) -> bool:
     deadline = time.time() + float(env.get("startup_timeout_s") or 120)
     while time.time() < deadline:
         if health_ok(health):
             out.append(f"{alias}: up (pid {proc.pid}) {health}")
+            if warm_up(workspace, env, alias, slot, proc, out) and not health_ok(health):
+                detail = f"{health} stopped answering after the warm-up"
+                out.append(f"{alias}: {detail}")
+                out.append(env_fail_line(alias, "unhealthy", detail))
+                out.append(f"--- last 40 log lines ({log}) ---\n{tail(log)}")
+                return False
             return True
         if proc.poll() is not None:
             out.append(f"{alias}: process exited with code {proc.returncode} before becoming healthy")
@@ -728,11 +790,19 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
-    with open(log, "wb") as logf:
+    logf = open(log, "wb", buffering=0)
+    try:
         proc = subprocess.Popen(
             cmd, cwd=str(cwd), env=proc_env, stdin=subprocess.DEVNULL,
             stdout=logf, stderr=subprocess.STDOUT, shell=shell, **kwargs,
         )
+    except BaseException:
+        logf.close()
+        raise
+    if env.get("warmup"):
+        proc.factory_log = logf  # the warm-up writes through the handle the process inherited (shared file position)
+    else:
+        logf.close()
     record = {"pid": proc.pid, "cwd": str(cwd), "head": head, "started": now(),
               "create_time": process_create_time(proc.pid), "env_digest": env_digest(env)}
     if target:

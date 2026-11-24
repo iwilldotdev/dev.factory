@@ -97,6 +97,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
         "base_url": "http://localhost:5173",
         "env_vars": {},
         "files_from_main": [".env"],
+        "warmup": ["/", "/app"],
         "seed": {"cmd": ["node", "scripts/seed.js"], "cwd": ".", "reset": ["node", "scripts/reset.js"]},
         "preflight": [{"name": "trigger-exists", "cmd": ["node", "scripts/check-trigger.js"]},
                       {"name": "test-project-active", "request": {"path": "/api/projects/42", "auth": "storage", "expect_json": {"active": true}}}],
@@ -139,6 +140,8 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
 `quality.setup` (optional) is not a quality command: it is the restore command every worktree gets before checks run, identically for the run worktree (`run branch`/`run mirror`/`--mr`), the baseline and REPRO temp worktrees, and both red-green worktrees. Without it, worktrees get a link to the main repo's `node_modules` (with it, no link: a restore through a junction would rewrite the main repo). A failing setup is an `error`, never a reproduction.
 
 `env.files_from_main` (optional, array of relative file paths, no absolute path and no `..`; `workspace check` validates it) lists gitignored files a new worktree lacks, such as `.env`. Every worktree the CLI creates (`run branch`, `run mirror`, `run branch --mr` review worktrees, and the baseline, REPRO and red-green temp worktrees) gets a **copy** (never a link) of each listed file that exists in the repo's main checkout and is absent in the worktree; an existing file is never overwritten. `run branch`/`run mirror` report what was copied (`copied from main checkout: ...`, `copied_from_main` with `--json`). `env up` refuses to start (`ENV-FAIL repo=<alias> kind=files detail=file <x> missing in worktree <path>`) when a listed file is absent from the path it would serve, a healthy `env check` fails the same way, and `prove` records that repo as an env failure (its runtime checks are not run) instead of letting the app answer 500s that look like product bugs.
+
+`env.warmup` (optional, array of paths starting with `/`, or http(s) URLs; `workspace check` validates it) is a warm-up after a cold start: once `env up` has seen the health check pass for a process it started, it requests each path once with a GET (resolved against the slot's `base_url`; the status is ignored, 20 s per request, 120 s in all), writes one `[factory] warmup GET <url> -> <status> (<s>s)` line per request into the env log (through the handle the process inherited, so the lines interleave with its own output) and then checks health again: a server that stopped answering after the warm-up fails `env up` with `ENV-FAIL kind=unhealthy`. It exists for dev servers that optimize dependencies on the first request (a Vite "Outdated Optimize Dep" 504 made the first check of a batch fail). An env that was already up is not warmed again; without the key nothing changes.
 
 `limits` caps check thresholds (§2.3): a plan cannot loosen a visual or style check past them.
 

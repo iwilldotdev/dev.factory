@@ -6,3 +6,8 @@ browser/dist/
 
 # Session handoff notes (product details; keep local)
 Handoffs/
+
+# Build outputs
+*.egg-info/
+build/
+dist/

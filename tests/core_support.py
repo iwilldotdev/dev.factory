@@ -86,7 +86,8 @@ class FactoryCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="factory-test-")).resolve()
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home"), "FACTORY_ROLE": "auditor"})
+        patcher = mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.tmp / "home"), "FACTORY_ROLE": "auditor",
+                                                  "FACTORY_TRANSCRIPT_ROOTS": str(self.tmp / "no-transcripts")})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.ext_errors = {"check_pack": [], "capability": [], "verify": []}

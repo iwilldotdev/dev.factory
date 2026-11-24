@@ -38,11 +38,13 @@ def claude_roots(run: dict | None = None) -> list[Path]:
     and the default `~/.claude`."""
     from ..dist_info import ROOT, provenance
     cands: list[str] = list((run or {}).get("transcript_roots") or [])
-    cands += [x for x in os.environ.get("FACTORY_TRANSCRIPT_ROOTS", "").split(os.pathsep) if x.strip()]
-    cands.append(os.environ.get("CLAUDE_CONFIG_DIR", ""))
-    if provenance(ROOT):
-        cands.append(str(ROOT.parent))  # <profile>/factory-dist
-    cands.append(str(Path.home() / ".claude"))
+    explicit = [x for x in os.environ.get("FACTORY_TRANSCRIPT_ROOTS", "").split(os.pathsep) if x.strip()]
+    cands += explicit
+    if not explicit:  # an explicit list replaces discovery (tests and odd setups pin it)
+        cands.append(os.environ.get("CLAUDE_CONFIG_DIR", ""))
+        if provenance(ROOT):
+            cands.append(str(ROOT.parent))  # <profile>/factory-dist
+        cands.append(str(Path.home() / ".claude"))
     out: dict[Path, None] = {}
     for c in cands:
         if str(c).strip() and (p := _projects(Path(c))):
@@ -195,22 +197,67 @@ def _escaped(run: dict, rd: Path) -> dict:
     return result
 
 
-def phase_hours(run: dict) -> dict:
-    """Hours per phase from `phase` events; the last open phase runs up to `updated`."""
+IDLE_GAP_S = 600  # a stretch of `ship` with no run event for this long is waiting (humans, pipelines), not work
+
+
+def _union(spans: list[tuple[_dt.datetime, _dt.datetime]]) -> list[tuple[_dt.datetime, _dt.datetime]]:
+    out: list[tuple[_dt.datetime, _dt.datetime]] = []
+    for s, e in sorted(spans):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _overlap(s: _dt.datetime, e: _dt.datetime, spans: list[tuple[_dt.datetime, _dt.datetime]]) -> float:
+    return sum(max(0.0, (min(e, b) - max(s, a)).total_seconds()) for a, b in spans)
+
+
+def time_breakdown(run: dict) -> dict:
+    """Hours per phase from `phase` events (the last open phase runs up to `updated`), with the time spent blocked
+    (open blockers, the `blocked` phase) and the idle time of `ship` taken out of the phases and reported apart."""
     evs = sorted(((_ts(e.get("at")), e) for e in run.get("events", []) if e.get("kind") == "phase"),
                  key=lambda x: x[0] or _dt.datetime.min.replace(tzinfo=_dt.timezone.utc))
-    secs: Counter = Counter()
+    end = _ts(run.get("updated"))
+    spans: list[tuple[str, _dt.datetime, _dt.datetime]] = []
     cur = at0 = None
     for at, e in evs:
         if at is None:
             continue
         if cur is not None:
-            secs[cur] += max(0.0, (at - at0).total_seconds())
+            spans.append((cur, at0, max(at0, at)))
         cur, at0 = (e.get("data") or {}).get("to"), at
-    end = _ts(run.get("updated"))
     if cur is not None and end and end > at0:
-        secs[cur] += (end - at0).total_seconds()
-    return {k: round(v / 3600, 2) for k, v in secs.items()}
+        spans.append((cur, at0, end))
+    blocked = [(s, e) for ph, s, e in spans if ph == "blocked"]
+    for b in run.get("blockers") or []:
+        s = _ts(b.get("at"))
+        e = _ts(b.get("resolved_at")) or (end if not b.get("resolved") else None)
+        if s and e and e > s:
+            blocked.append((s, e))
+    blocked = _union(blocked)
+    times = sorted(t for t in (_ts(e.get("at")) for e in run.get("events", [])) if t)
+    secs: Counter = Counter()
+    idle = 0.0
+    for ph, s, e in spans:
+        if ph == "blocked":
+            continue
+        secs[ph] += (e - s).total_seconds() - _overlap(s, e, blocked)
+        if ph == "ship":
+            marks = [s, *[t for t in times if s < t < e], e]
+            for a, b in zip(marks, marks[1:]):
+                gap = (b - a).total_seconds() - _overlap(a, b, blocked)
+                if gap > IDLE_GAP_S:
+                    idle += gap
+                    secs[ph] -= gap
+    return {"phase_hours": {k: round(max(0.0, v) / 3600, 2) for k, v in secs.items()},
+            "blocked_hours": round(sum((e - s).total_seconds() for s, e in blocked) / 3600, 2),
+            "idle_hours": round(idle / 3600, 2)}
+
+
+def phase_hours(run: dict) -> dict:
+    return time_breakdown(run)["phase_hours"]
 
 
 def prove_stats(run: dict) -> dict:
@@ -354,7 +401,7 @@ def compute(run_id: str) -> dict:
         "loops": run.get("loops", {}),
         "escaped_findings": _escaped(run, rd),
         "transcripts": [str(p) for p in transcripts],
-        "phase_hours": phase_hours(run),
+        **time_breakdown(run),
         "prove": prove_stats(run),
         "checks": check_stats(run, rd),
     }
@@ -362,6 +409,14 @@ def compute(run_id: str) -> dict:
         metrics["tokens_note"] = tokens_note
     write_json(rd / "metrics.json", metrics)
     return metrics
+
+
+def refresh(run_id: str) -> None:
+    """Recompute the metrics report when a run reaches a final state (done, report, closed). Never fails the caller."""
+    try:
+        compute(run_id)
+    except Exception:  # metrics are a report, not a gate
+        pass
 
 
 def _out_tokens(m: dict) -> int | str:
@@ -372,7 +427,7 @@ def _out_tokens(m: dict) -> int | str:
 
 def _summary(m: dict) -> str:
     pr, ck = m.get("prove") or {}, m.get("checks") or {}
-    extra = [f"phase_h {m.get('phase_hours')}",
+    extra = [f"phase_h {m.get('phase_hours')} blocked {m.get('blocked_hours', 0)}h idle(ship) {m.get('idle_hours', 0)}h",
              f"prove {pr.get('invocations', 0)} runs {pr.get('by_mode')} {pr.get('wall_s', 0)}s",
              f"checks {ck.get('executions', 0)} {ck.get('by_status')} flaky {ck.get('flaky', 0)}",
              "slowest " + ", ".join(f"{r['id']} {r['duration_s']}s" for r in ck.get("top_slowest", [])[:5]),

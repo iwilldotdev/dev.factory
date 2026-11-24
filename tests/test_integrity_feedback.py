@@ -58,6 +58,7 @@ class FeedbackGateTests(IntegrityCase):
         rc, out = self.gate("feedback")
         self.assertEqual(rc, 0, out)
         self.assertEqual(core.run_load(self.rid)["phase"], "done")
+        self.assertTrue((self.rd / ("metrics" + ".json")).is_file())  # recomputed on entering done
 
     def test_user_decision_waives_pipeline_not_threads(self):
         self.files(status="failed", threads=[thread(False)])

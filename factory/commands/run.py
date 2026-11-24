@@ -270,6 +270,8 @@ def cmd_close(args) -> int:
         gate._set_phase(run, "closed")
 
     run = run_update(args.run, mutate)
+    from .metrics import refresh
+    refresh(run["id"])
     _emit(args, {"phase": "closed", "reason": reason}, f"{run['id']} closed ({reason})")
     return 0
 

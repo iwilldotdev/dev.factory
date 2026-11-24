@@ -34,8 +34,9 @@ class FactoryCase(unittest.TestCase):
         self.tmp = Path(self._tmp.name)
         self.home = self.tmp / "home"
         self.home.mkdir()
-        self._old = {k: os.environ.get(k) for k in ("FACTORY_HOME", *GIT_ENV)}
+        self._old = {k: os.environ.get(k) for k in ("FACTORY_HOME", "FACTORY_TRANSCRIPT_ROOTS", *GIT_ENV)}
         os.environ["FACTORY_HOME"] = str(self.home)
+        os.environ["FACTORY_TRANSCRIPT_ROOTS"] = str(self.tmp / "no-transcripts")
         os.environ.update(GIT_ENV)
         self.addCleanup(self._restore)
 

@@ -27,6 +27,7 @@ AC_KINDS = {"ui", "api", "logic", "data", "bug"}
 LOCAL_REPRO_TYPES = {"test"}  # reproducible in a temp worktree; the only types required on mirror targets
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 DEFAULT_LIMITS = {"max_diff_ratio": 0.03, "max_tolerance_px": 2}
+FINAL_PHASES = ("done", "report")  # the metrics report is recomputed on entering one of these (and on `run close`)
 
 
 # ---------- shared helpers ----------
@@ -1340,6 +1341,9 @@ def cmd_gate(args) -> int:
     new = phases[phases.index(phase) + 1]
     _set_phase(run, new)
     run_save(run)
+    if new in FINAL_PHASES:
+        from .metrics import refresh
+        refresh(run["id"])
     if getattr(args, "json", False):
         print(json.dumps({"run": run["id"], "passed": phase, "phase": new}))
     else:
@@ -1369,6 +1373,9 @@ def _gate_epic(args, run: dict, ws: dict, phase: str) -> int:
     new = epic.PHASES[epic.PHASES.index(phase) + 1]
     _set_phase(run, new)
     run_save(run)
+    if new in FINAL_PHASES:
+        from .metrics import refresh
+        refresh(run["id"])
     if getattr(args, "json", False):
         print(json.dumps({"run": run["id"], "passed": phase, "phase": new}))
     else:

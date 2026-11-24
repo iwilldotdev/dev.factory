@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from . import git, human, plan as planmod
+from .contracts import PROOF_GRADE
 from .plan import chash
 from .run import Run
 from .util import FactoryError, sha256_file
@@ -21,7 +22,7 @@ def compute(run: Run, cfg: dict, st: dict, plan: dict) -> dict:
     return {"plan_hash": chash(plan), "core_hash": chash({k: v for k, v in plan.items() if k != "checks"}),
             "acs": {a["id"]: chash(a) for a in plan["acs"]}, "spec_hashes": {c["id"]: planmod.spec_hash(c, run.dir) for c in checks},
             "files": {f: sha256_file(run.dir / f) for f in files if (run.dir / f).is_file()}, "config_hash": planmod.config_hash(cfg),
-            "contracts": {e["path"]: e["raw_sha256"] for e in st["contracts"].values()}, "branch_points": bps}
+            "contracts": {e["path"]: e["raw_sha256"] for e in st["contracts"].values() if e["kind"] not in PROOF_GRADE}, "branch_points": bps}
 
 
 def changed(old: dict, new: dict) -> tuple[list[str], list[str]]:
@@ -68,6 +69,30 @@ def lock_event(run: Run, new: dict, extra: dict, actor: str | None) -> dict:
                                    **extra}, actor)
 
 
+def check_decision(st: dict, decision: str | None) -> None:
+    if decision is not None:
+        d = st["decisions"].get(decision)
+        if d is None or d["consumed"]:
+            raise FactoryError(f"decision {decision} is not recorded or was already consumed: ask the user and record it first [L-126]")
+
+
+def spend(run: Run, cfg: dict, st: dict, kind: str, decision: str | None, actor: str | None, extra: dict | None = None) -> None:
+    """Spend one loop of the single budget (`amend` or `review`). Without a recorded user decision a spent budget refuses and
+    blocks the run; a decision is consumed once and closes the open budget blocker [L-135, L-136]."""
+    check_decision(st, decision)
+    cap = cfg["autonomy"]["max_loops"]
+    if decision is None and loops_used(st) >= cap:
+        msg = f"{BUDGET}: {loops_used(st)} of {cap} loops used (autonomy.max_loops); the user has to decide before another {kind}"
+        if not any(b["open"] and b["reason"].startswith(BUDGET) for b in st["blockers"].values()):
+            human.block(run, "decision", msg, actor)
+        raise FactoryError(msg, 1)
+    run.append({"type": "loop", "kind": kind, "decision": decision, "counts": decision is None, **(extra or {})}, actor)
+    if decision is not None:
+        for b in st["blockers"].values():
+            if b["open"] and b["reason"].startswith(BUDGET):
+                run.append({"type": "unblock", "blocker": b["id"], "decision": decision}, actor)
+
+
 def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | None, actor: str | None) -> dict:
     """Re-lock a changed plan. An amend without a recorded user decision counts against `autonomy.max_loops`;
     past the budget it refuses and blocks the run [L-133, L-134, L-136]."""
@@ -79,25 +104,12 @@ def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | 
         raise FactoryError("plan amend needs --reason")
     if reasons:
         raise FactoryError("the amended plan is not valid yet:\n" + "\n".join(f"  - {r}" for r in reasons))
-    if decision is not None:
-        d = st["decisions"].get(decision)
-        if d is None or d["consumed"]:
-            raise FactoryError(f"decision {decision} is not recorded or was already consumed: ask the user and record it first [L-126]")
+    check_decision(st, decision)
     plan, _ = planmod.load_plan(run)
     new = compute(run, cfg, st, plan)
     if all(new[k] == old.get(k) for k in new if k != "branch_points"):
         raise FactoryError("nothing changed since the lock, so there is nothing to amend")
-    cap = cfg["autonomy"]["max_loops"]
-    if decision is None and loops_used(st) >= cap:
-        msg = f"{BUDGET}: {loops_used(st)} of {cap} loops used (autonomy.max_loops); the user has to decide before another amend"
-        if not any(b["open"] and b["reason"].startswith(BUDGET) for b in st["blockers"].values()):
-            human.block(run, "decision", msg, actor)
-        raise FactoryError(msg, 1)
     acs, chk = changed(old, new)
-    run.append({"type": "loop", "kind": "amend", "decision": decision, "counts": decision is None}, actor)
-    if decision is not None:
-        for b in st["blockers"].values():
-            if b["open"] and b["reason"].startswith(BUDGET):
-                run.append({"type": "unblock", "blocker": b["id"], "decision": decision}, actor)
+    spend(run, cfg, st, "amend", decision, actor)
     return lock_event(run, new, {"amend": {"reason": reason.strip(), "decision": decision, "changed_acs": acs, "changed_checks": chk,
                                            "counts_loop": decision is None}}, actor)

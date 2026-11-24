@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-NEXT = {"intake": "plan", "reproduce": "build", "verify": "review"}
+NEXT = {"intake": "plan", "reproduce": "build", "verify": "review", "review": "ship", "ship": "done"}
 
 
 def _t(ts: str) -> float:

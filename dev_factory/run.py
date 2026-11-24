@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
+from .contracts import PROOF_GRADE
 from .util import FactoryError, canonical, now_iso
 
 KINDS = ("feature", "bug", "hotfix", "epic", "review")
@@ -102,7 +103,8 @@ def derive(events: list[dict]) -> dict:
     """Everything a command needs to know about a run, computed from its events."""
     st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
                 "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
-                "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
+                "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "confirms": [], "waivers": [], "ships": [],
+                "shipped": [], "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
     consumed: set[str] = set()
     for i, ev in enumerate(events):
         t = ev.get("type")
@@ -115,8 +117,9 @@ def derive(events: list[dict]) -> dict:
         elif t == "retype":
             st.update(kind=ev.get("kind"), retype_at=i)
         elif t == "contract":
-            st["contracts"][(ev["kind"], ev["id"])] = ev
-            st["contract_at"] = i
+            st["contracts"][(ev["kind"], ev["id"])] = {**ev, "at": i}
+            if ev["kind"] not in PROOF_GRADE:  # a readback or pipeline is a result, not a plan input
+                st["contract_at"] = i
         elif t == "media":
             st["media"][ev["attachment"]] = ev
         elif t == "question":
@@ -144,10 +147,25 @@ def derive(events: list[dict]) -> dict:
             st["loops"].append(ev)
         elif t == "evidence":
             st["evidence"].append(ev)
+            if ev.get("actor"):
+                st["builders"].add(ev["actor"].strip().lower())
         elif t == "review":
             st["reviews"].append(ev)
+            st["review_at"] = i
+        elif t == "confirm":
+            st["confirms"].append({**ev, "at": i})
+        elif t == "waiver":
+            st["waivers"].append({**ev, "at": i})
+        elif t == "ship_planned":
+            st["ships"].append({**ev, "at": i})
+            st["ship_at"] = i
+        elif t == "ship_verified":
+            st["shipped"].append({**ev, "at": i})
+            st["ship_at"] = i
         elif t == "worktree":
             st["worktrees"].append(ev)
+            if ev.get("actor") and not ev.get("throwaway"):
+                st["builders"].add(ev["actor"].strip().lower())
         elif t == "env":
             if ev.get("action") == "fail":
                 st["env_failures"].append(ev)
@@ -155,7 +173,7 @@ def derive(events: list[dict]) -> dict:
                 st["env_failures"] = []
         elif t == "closed":
             st["closed"] = ev
-        if t in ("unblock", "loop") and ev.get("decision"):
+        if t in ("unblock", "loop", "ship_planned") and ev.get("decision"):
             consumed.add(ev["decision"])
     for did, d in st["decisions"].items():
         d["consumed"] = did in consumed

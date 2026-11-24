@@ -8,7 +8,7 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
-                      cmd_plan, cmd_reproduce, cmd_run, cmd_runs, cmd_status, cmd_verify)
+                      cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_runs, cmd_status, cmd_verify)
     p = argparse.ArgumentParser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
     p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
@@ -115,6 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--no-retry", action="store_true", help="do not retry an assertion failure once")
     sp = add("metrics", cmd_metrics, "time per phase, loops, blocked hours and gate failures of a run", [scoped])
     sp.add_argument("run_id", nargs="?")
+    rv = sub.add_parser("review", help="record a review, or print an example").add_subparsers(dest="sub", required=True)
+    sp = rv.add_parser("example", parents=[common])
+    sp.set_defaults(func=cmd_review)
+    sp = rv.add_parser("record", parents=[scoped])
+    sp.set_defaults(func=cmd_review)
+    sp.add_argument("--kind", required=True, help="code (bound to the plan without checks) or qa (bound to the full plan)")
+    sp.add_argument("--file", required=True, help="the review as JSON (factory review example)")
+    sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this CHANGES round from the loop budget, once")
     sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
     sp.add_argument("name")
     return p

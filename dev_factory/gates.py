@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import acquire, evidence, git, lock, media, plan as planmod
+from . import acquire, evidence, git, lock, media, plan as planmod, review
 from .run import Run
 from .util import FactoryError, fwd, sha256_file
 
 # Run kind -> the ticket `type` it requires; epic and review runs do not derive from a single ticket type.
 KIND_TYPE = {"feature": "feature", "bug": "bug", "hotfix": "bug"}
-NAMES = ("intake", "plan", "reproduce", "verify")
+NAMES = ("intake", "plan", "reproduce", "verify", "review")
 SECTIONS = ("Root cause", "Evidence", "Ruled out")
 
 
@@ -161,6 +161,12 @@ def _red_green_reasons(st: dict, c: dict, lk: dict, plan: dict, path: Path, bp: 
     return out
 
 
+def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
+    """What a later gate adds on top of verify; callers know that verify holds."""
+    plan, lk = planmod.load_plan(run)[0], lock.current(st)
+    return review.reasons(st, plan, lk)
+
+
 def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
     if name == "intake":
         return intake_reasons(run, project.cfg, st)
@@ -168,17 +174,21 @@ def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> 
         return plan_reasons(run, project, st) if intake_passed(run, project.cfg, st) else ["gate intake has not passed"]
     if name == "reproduce":
         return sum(reproduce_reasons(run, project, st, strict), [])
-    return verify_reasons(run, project, st)
+    out = verify_reasons(run, project, st)
+    return out if name == "verify" or out else extra_reasons(run, project, st, name)
 
 
-def passed(run: Run, project, st: dict, name: str) -> bool:
-    """A recorded pass that still holds now: later commits, edits or drift invalidate it."""
+def passed(run: Run, project, st: dict, name: str, chain: bool = True) -> bool:
+    """A recorded pass that still holds now: later commits, edits, reviews or drift invalidate it.
+    With `chain` false the caller already knows that verify holds, so only what the gate adds is re-read."""
     g = st["gates"].get(name)
     if not (g and g["result"] == "pass"):
         return False
     if name == "intake":
         return intake_passed(run, project.cfg, st)
-    return not reasons_for(run, project, st, name)
+    if name == "review" and g["at"] < st["review_at"]:
+        return False
+    return not (reasons_for(run, project, st, name) if chain else extra_reasons(run, project, st, name))
 
 
 def run_gate(run: Run, project, name: str, actor: str | None = None) -> tuple[bool, list[str]]:

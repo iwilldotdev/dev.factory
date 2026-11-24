@@ -264,6 +264,18 @@ def cmd_media(args) -> int:
     return 0
 
 
+def cmd_review(args) -> int:
+    from . import review
+    if args.sub == "example":
+        print(json.dumps(review.EXAMPLE, indent=2))
+        return 0
+    proj = _project(args)
+    ev = review.record(_run(args, proj), proj, args.kind, review.load_file(Path(args.file)), args.decision, args.actor)
+    _out(args, ev, f"recorded {ev['kind']} review round {ev['round']}: {ev['verdict']} ({len(ev['findings'])} finding(s)) bound to "
+                   + ", ".join(f"{r}@{s[:7]}" for r, s in ev["repos"].items()))
+    return 0
+
+
 def cmd_gate(args) -> int:
     from . import gates
     proj = _project(args)

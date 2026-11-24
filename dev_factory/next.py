@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import acquire, gates, git, lock, media
+from . import acquire, gates, git, lock, media, plan as planmod, review as rv
 from .project import Project
 from .run import Run
 from .util import fwd, safe_id
@@ -30,7 +30,9 @@ def phase(run: Run, project: Project, st: dict) -> str:
         return "plan"
     if gates.is_bug(run, st) and not gates.passed(run, project, st, "reproduce"):
         return "reproduce"
-    return "build" if not gates.passed(run, project, st, "verify") else "review"
+    if not gates.passed(run, project, st, "verify"):
+        return "build"
+    return "review" if not gates.passed(run, project, st, "review", chain=False) else "ship"
 
 
 def _repeated_env_failure(st: dict) -> dict | None:
@@ -48,6 +50,8 @@ def compute(project: Project, run: Run) -> dict:
                  "action": None, "kind_of_action": None, "command": None, "files": [], "reasons": [], "role": "orchestrator",
                  "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]], "refused": []}
     reasons = gates.reasons_for(run, project, st, {"build": "verify"}.get(ph, ph)) if ph in ("intake", "plan", "reproduce", "build") else []
+    if ph == "review":
+        reasons = gates.extra_reasons(run, project, st, "review")  # verify holds in this phase
 
     def set_(action, kind, command=None, files=(), role="orchestrator"):
         out.update(action=action, kind_of_action=kind, command=command, files=[fwd(f) for f in files], role=role)
@@ -80,8 +84,10 @@ def compute(project: Project, run: Run) -> dict:
                  "repo from a clean worktree, and the gate lists what is still missing", "command", f"factory verify{flag}", trees, "builder")
         else:
             set_("every check passes at HEAD; run the verify gate", "command", f"factory gate verify{flag}")
+    elif ph == "review":
+        _review_action(project, run, st, reasons, set_, flag)
     else:
-        set_("verify passed; the review phase is not available in this build", "none")
+        set_("review passed; the ship phase is not available in this build", "none")
     out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:
@@ -140,3 +146,23 @@ def _reproduce_action(project: Project, run: Run, st: dict, reasons: list[str], 
              "command", f"factory gate reproduce{flag}", [run.dir / "diagnosis.md"], "any")
     else:
         set_("run the reproduce gate", "command", f"factory gate reproduce{flag}")
+
+
+def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set_, flag: str) -> None:
+    plan = planmod.load_plan(run)[0]
+    heads = rv.heads_of(st, plan["repos"])
+    asked = [k for k in rv.BOUND if (e := rv.latest(st, k)) and e["repos"] == heads and e["verdict"] == "CHANGES"
+             and e["bound"].get(rv.BOUND[k]) == lock.current(st)[rv.BOUND[k]]]
+    trees = [Path(w["path"]) for r in plan["repos"] if (w := git.current(st, r))]
+    if asked:
+        set_(f"the {' and '.join(asked)} review asked for changes (see the reasons): fix them in the worktree(s), commit, then run verify; "
+             "a fresh review of the new commit follows", "command", f"factory verify{flag}", trees, "builder")
+    elif reasons:
+        kind = "code" if any(r.startswith(("no code", "the code")) for r in reasons) else "qa"
+        path = run.dir / "reviews" / f"{kind}.json"
+        set_("start a fresh reviewer (never the builder, with the strongest model the harness has) on the diff from branch point to HEAD in "
+             f"every worktree: it writes the {kind} review as JSON (factory review example prints the shape) and records it; the code "
+             "review lists changed_values and the qa review lists one exercises entry per AC; the same reviewer may record both kinds",
+             "command", f'factory review record --kind {kind} --file "{fwd(path)}"{flag}', [path], "reviewer")
+    else:
+        set_("both reviews are APPROVE at HEAD; run the review gate", "command", f"factory gate review{flag}")

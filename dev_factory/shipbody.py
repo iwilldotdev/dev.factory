@@ -66,6 +66,16 @@ def body(st: dict, ticket: dict, plan: dict, lk: dict, rs: list[dict], heads: di
         out += [f"## Follow-ups: {len(minors)} unresolved minor finding(s)"]
         out += [f"- {f.get('file', '')} {f['text']} (round {f['round']}, {f['review']} review)".replace("-  ", "- ") for f in minors[:review.CAP]]
         out += ([f"- and {len(minors) - review.CAP} more"] if len(minors) > review.CAP else []) + [""]
+    seen: dict[str, str] = {}
+    for r in st["design_reviews"]:
+        seen[r["frame"]] = r["user_said"]
+    if seen:
+        out += ["## Design fidelity: approximate", *[f"- {f}: an approximate frame; the user reviewed it and said: {_cell(t, 120)}" for f, t in seen.items()], ""]
+    shots = [(c["id"], n) for c in plan["checks"] if c.get("type") == "screenshot" and (e := next((e for e in reversed(st["evidence"]) if e["check"] == c["id"]
+             and e["mode"] == "verify" and e["result"] == "pass" and e["sha"] == heads.get(c["repo"])), None)) for n in
+             [a.rsplit("/", 1)[-1] for a in e["artifacts"] if a.endswith(".png")]]
+    if shots:
+        out += ["## Screenshots (attach the images from the run's artifacts)", *[f"- {c}: {n}" for c, n in shots], ""]
     out += ["## Review", *[f"- {k}: round {e['round']}, {e['verdict']} by {e['reviewer']}" for k in review.BOUND if (e := review.latest(st, k))], ""]
     out += ["## Branches", *[f"- {r}: {h[:7]}, {b['count']} commit(s) behind {b['ref'] or 'the target'}" if b["count"] is not None
                               else f"- {r}: {h[:7]}, behind count unknown ({b['note']})" for r, h in heads.items() for b in [behind[r]]]]
@@ -84,6 +94,8 @@ def briefing(sp: dict, rs: list[dict], st: dict) -> list[str]:
     lines += [f"  {r['ac']} x {r['check']}: {r['result']} ({r['ref']})" for r in rs]
     lines.append(f"  follow-ups: {len(review.open_minors(st))} unresolved minor finding(s)")
     lines += [f"  ticket: {i['intent']} (needs the user)" for i in sp["intents"] if i["intent"].startswith("issue_")] or ["  ticket: no comment or transition"]
-    lines.append("  human checks, approximate frames and screenshots: none in this build")
+    lines.append(f"  approximate design frames: {', '.join(sorted({r['frame'] for r in st['design_reviews']})) or 'none'}; "
+                 f"screenshots: {sum(1 for e in st['evidence'] if e['mode'] == 'verify' and e['result'] == 'pass' and any(a.endswith('.png') for a in e['artifacts']))} record(s) with images")
+    lines.append("  human checks: none in this build")
     return lines
 

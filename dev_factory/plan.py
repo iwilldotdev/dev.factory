@@ -4,16 +4,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import checks as checks_pkg
+from . import checks as checks_pkg, plancheck
 from .util import canonical, read_json, sha256_bytes, sha256_file
 
 AC_ID, CHK_ID = re.compile(r"^AC-[0-9]+$"), re.compile(r"^CHK-[0-9]+$")
 TOP = {"schema", "kind", "repos", "acs", "checks", "fix_commit", "risk", "login_user", "evidence"}
 AC_KEYS = {"id", "text", "source", "reproduce", "reason", "design"}
 CHECK_KEYS = {"id", "type", "repo", "ac", "timeout_s", "files", "reproduce", "mirror", "run", "cwd", "expect_exit",
-              "expect_pattern", "red_green"}
+              "expect_pattern", "red_green"} | plancheck.NEW_KEYS
 PLAN_KIND = {"feature": "feature", "bug": "bug", "hotfix": "bug"}  # run kind -> plan kind [L-31]
-LATER = ("http", "browser", "visual", "style", "quality", "human", "screenshot")
+LATER = ("quality", "human")
 EXAMPLE = {"schema": 1, "kind": "feature", "repos": ["web"],
            "acs": [{"id": "AC-1", "text": "One verifiable behaviour from the ticket", "source": "ticket:description"}],
            "checks": [{"id": "CHK-1", "type": "cmd", "repo": "web", "ac": ["AC-1"], "run": "<command that fails until AC-1 holds>",
@@ -84,8 +84,11 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
         errs.append("plan.risk: must be low, medium or high")
     if "fix_commit" in plan and not (isinstance(plan["fix_commit"], str) and plan["fix_commit"].strip()):
         errs.append("plan.fix_commit: must be a git ref")
-    if plan.get("login_user") or (plan.get("evidence") or {}).get("screenshots"):
-        errs.append("plan.login_user and plan.evidence.screenshots need the runtime milestone and are not available in this build")
+    if "login_user" in plan and not (isinstance(plan["login_user"], str) and plancheck.SLUG.match(plan["login_user"])):
+        errs.append("plan.login_user: must be a slug such as qa-admin")
+    if "evidence" in plan and not (isinstance(plan["evidence"], dict) and set(plan["evidence"]) <= {"screenshots"}
+                                   and isinstance(plan["evidence"].get("screenshots", False), bool)):
+        errs.append("plan.evidence: must be {\"screenshots\": true or false}")
     acs, chks = plan.get("acs"), plan.get("checks")
     if not (isinstance(acs, list) and acs and all(isinstance(a, dict) for a in acs)):
         return errs + ["plan.acs: must be a non-empty list of objects"]
@@ -99,8 +102,8 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
         errs += [f"{here}: unknown key {k!r}" for k in sorted(set(a) - AC_KEYS)]
         errs += [f"{here}.{k}: must be a non-empty string" for k in ("text", "source")
                  if not (isinstance(a.get(k), str) and a[k].strip())]
-        if a.get("design"):
-            errs.append(f"{here}.design: design frames need the design milestone and are not available in this build")
+        if "design" in a and not (isinstance(a["design"], list) and a["design"] and all(isinstance(f, str) and f.strip() for f in a["design"])):
+            errs.append(f"{here}.design: must be a non-empty list of design_frame ids")
         if "reproduce" in a and not (bug and isinstance(a["reproduce"], bool)):
             errs.append(f"{here}.reproduce: only a bug plan sets it, as true or false")
         if bug and a.get("reproduce") is False and not str(a.get("reason") or "").strip():
@@ -116,12 +119,14 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
         if c.get("repo") not in repos:
             errs.append(f"{here}.repo: {c.get('repo')!r} is not in plan.repos")
         names = c.get("ac")
-        if not (isinstance(names, list) and names and all(isinstance(n, str) for n in names)):
+        if c.get("type") == "screenshot" and not names:
+            names = []
+        elif not (isinstance(names, list) and names and all(isinstance(n, str) for n in names)):
             errs.append(f"{here}.ac: must list at least one AC id")
         else:
             errs += [f"{here}.ac: {n} is not an AC of this plan" for n in names if n not in ac_ids]
             covered |= set(names)
-        errs += _cmd_problems(c, here, bug, run_dir)
+        errs += _cmd_problems(c, here, bug, run_dir) + plancheck.type_problems(c, here, run_dir)
     errs += [f"plan.acs[{i}]: no check names it [L-01]" for i in sorted(ac_ids - covered)]
     if bug:
         for a in acs:
@@ -171,14 +176,20 @@ def _cmd_problems(c: dict, here: str, bug: bool, run_dir: Path) -> list[str]:
 
 
 def _norm(c: dict, cfg: dict, standing: bool) -> dict:
-    out = {"id": c["id"], "type": "cmd", "repo": c["repo"], "ac": list(c.get("ac") or []), "run": c["run"], "cwd": c.get("cwd") or ".",
-           "expect_exit": c.get("expect_exit", 0), "expect_pattern": c.get("expect_pattern"),
-           "timeout_s": c.get("timeout_s") or cfg["checks"]["cmd_timeout_s"], "standing": standing}
+    kind = c.get("type", "cmd")
+    out = {"id": c["id"], "type": kind, "repo": c["repo"], "ac": list(c.get("ac") or []),
+           "timeout_s": c.get("timeout_s") or cfg["checks"][plancheck.timeout_key(kind)], "standing": standing}
+    if kind != "cmd":
+        out.update(plancheck.norm(c, cfg))
+    else:
+        out.update(run=c["run"], cwd=c.get("cwd") or ".", expect_exit=c.get("expect_exit", 0), expect_pattern=c.get("expect_pattern"))
     for key in ("reproduce", "red_green", "mirror"):
         if c.get(key):
             out[key] = c[key]
-    if c.get("files"):
+    if c.get("files") and kind == "cmd":
         out["files"] = sorted(c["files"])
+    if c.get("files") and kind != "cmd":
+        out["files"] = sorted({*out.get("files", []), *c["files"]})
     return out
 
 
@@ -196,14 +207,21 @@ def effective_checks(plan: dict, cfg: dict) -> list[dict]:
 
 
 def spec_hash(check: dict, run_dir: Path) -> str:
+    """Canonical check entry, declared file hashes and, for design checks, the frame and image contract hashes [L-09, L-59]."""
     files = {f: sha256_file(run_dir / f) if (run_dir / f).is_file() else "missing" for f in check.get("files", [])}
-    return chash({"check": check, "files": files})
+    design = {}
+    if check.get("frame"):
+        from . import designflow
+        design = designflow.contract_hashes(run_dir, check["frame"])
+    return chash({"check": check, "files": files, **({"design": design} if design else {})})
 
 
 def config_hash(cfg: dict) -> str:
     """The proof-relevant config: commands, caps, limits and loop budget; never paths, ports or base URLs [L-131, L-188]."""
-    env_keys = ("up", "down", "ready_timeout_s", "depends_on", "login_spec", "login_http", "seed", "reset", "preflight", "warmup")
+    env_keys = ("up", "down", "ready_timeout_s", "depends_on", "login_spec", "login_secrets", "login_http", "seed", "reset", "preflight", "warmup",
+                "env_patterns")
     repos = [{**{k: r.get(k) for k in ("name", "base", "branch", "setup", "files_from_main", "commit_pattern",
                                        "commit_forbidden_trailers", "check", "mirror")},
               "env": {k: r["env"].get(k) for k in env_keys} if r.get("env") else None} for r in cfg["repo"]]
-    return chash({"repos": repos, "checks": cfg["checks"], "limits": cfg["limits"], "max_loops": cfg["autonomy"]["max_loops"]})
+    checks = {**cfg["checks"], "browser": {k: v for k, v in cfg["checks"].get("browser", {}).items() if k not in ("bundled", "headless")}}
+    return chash({"repos": repos, "checks": checks, "limits": cfg["limits"], "max_loops": cfg["autonomy"]["max_loops"]})

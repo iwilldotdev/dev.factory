@@ -1,6 +1,7 @@
 """Project discovery, `init`, `check` and the config summary."""
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from dataclasses import dataclass
@@ -131,11 +132,32 @@ def check(project: Project) -> tuple[list[str], list[str]]:
             continue
         if not shutil.which(exe):
             warns.append(f"{path}: command {exe!r} was not found on PATH")
+    warns += runner_needs(project)
     _, missing = config.resolve_secrets(cfg)
     if missing:
         warns.append("secrets not set (environment or " + fwd(config.secrets_file(cfg["project"]["name"])) + "): "
                      + ", ".join(missing))
     return errs, warns
+
+
+def runner_needs(project: Project) -> list[str]:
+    """A plan with UI checks needs the bundled browser runner: say how to install it when it is missing (a warning: only verify needs it)."""
+    from .checks import RUNNER, runner
+    ids = [i for i in project.run_ids() if not project.run(i).state()["closed"]]
+    need = []
+    for rid in ids:
+        try:
+            plan = json.loads((project.run(rid).dir / "plan.json").read_text(encoding="utf-8"))
+            need += [c.get("id") for c in plan.get("checks", []) if c.get("type") in RUNNER and not (c.get("type") == "browser" and project.cfg["checks"].get("browser", {}).get("runner"))]
+        except (OSError, ValueError, AttributeError):
+            continue
+    if not need:
+        return []
+    try:
+        runner.prefix(project.cfg)
+    except FactoryError as exc:
+        return [f"plans of open runs need the bundled browser runner for {', '.join(sorted(set(map(str, need))))}: {exc}"]
+    return []
 
 
 def summary(project: Project) -> dict:

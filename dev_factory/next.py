@@ -98,11 +98,27 @@ def compute(project: Project, run: Run) -> dict:
     else:
         set_("the ship gate passed: the draft change is verified. Tell the user what was shipped (changes, AC x evidence, follow-ups); "
              "the feedback phase is not available in this build", "none")
+    if ph in ("review", "ship") and (uat := _uat(run, st)):
+        out["uat"] = uat
     out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:
         out["decisions_note"] = "recorded user decisions not consumed yet: " + ", ".join(out["decisions"])
     return out
+
+
+def _uat(run: Run, st: dict) -> dict | None:
+    """The early UAT checkpoint of a UI run: the screenshot and visual artifacts to show the user, proposed once verify first
+    passed. It never blocks; the user's answer is a typed human event (`factory human --kind answer`) [L-175]."""
+    shots = []
+    for e in st["evidence"]:
+        if e["mode"] == "verify" and e["result"] == "pass" and e["spec_hash"] and any(a.endswith(".png") for a in e.get("artifacts", [])):
+            shots += [fwd(run.dir / a) for a in e["artifacts"] if a.endswith(".png")]
+    asked = any(h.get("text", "").startswith("uat:") for h in st["human"])
+    if not shots or asked:
+        return None
+    return {"action": "show these images to the user and ask whether the UI is what they expect; record their words with "
+                      "factory human --kind answer \"uat: <their words>\" (this does not block the run)", "images": sorted(set(shots))[-12:]}
 
 
 def _intake_action(project: Project, run: Run, st: dict, reasons: list[str], set_, flag: str) -> None:
@@ -141,6 +157,10 @@ def _plan_action(project: Project, run: Run, st: dict, reasons: list[str], set_,
         set_("write plan.json: one AC per verifiable behaviour and a check that executes each (factory plan example prints a "
              "minimal plan); ask the user every open question in one round before the gate", "command", f"factory gate plan{flag}",
              [plan_path], "any")
+    elif any("env does not answer" in r or "env cannot serve" in r for r in reasons):
+        repo = next((r.split(":")[0] for r in reasons if "env" in r), "<repo>")
+        set_("the plan has runtime checks and the env of a repo is not serving the run worktree: start it (it starts what it depends on first), then run the plan gate",
+             "command", f"factory env up {repo}{flag}", [], "builder")
     else:
         set_("run the plan gate (it locks the plan); fix the reasons first if any" if reasons else "run the plan gate; it locks the plan",
              "command", f"factory gate plan{flag}", [plan_path], "any")
@@ -167,6 +187,11 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
     if asked:
         set_(f"the {' and '.join(asked)} review asked for changes (see the reasons): fix them in the worktree(s), commit, then run verify; "
              "a fresh review of the new commit follows", "command", f"factory verify{flag}", trees, "builder")
+    elif reasons and all(r.startswith("approx frame") for r in reasons):
+        frames = [r.split()[2].rstrip(":") for r in reasons]
+        set_("an approximate design frame needs the user's own design review: show the user the design image and the capture "
+             f"(the visual artifacts), ask whether it is close enough, then record their words for each frame: {', '.join(frames)}",
+             "user", f'factory design review {frames[0]} --user-said "<their words>"{flag}')
     elif reasons:
         kind = "code" if any(r.startswith(("no code", "the code")) for r in reasons) else "qa"
         path = run.dir / "reviews" / f"{kind}.json"

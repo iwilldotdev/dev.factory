@@ -45,10 +45,10 @@ class PlanGateTests(M2Case):
     def test_every_structural_problem_is_listed_at_once(self):
         def bad(p):
             p["checks"][0]["bogus"] = 1
-            p["checks"].append({"id": "CHK-1", "type": "http", "repo": "api", "ac": ["AC-9"]})
+            p["checks"].append({"id": "CHK-1", "type": "quality", "repo": "api", "ac": ["AC-9"]})
             p["risk"] = "extreme"
         text = self.edit(bad)
-        for part in ("unknown key 'bogus'", "duplicate id CHK-1", "http checks arrive in a later milestone", "'api' is not in plan.repos",
+        for part in ("unknown key 'bogus'", "duplicate id CHK-1", "quality checks arrive in a later milestone", "'api' is not in plan.repos",
                      "AC-9 is not an AC", "plan.risk"):
             self.assertIn(part, text)
 

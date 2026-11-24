@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import acquire, evidence, git, lock, media, plan as planmod, review, ship
+from . import acquire, designflow, dryrun, env as envmod, evidence, git, localhttp, lock, media, plan as planmod, plancheck, review, ship
+from .checks import RUNTIME
 from .run import Run
 from .util import FactoryError, fwd, sha256_file
 
@@ -62,6 +63,8 @@ def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[st
     if plan is None:
         return out
     out = planmod.validate(plan, cfg, run.dir, effective_kind(run, st))
+    if not out:
+        out += plancheck.env_problems(plan, cfg) + designflow.plan_problems(run, project, st, plan) + _env_health(project, plan)
     out += [f"question {q['id']} is still open: the user answers before the plan locks" for q in st["questions"].values() if q["answered"] is None]
     for r in plan["repos"] if isinstance(plan.get("repos"), list) else []:
         w = git.current(st, r)
@@ -72,6 +75,16 @@ def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[st
     out += acquire.stale(run)
     if with_lock and st["locks"]:
         out += lock.problems(run, cfg, st)
+    return out
+
+
+def _env_health(project, plan: dict) -> list[str]:
+    """Every repo with runtime checks has an env that answers: all problems in one message, never a surprise at verify [L-86]."""
+    out = []
+    for repo in sorted({c["repo"] for c in plan["checks"] if c.get("type") in RUNTIME}):
+        env = next((r.get("env") for r in project.cfg["repo"] if r["name"] == repo), None)
+        if env and not localhttp.healthy(envmod.health_url(env), 3):
+            out.append(f"{repo}: the env does not answer at {envmod.health_url(env)}; start it with the env command of this CLI before the plan gate [L-86]")
     return out
 
 
@@ -105,7 +118,9 @@ def reproduce_reasons(run: Run, project, st: dict, strict: bool = True) -> tuple
     lk, plan = lock.current(st), planmod.load_plan(run)[0]
     recs = []
     for c in planmod.effective_checks(plan, project.cfg):
-        if c.get("reproduce") and not evidence.satisfied(st, c["id"], "reproduce", lk["spec_hashes"][c["id"]], lk["branch_points"][c["repo"]]):
+        bp = lk["branch_points"][c["repo"]]
+        heads = {**envmod.heads_of(project, st, c["repo"]), c["repo"]: bp} if c["type"] in RUNTIME and c.get("reproduce") else None
+        if c.get("reproduce") and not evidence.satisfied(st, c["id"], "reproduce", lk["spec_hashes"][c["id"]], bp, None, heads):
             recs.append(f"{c['id']}: no reproduced record at the base {lk['branch_points'][c['repo']][:7]}: run factory reproduce [L-03, L-05, L-33]")
     return diagnosis_reasons(run), recs
 
@@ -135,9 +150,14 @@ def verify_reasons(run: Run, project, st: dict) -> list[str]:
         if c["repo"] not in heads:
             continue
         path, sha, bp = heads[c["repo"]]
-        rec = evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha)
-        if rec is None:
+        rheads = envmod.heads_of(project, st, c["repo"]) if c["type"] in RUNTIME else None
+        rec = evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha, None, rheads)
+        if rec is None and rheads is not None and evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha):
+            out.append(f"{c['id']}: the record was made when a served repo had another HEAD ({', '.join(f'{r}@{h[:7]}' for r, h in rheads.items())} now): run factory verify [L-12]")
+        elif rec is None:
             out.append(f"{c['id']}: no verify record at {sha[:7]} for the locked spec: run factory verify [L-08, L-09]")
+        elif rheads is not None and any(v["sha"] != rec["heads"].get(r) for r, v in rec.get("served", {}).items()):
+            out.append(f"{c['id']}: the served process was started at another commit than the one it was checked at [L-13, L-85]")
         elif rec["result"] != "pass":
             out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})")
         else:
@@ -164,8 +184,8 @@ def _red_green_reasons(st: dict, c: dict, lk: dict, plan: dict, path: Path, bp: 
 def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     """What a later gate adds on top of verify; callers know that verify holds."""
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
-    out = review.reasons(st, plan, lk)
-    return out + ship.reasons(run, project, st) if name == "ship" and not out else out
+    out = review.reasons(st, plan, lk) + designflow.review_reasons(run, st, plan)
+    return out + ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan) if name == "ship" and not out else out
 
 
 def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
@@ -198,8 +218,11 @@ def run_gate(run: Run, project, name: str, actor: str | None = None) -> tuple[bo
     st = run.state()
     reasons = reasons_for(run, project, st, name, strict=False)
     extra: dict = {}
-    if not reasons and name == "plan" and not st["locks"]:
-        lock.lock_event(run, lock.compute(run, project.cfg, st, planmod.load_plan(run)[0]), {}, actor)
+    if name == "plan" and not reasons and not st["locks"]:
+        plan = planmod.load_plan(run)[0]
+        reasons = dryrun.reasons(run, project, st, plan, None)
+        if not reasons:
+            lock.lock_event(run, lock.compute(run, project.cfg, st, plan), {}, actor)
     if not reasons and name == "reproduce":
         extra["diagnosis"] = sha256_file(run.dir / "diagnosis.md")
     run.append({"type": "gate", "name": name, "result": "fail" if reasons else "pass", "reasons": reasons, **extra}, actor)

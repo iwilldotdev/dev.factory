@@ -9,6 +9,8 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_confirm, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
+    from .cli_design import cmd_design
+    from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
     p = argparse.ArgumentParser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
@@ -140,6 +142,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("waive", cmd_confirm, "record the user's waiver of one pipeline", [scoped])
     sp.add_argument("target", help="pipeline:<id>")
     sp.add_argument("--user-said", required=True)
+    ep = sub.add_parser("env", help="start, stop and inspect the env of a repo").add_subparsers(dest="sub", required=True)
+    for name, helptext in (("up", "start a repo's env (and what it depends on) from the run worktree"), ("down", "stop the env this run started"),
+                           ("health", "probe the health URL"), ("status", "who holds each env lock"), ("logs", "tail the env log"),
+                           ("seed", "run the seed command with the run's data prefix"), ("reset", "run the reset command with the run's data prefix")):
+        sp = ep.add_parser(name, help=helptext, parents=[scoped])
+        sp.set_defaults(func=cmd_env)
+        sp.add_argument("repo", nargs="?")
+        if name == "up":
+            sp.add_argument("--restart", action="store_true", help="stop this run's env of the repo first and start it again")
+            sp.add_argument("--wait", type=float, metavar="S", help="queue up to S seconds for another run's env lock")
+            sp.add_argument("--user", help="login user slug (state file and <KEY>_<SLUG> secrets)")
+        elif name == "logs":
+            sp.add_argument("--tail", type=int, default=40)
+    dp = sub.add_parser("design", help="design frames: add an approximate image, expect skeleton, review, refresh").add_subparsers(dest="sub", required=True)
+    for name, helptext in (("add", "store an approximate design PNG and write a frame skeleton"), ("check", "validate every ingested frame and image"),
+                           ("expect", "append a style-map entry from the facts of a frame node"), ("review", "record the user's review of an approx frame"),
+                           ("refresh", "re-acquire an exact frame and record whether it moved")):
+        sp = dp.add_parser(name, help=helptext, parents=[scoped])
+        sp.set_defaults(func=cmd_design)
+        if name == "add":
+            sp.add_argument("png")
+            sp.add_argument("--name", required=True)
+            sp.add_argument("--id", help="frame and image id (default: derived from the name)")
+        elif name != "check":
+            sp.add_argument("frame")
+        if name == "expect":
+            sp.add_argument("--node", required=True)
+            sp.add_argument("--selector", required=True, help="CSS selector of the element that implements the node")
+        elif name in ("review", "refresh"):
+            sp.add_argument("--user-said", required=name == "review", help="the user's own words" + (" (needed without a design adapter)" if name == "refresh" else ""))
+    sp = add("wait", cmd_wait, "wait for a file, a command or a local URL (600 s cap)")
+    sp.add_argument("--file")
+    sp.add_argument("--cmd")
+    sp.add_argument("--url")
+    sp.add_argument("--timeout", type=float, default=60, metavar="S")
     sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
     sp.add_argument("name")
     return p

@@ -119,6 +119,8 @@ def cmd_next(args) -> int:
     text += [f"expects file: {f}" for f in n["files"]] + [f"role: {n['role']}"]
     if n["reasons"]:
         text += [f"pending gate {n['gate']} would fail:"] + [f"  - {r}" for r in n["reasons"]]
+    if n.get("uat"):
+        text += [f"early UAT (does not block): {n['uat']['action']}"] + [f"  image: {i}" for i in n["uat"]["images"]]
     text += n.get("briefing", [])
     if n.get("decisions_note"):
         text.append(n["decisions_note"])
@@ -162,13 +164,17 @@ def cmd_run(args) -> int:
 
 
 def cmd_plan(args) -> int:
-    from . import gates, lock, plan as planmod
+    from . import dryrun, gates, lock, plan as planmod
     if args.sub == "example":
         print(json.dumps(planmod.EXAMPLE, indent=2))
         return 0
     proj = _project(args)
     run = _run(args, proj)
-    ev = lock.amend(run, proj.cfg, gates.plan_reasons(run, proj, run.state(), with_lock=False), args.reason, args.decision, args.actor)
+    st = run.state()
+    reasons = gates.plan_reasons(run, proj, st, with_lock=False)
+    if not reasons and st["locks"]:
+        reasons = dryrun.reasons(run, proj, st, planmod.load_plan(run)[0], lock.current(st))
+    ev = lock.amend(run, proj.cfg, reasons, args.reason, args.decision, args.actor)
     a = ev["amend"]
     _out(args, ev, f"plan re-locked (seq {ev['seq']}); changed ACs: {', '.join(a['changed_acs']) or 'none'}; changed checks: "
                    f"{', '.join(a['changed_checks']) or 'none'}; " + ("consumed " + a["decision"] if a["decision"] else "counts against the loop budget"))

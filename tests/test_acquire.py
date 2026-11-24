@@ -112,10 +112,10 @@ class FetchTests(FactoryCase):
         self.start("ABC-1")
         self.assertIn("factory ingest ticket --raw", self.fails("fetch", "ticket", "ABC-1"))
 
-    def test_fetch_of_a_kind_with_no_validator_is_refused(self):
-        self.write("factory.toml", provider_toml(adapter_scenario(self), kind="design_frame"))
+    def test_a_design_frame_from_an_adapter_is_validated_like_any_contract(self):
+        self.write("factory.toml", provider_toml(adapter_scenario(self, stdout=json.dumps({"contract": {"id": "F-1"}})), kind="design_frame"))
         self.start("ABC-1")
-        self.assertIn("not supported in this build", self.fails("fetch", "design_frame", "F-1"))
+        self.assertIn("contract design_frame rejected", self.fails("fetch", "design_frame", "F-1"))
 
     @lesson("L-157")
     def test_two_contract_ids_mapping_to_one_file_name_are_an_error_naming_both(self):

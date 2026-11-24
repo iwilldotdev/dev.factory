@@ -8,7 +8,7 @@ from .util import FactoryError
 
 SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 TS = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$")
-SCHEMAS = {"ticket": "ticket/1", "change": "change/1", "pipeline": "pipeline/1"}
+SCHEMAS = {"ticket": "ticket/1", "change": "change/1", "pipeline": "pipeline/1", "design_frame": "design_frame/1", "design_image": "design_image/1"}
 PROOF_GRADE = ("change", "pipeline")  # must come from an adapter or a user confirmation [L-21]
 MEDIA_TYPES = ("image/", "video/", "audio/")
 MEDIA_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
@@ -89,10 +89,13 @@ def is_media(attachment: dict) -> bool:
     return attachment.get("mime", "").startswith(MEDIA_TYPES)
 
 
-def validate(kind: str, data, repos: list[str] | None = None) -> dict:
+def validate(kind: str, data, repos: list[str] | None = None, raw: bytes | None = None) -> dict:
     """Return the normalized contract data, or raise FactoryError (exit 2) naming every bad field."""
+    if kind in ("design_frame", "design_image"):
+        from . import design
+        return design.validate_frame(data) if kind == "design_frame" else design.validate_image(data, raw)
     if kind not in SPECS:
-        raise FactoryError(f"contract kind {kind!r} is not supported in this build (supported: {', '.join(SPECS)})")
+        raise FactoryError(f"contract kind {kind!r} is not supported in this build (supported: {', '.join(SCHEMAS)})")
     if not isinstance(data, dict):
         raise FactoryError(f"contract {kind}: data must be a JSON object")
     errs: list[str] = []

@@ -16,9 +16,9 @@ def _rel(run: Run, path: Path) -> str:
 
 
 def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, source: str, adapter: dict | None,
-          raw_src: Path | None = None) -> dict:
+          raw_src: Path | None = None, tag: dict | None = None) -> dict:
     """Validate, write raw + contract files, append the `contract` event. Nothing is written when invalid [L-156]."""
-    data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]])
+    data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]], raw)
     if kind == "ticket" and data["id"] != run.state()["ticket"]:
         raise FactoryError(f"ticket contract id {data['id']!r} differs from the run ticket {run.state()['ticket']!r}; nothing was stored "
                            "(fetch or ingest the ticket this run is for)")
@@ -28,6 +28,8 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
         prev = read_json(cpath)["data"]["id"]
         if prev != data["id"]:
             raise FactoryError(f"contract ids {prev!r} and {data['id']!r} map to the same file name {sid!r} [L-157]")
+    if kind == "design_frame" and cpath.exists() and read_json(cpath)["data"]["fidelity"] == "exact" and data["fidelity"] == "approx":
+        raise FactoryError(f"design frame {data['id']!r} is already ingested as exact; an approx frame never replaces an exact one [L-188]")
     rpath = run.dir / "raw" / kind / f"{sid}{ext}"
     if raw_src is None or raw_src.resolve() != rpath.resolve():
         write_atomic(rpath, raw)
@@ -37,17 +39,18 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
         envelope["adapter"] = adapter
     write_atomic(cpath, json.dumps(envelope, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     run.append({"type": "contract", "kind": kind, "id": data["id"], "path": _rel(run, cpath), "source": source,
-                "raw_sha256": envelope["raw"]["sha256"]})
+                "raw_sha256": envelope["raw"]["sha256"], **(tag or {})})
     return envelope
 
 
-def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: str | None = None, extra: dict | None = None) -> dict:
+def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: str | None = None, extra: dict | None = None,
+          tag: dict | None = None) -> dict:
     """Run the configured adapter for `kind`; stdout is the raw, validated into a `source: adapter` contract."""
     prov = cfg["providers"].get(kind, {})
     if not prov.get("fetch"):
         raise FactoryError(f"no adapter for {kind}: set [providers.{kind}] fetch in factory.toml, "
                            f"or save the raw and run: factory ingest {kind} --raw <file> --contract <file>")
-    if kind not in contracts.SPECS:
+    if kind not in contracts.SCHEMAS:
         raise FactoryError(f"contract kind {kind!r} is not supported in this build")
     repo_cfg = next((r for r in cfg["repo"] if r["name"] == repo), None) if repo else None
     if repo and repo_cfg is None:
@@ -56,6 +59,11 @@ def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: s
     if repo_cfg:
         values.update(repo=repo_cfg["name"], repo_path=fwd(repo_cfg["path"]))
     values.update(extra or {})  # `branch` and `sha`, when the caller knows them
+    out_png = run.dir / "raw" / "design_image" / f"{safe_id(ident)}.png"
+    if kind == "design_image":
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        out_png.unlink(missing_ok=True)
+        values["out"] = fwd(out_png)  # the adapter writes the PNG here; stdout still carries the contract data [L-121]
     argv = proc.substitute(proc.split_template(prov["fetch"]), values)
     keys = prov.get("secrets", [])
     secret_values, missing = config.resolve_secrets(cfg, keys)
@@ -79,7 +87,11 @@ def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: s
     if not isinstance(payload, dict) or "contract" not in payload or set(payload) - {"contract", "raw"}:
         raise FactoryError('adapter output must be exactly {"contract": {...}, "raw": <optional>}')
     adapter = {"cmd": shown, "exit": 0, "duration_s": round(res.secs, 2)}
-    return store(run, cfg, kind, payload["contract"], raw, ".json", "adapter", adapter)
+    if kind == "design_image":
+        if not out_png.is_file():
+            raise FactoryError(f"the design_image adapter wrote no PNG to {{out}} ({fwd(out_png)})")
+        return store(run, cfg, kind, payload["contract"], out_png.read_bytes(), ".png", "adapter", adapter, raw_src=out_png, tag=tag)
+    return store(run, cfg, kind, payload["contract"], raw, ".json", "adapter", adapter, tag=tag)
 
 
 def ingest(run: Run, cfg: dict, kind: str, raw_file: Path, data: dict) -> dict:

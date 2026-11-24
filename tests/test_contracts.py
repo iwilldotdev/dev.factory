@@ -100,7 +100,7 @@ class ChangeAndPipelineTests(unittest.TestCase):
         self.assertNotIn("ticket", contracts.PROOF_GRADE)
 
     def test_unsupported_kinds_are_refused(self):
-        self.assertIn("not supported in this build", errors("design_frame", {}))
+        self.assertIn("not supported in this build", errors("change_list", {}))
 
 
 if __name__ == "__main__":

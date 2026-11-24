@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .contracts import PROOF_GRADE
 from .util import FactoryError, canonical, now_iso
 
 KINDS = ("feature", "bug", "hotfix", "epic", "review")
@@ -104,7 +103,7 @@ def derive(events: list[dict]) -> dict:
     st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
                 "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
                 "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "confirms": [], "waivers": [], "ships": [],
-                "shipped": [], "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
+                "shipped": [], "design_reviews": [], "design_refreshes": [], "lock_at": -1, "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
     consumed: set[str] = set()
     for i, ev in enumerate(events):
         t = ev.get("type")
@@ -118,7 +117,7 @@ def derive(events: list[dict]) -> dict:
             st.update(kind=ev.get("kind"), retype_at=i)
         elif t == "contract":
             st["contracts"][(ev["kind"], ev["id"])] = {**ev, "at": i}
-            if ev["kind"] not in PROOF_GRADE:  # a readback or pipeline is a result, not a plan input
+            if ev["kind"] == "ticket":  # a readback, a pipeline or a design frame is no intake input; the plan lock covers design contracts
                 st["contract_at"] = i
         elif t == "media":
             st["media"][ev["attachment"]] = ev
@@ -143,6 +142,11 @@ def derive(events: list[dict]) -> dict:
                 st["diagnosis"] = ev.get("diagnosis")
         elif t == "plan_locked":
             st["locks"].append(ev)
+            st["lock_at"] = i
+        elif t == "design_review":
+            st["design_reviews"].append({**ev, "at": i})
+        elif t == "design_refresh":
+            st["design_refreshes"].append({**ev, "at": i})
         elif t == "loop":
             st["loops"].append(ev)
         elif t == "evidence":

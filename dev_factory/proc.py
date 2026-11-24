@@ -63,40 +63,75 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def kill_tree(proc: subprocess.Popen) -> None:
-    """Kill the child and everything it started [L-43]."""
+def kill_pid_tree(pid: int) -> None:
+    """Kill a process and everything it started: the process group on POSIX, the tree on Windows [L-43, L-67]."""
     if WINDOWS:
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     else:
         import signal
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """Kill the child and everything it started [L-43]."""
+    kill_pid_tree(proc.pid)
     try:
         proc.kill()
     except OSError:
         pass
 
 
-def pid_alive(pid: int) -> bool:
+def create_time(pid: int) -> float | None:
+    """Process creation time in epoch seconds, or None when the process is gone, a zombie, or unreadable [L-68]."""
     if WINDOWS:
         import ctypes
+        from ctypes import wintypes
         handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
         if not handle:
-            return False
-        code = ctypes.c_ulong()
-        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return code.value == 259  # STILL_ACTIVE
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            if code.value != 259 or not ctypes.windll.kernel32.GetProcessTimes(handle, *[ctypes.byref(t) for t in times]):
+                return None
+            return ((times[0].dwHighDateTime << 32 | times[0].dwLowDateTime) - 116444736000000000) / 1e7
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if stat[0] == "Z":
+            return None
+        boot = next(float(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime"))
+        return boot + int(stat[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError, StopIteration):
+        pass
+    res = run(["ps", "-o", "etimes=", "-p", str(pid)], cwd=Path.cwd(), env=child_env(), timeout_s=10)  # no /proc: elapsed seconds
+    return time.time() - int(res.out.strip()) if res.exit == 0 and res.out.strip().isdigit() else None
+
+
+def pid_alive(pid: int) -> bool:
+    return create_time(pid) is not None
+
+
+_CHILDREN: list[subprocess.Popen] = []
+
+
+def spawn_group(line: str, *, cwd: Path, env: dict[str, str], log: Path) -> int:
+    """Start a shell command line in its own process group (hidden console on Windows) with stdout and stderr appended
+    to `log` and stdin closed; the caller owns the pid and stops it with kill_pid_tree [L-66, L-67]."""
+    kwargs: dict = {"creationflags": 0x00000200 | 0x08000000} if WINDOWS else {"start_new_session": True}
+    try:
+        with open(log, "ab") as fh:
+            child = subprocess.Popen(line, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh, shell=True, **kwargs)
+    except OSError as exc:
+        raise FactoryError(f"cannot start {line!r}: {exc}") from exc
+    _CHILDREN[:] = [c for c in _CHILDREN if c.poll() is None] + [child]  # reaped on exit, so no zombie keeps a pid "alive"
+    return child.pid
 
 
 def run(argv: list[str] | str, *, cwd: Path, env: dict[str, str], timeout_s: float, shell: bool = False) -> Result:

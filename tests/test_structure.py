@@ -18,6 +18,8 @@ BANNED = ["".join(p) for p in (
     ("kuber", "netes"), ("mav", "en"), ("grad", "le"))]
 # Decision 13: a harness adapter id may appear in the module that generates its file and in the test of that file only.
 HARNESS_ALLOW: dict[str, set[str]] = {"".join(("cla", "ude")): {"dev_factory/harness.py", "tests/test_harness.py"}}
+# Decision 14: the bundled runner is a Node project with its own dependencies; its tool names may appear under browser/ only.
+RUNNER_TOOLS = {"".join(("n", "pm")), "".join(("play", "wright"))}
 CI_DIR = "." + "git" + "hub"
 SKIP_DIRS = {".git", CI_DIR, "__pycache__", ".tmp", "node_modules", "dist"}
 
@@ -51,7 +53,8 @@ class GrepBanTests(unittest.TestCase):
                 continue
             for n, line in enumerate(text.splitlines(), 1):
                 for m in pattern.finditer(line):
-                    if path.relative_to(ROOT).as_posix() not in HARNESS_ALLOW.get(m.group(1).lower(), set()):
+                    rel = path.relative_to(ROOT).as_posix()
+                    if rel not in HARNESS_ALLOW.get(m.group(1).lower(), set()) and not (rel.startswith("browser/") and m.group(1).lower() in RUNNER_TOOLS):
                         hits.append(f"{path.relative_to(ROOT).as_posix()}:{n}: {m.group(1)}")
         self.assertEqual(hits, [], "banned names found")
 
@@ -104,13 +107,28 @@ class SafetyTests(unittest.TestCase):
         """Invariant: no network module is imported by the CLI (adapters are the user's code)."""
         banned = {"socket", "http", "urllib.request", "ftplib", "smtplib", "ssl", "xmlrpc", "requests", "asyncio"}
         seen = set()
-        for p in source_files():
+        for p in (q for q in source_files() if q.name != "localhttp.py"):  # the loopback-only client, tested below
             for node in ast.walk(ast.parse(p.read_text(encoding="utf-8"))):
                 names = [a.name for a in node.names] if isinstance(node, ast.Import) else [node.module or ""] if isinstance(node, ast.ImportFrom) else []
                 for n in names:
                     if n in banned or n.split(".")[0] in banned:
                         seen.add(f"{p.name}: {n}")
         self.assertEqual(seen, set())
+
+    @lesson("L-82")
+    def test_the_only_network_module_refuses_every_origin_but_loopback(self):
+        """L-82: localhttp.py is the one place that opens sockets, and it refuses a foreign origin or a path that changes the origin."""
+        from dev_factory import localhttp
+        from dev_factory.util import FactoryError
+        for url in ("http://example.com/x", "http://10.0.0.5:80/", "ftp://127.0.0.1/", "http://127.0.0.1.evil.test/"):
+            with self.assertRaises(FactoryError, msg=url):
+                localhttp.request("GET", url)
+        for path in ("//evil.test/x", "http://evil.test/", "/a" + chr(92) + "b", "x"):
+            with self.assertRaises(FactoryError, msg=path):
+                localhttp.join("http://127.0.0.1:1", path)
+        self.assertEqual(localhttp.join("http://127.0.0.1:1/", "/a?b=1"), "http://127.0.0.1:1/a?b=1")
+        importers = [p.name for p in source_files() if re.search(r"^\s*(import http|from http|import socket)", p.read_text(encoding="utf-8"), re.M)]
+        self.assertEqual(importers, ["localhttp.py"])
 
     @lesson("L-148")
     def test_the_cli_never_imports_code_by_name_or_from_the_cwd(self):

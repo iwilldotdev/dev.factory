@@ -41,6 +41,12 @@ Plan and proof (after intake):
 - Bug runs: `factory reproduce` runs the reproducing checks on the base, and `factory verify` also proves red-green.
 - `factory gate reproduce` and `factory gate verify` only read evidence; `factory metrics` shows time per phase and loops.
 
+Runtime and design (plans with `http`, `browser`, `visual`, `style` or `screenshot` checks):
+- `factory env up|down|health|status|logs|seed|reset [repo]` runs the env of a repo from the run worktree, dependencies first; `factory wait --file|--cmd|--url` polls a probe.
+  Start the env before `gate plan`; `verify` restarts a stale one once. It never stops an env it did not start.
+- `factory design add <png> --name N` stores an approximate image; `design expect <frame> --node ID --selector CSS` writes a style-map entry;
+  `design review <frame> --user-said "<words>"` records the user's review of an approx frame; `design refresh <frame>` re-checks an exact one before ship.
+
 Review (after verify passes). Pass `--actor <name>` on every command you run: a reviewer may not share an actor with the builder.
 - `factory review example` prints the review JSON. A fresh reviewer who did not build it writes one file per kind and runs
   `factory review record --kind code|qa --file <file>`. The code review lists `changed_values` (`[]` when none); the qa review has one

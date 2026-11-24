@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ..collectors.test import safe_rel
-from ..core import (ensure_owner, 
+from ..core import (ensure_owner, url_origin,
     FactoryError,
     event,
     factory_home,
@@ -679,6 +679,11 @@ def warm_up(workspace: dict, env: dict, alias: str, slot: int, proc, out: list[s
             _log_line(proc, f"[factory] warmup stopped: {WARMUP_BUDGET_S:g}s budget used")
             break
         url = path if re.match(r"^https?://", path) else root + "/" + path.lstrip("/")
+        # a path is the slot's own base URL; an absolute URL must be the origin of a repo of the workspace env
+        why = None if url_origin(url) == url_origin(root) else origin_problem(url, workspace, None)
+        if why:
+            _log_line(proc, f"[factory] warmup skipped: {why}")
+            continue
         t0 = time.monotonic()
         status, _, err = http_fetch(url, "GET", None, min(WARMUP_TIMEOUT_S, left))
         _log_line(proc, f"[factory] warmup GET {url} -> {status if status is not None else 'no answer (' + str(err) + ')'} "
@@ -1032,6 +1037,32 @@ REQUEST_TIMEOUT_S = 15.0
 BODY_LIMIT = 65536
 
 
+def allowed_origins(workspace: dict, run: dict | None) -> set[tuple[str, str, int]]:
+    """Origins (scheme, host, port) of the slot base URL of every repo with an env in the workspace: the only servers the
+    CLI requests (a preflight `url` or a warm-up URL elsewhere would be a call to a remote service)."""
+    out = set()
+    for repo in workspace.get("repos") or []:
+        if not repo.get("env") or not repo.get("alias"):
+            continue
+        try:
+            slot = 0 if is_shared(workspace, run, repo["alias"]) else run_slot(run, repo["alias"])
+            origin = url_origin(base_url(workspace, repo["alias"], slot))
+        except FactoryError:
+            continue
+        if origin:
+            out.add(origin)
+    return out
+
+
+def origin_problem(url: str, workspace: dict, run: dict | None) -> str | None:
+    """Why the CLI must not request `url`: its origin is not the base URL of any repo of the workspace env."""
+    origin = url_origin(url)
+    if origin and origin in allowed_origins(workspace, run):
+        return None
+    shown = f"{origin[0]}://{origin[1]}:{origin[2]}" if origin else "an unreadable origin"
+    return f"{shown} is not the base URL of any repo of the workspace env: not requested"
+
+
 def http_fetch(url: str, method: str = "GET", headers: dict | None = None,
                timeout: float = REQUEST_TIMEOUT_S) -> tuple[int | None, str, str | None]:
     """(status, body text up to 64 KiB, transport error). Redirects are not followed (a 3xx is the answer)."""
@@ -1074,21 +1105,40 @@ def response_problem(spec: dict, status: int | None, body: str) -> str | None:
         return f"status {status if status is not None else 'no answer'}, expected {'/'.join(map(str, wanted))}"
     needle = spec.get("expect_body_contains")
     if needle is not None and str(needle) not in body:
-        return f"body does not contain {needle!r} (got {body.strip()[:120]!r})"
+        return "body does not contain the expected text"  # never the body itself: it can hold data of the app
     expect_json = spec.get("expect_json")
     if expect_json:
         try:
             data = json.loads(body)
         except ValueError:
-            return f"body is not JSON (got {body.strip()[:120]!r})"
+            return "body is not JSON"
         for path, value in expect_json.items():
             try:
                 got = json_path(data, path)
             except KeyError:
                 return f"JSON path {path} is absent"
             if got != value:
-                return f"JSON path {path} is {got!r}, expected {value!r}"
+                return f"JSON path {path} does not have the expected value {value!r}"
     return None
+
+
+def cookie_sent_to(cookie: dict, scheme: str, host: str, req_path: str, now_s: float) -> bool:
+    """Whether a Playwright storage-state cookie is sent to `scheme://host/req_path`, as a browser would: the domain must
+    match the host (an empty domain matches nothing; `.d` also matches subdomains, a host-only `d` only itself), a `secure`
+    cookie goes only over https, the `path` must be a path prefix on a segment boundary, and it must not be expired."""
+    domain = str(cookie.get("domain") or "").lower()
+    if not domain or not host:
+        return False
+    bare = domain.lstrip(".")
+    if not bare or not (host == bare or (domain.startswith(".") and host.endswith("." + bare))):
+        return False
+    if cookie.get("secure") and scheme != "https":
+        return False
+    cpath = str(cookie.get("path") or "/")
+    if not (cpath == "/" or req_path == cpath or req_path.startswith(cpath if cpath.endswith("/") else cpath + "/")):
+        return False
+    exp = cookie.get("expires", -1)
+    return not (isinstance(exp, (int, float)) and 0 < exp < now_s)
 
 
 def storage_headers(ws: str, alias: str, slot: int, url: str, user: str | None = None,
@@ -1105,13 +1155,8 @@ def storage_headers(ws: str, alias: str, slot: int, url: str, user: str | None =
     host, req_path, now_s = (parsed.hostname or "").lower(), parsed.path or "/", time.time()
     cookies = []
     for c in state.get("cookies") or []:
-        domain = str(c.get("domain") or "").lstrip(".").lower()
-        exp = c.get("expires", -1)
-        if domain and host != domain and not host.endswith("." + domain):
-            continue
-        if not req_path.startswith(str(c.get("path") or "/")) or (isinstance(exp, (int, float)) and 0 < exp < now_s):
-            continue
-        cookies.append(f"{c.get('name')}={c.get('value')}")
+        if cookie_sent_to(c, parsed.scheme, host, req_path, now_s):
+            cookies.append(f"{c.get('name')}={c.get('value')}")
     headers = {"Cookie": "; ".join(cookies)} if cookies else {}
     if bearer_key:
         origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -1143,6 +1188,10 @@ def request_preflights(workspace: dict, run: dict | None, alias: str) -> list[tu
         spec, name = item["request"], str(item.get("name") or "preflight")
         method = spec.get("method") or "GET"
         url = spec.get("url") or root + "/" + str(spec.get("path") or "").lstrip("/")
+        why = origin_problem(url, workspace, run) if spec.get("url") else None
+        if why:  # the CLI never calls a server that is not one of the workspace envs
+            out.append((name, f"url {why}"))
+            continue
         headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
         if spec.get("auth") == "storage":
             auth, err = storage_headers(ws, alias, slot, url, spec.get("user"), spec.get("bearer_local_storage"))

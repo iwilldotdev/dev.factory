@@ -732,6 +732,15 @@ def body_env_kind(text: str) -> str | None:
     return None
 
 
+def _body_is_server_side(record: dict) -> bool:
+    """The body classes name a server-side cause, so they apply only to a 5xx answer, or (no HTTP status in the record) to a
+    check that errored at the request level. A 200/4xx page, or a failed assertion that merely quotes the text, is not env."""
+    status = (record.get("details") or {}).get("http_status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        return 500 <= status <= 599
+    return record.get("status") == "error"
+
+
 def env_kind_of(text: str) -> str:
     if re.search(r"started at|serves|worktree HEAD", text):
         return "stale"
@@ -752,7 +761,7 @@ def classify(record: dict, first_runtime: bool = False) -> tuple[str, str | None
     text = _text_of(record)
     if record.get("type") in RUNTIME and details.get("fail_kind") == "env":
         return "env", details.get("env_kind") or env_kind_of(text)
-    if record.get("type") in RUNTIME and (body_kind := body_env_kind(text)):
+    if record.get("type") in RUNTIME and _body_is_server_side(record) and (body_kind := body_env_kind(text)):
         return "env", body_kind
     if record.get("type") in RUNTIME and ENV_RE.search(text):
         return "env", env_kind_of(text)

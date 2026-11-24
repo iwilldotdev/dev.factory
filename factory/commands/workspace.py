@@ -7,7 +7,7 @@ import re
 import string
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from ..core import (SCHEMA_VERSION, FactoryError, GateFailed, factory_home, read_json, secrets_path,
+from ..core import (SCHEMA_VERSION, url_origin, FactoryError, GateFailed, factory_home, read_json, secrets_path,
                     workspace_load, workspace_path, write_json)
 
 DEFAULT_AUTONOMY = {"ship": "ask", "max_build_loops": 3, "max_review_rounds": 2, "max_replans": 2}
@@ -204,6 +204,38 @@ def _warmup_errors(alias: str, env: dict) -> list[str]:
         return [f"{alias}: env.warmup must be an array of paths (starting with /) or http(s) URLs"]
     return [f"{alias}: env.warmup[{i}] must be a path starting with / or an http(s) URL, got {p!r}"
             for i, p in enumerate(paths) if not (isinstance(p, str) and (p.startswith("/") or re.match(r"^https?://", p)))]
+
+
+def _origin_errors(ws: dict) -> list[str]:
+    """The CLI never calls remote services: an absolute `env.preflight[].request.url` or `env.warmup` URL must have the origin
+    (scheme, host, port) of the base URL of some repo of the workspace env. Judged here when every base URL is known
+    (no `{placeholder}`); otherwise `env check`/`env up` judge it at run time."""
+    origins, known = set(), True
+    for repo in ws.get("repos") or []:
+        env = repo.get("env") or {}
+        base = env.get("base_url") or env.get("health")
+        if not base:
+            continue
+        if "{" in str(base) or url_origin(base) is None:
+            known = False
+            continue
+        origins.add(url_origin(base))
+    if not known:
+        return []
+    errors = []
+    for repo in ws.get("repos") or []:
+        env, alias = repo.get("env") or {}, repo.get("alias") or "?"
+        urls = [(f"{alias}: env.warmup[{i}]", p) for i, p in enumerate(env.get("warmup") or []
+                                                                  if isinstance(env.get("warmup"), list) else [])]
+        for i, item in enumerate(env.get("preflight") or [] if isinstance(env.get("preflight"), list) else []):
+            req = item.get("request") if isinstance(item, dict) else None
+            if isinstance(req, dict) and "url" in req:
+                urls.append((f"{alias}: env.preflight[{i}].request.url", req["url"]))
+        for where, url in urls:
+            if isinstance(url, str) and re.match(r"^https?://", url) and url_origin(url) not in origins:
+                errors.append(f"{where} must have the origin of the base URL of a repo of the workspace env (the CLI never "
+                              "calls other servers)")
+    return errors
 
 
 def _slot_errors(alias: str, env: dict) -> list[str]:
@@ -463,6 +495,7 @@ def check_workspace(ws: dict) -> list[str]:
         missing.append("autonomy.ship must be ask or draft-auto")
     if "allow_timing_amends" in autonomy and not isinstance(autonomy["allow_timing_amends"], bool):
         missing.append("autonomy.allow_timing_amends must be true or false")
+    missing.extend(_origin_errors(ws))
     missing.extend(_ref_errors(ws))
     if "browser_batch" in (ws.get("limits") or {}) and not isinstance(ws["limits"]["browser_batch"], bool):
         missing.append("limits.browser_batch must be true or false")

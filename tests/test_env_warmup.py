@@ -86,12 +86,23 @@ class Warmup(FactoryCase):
         stall.listen(5)  # accepts connections in the kernel backlog and never answers
         self.addCleanup(stall.close)
         proc = Fake()
-        env = {"warmup": [f"http://127.0.0.1:{stall.getsockname()[1]}/slow"] * 2}
-        ws = {"name": "ws", "repos": [{"alias": "Web", "env": {"base_url": "http://127.0.0.1:9"}}]}
+        origin = f"http://127.0.0.1:{stall.getsockname()[1]}"
+        env = {"warmup": [f"{origin}/slow"] * 2}
+        ws = {"name": "ws", "repos": [{"alias": "Web", "env": {"base_url": origin}}]}
         with mock.patch.object(envmod, "WARMUP_TIMEOUT_S", 0.3):
             done = envmod.warm_up(ws, env, "Web", 0, proc, [])
         self.assertEqual(done, 2)
         self.assertEqual(proc.text.count("no answer"), 2)
+
+    def test_a_url_of_another_origin_is_not_requested(self):
+        proc = Fake()
+        ws = {"name": "ws", "repos": [{"alias": "Web", "env": {"base_url": "http://127.0.0.1:3000"}}]}
+        env = {"warmup": ["/a", "http://203.0.113.9/x", "http://127.0.0.1:3000/b"]}
+        with mock.patch.object(envmod, "http_fetch", return_value=(200, "", None)) as fetch:
+            done = envmod.warm_up(ws, env, "Web", 0, proc, [])
+        self.assertEqual(done, 2)
+        self.assertEqual([c.args[0] for c in fetch.call_args_list], ["http://127.0.0.1:3000/a", "http://127.0.0.1:3000/b"])
+        self.assertIn("warmup skipped", proc.text)
 
     def test_total_budget_stops_the_warmup(self):
         proc = Fake()

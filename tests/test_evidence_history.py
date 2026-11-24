@@ -18,7 +18,7 @@ from factory.commands import metrics, prove  # noqa: E402
 
 FAIL = {"status": "fail", "summary": "expect(received).toBe(1)\nmore text"}
 PASS = {"status": "pass", "summary": "ok"}
-SSL = {"status": "fail", "summary": "api check mismatch", "details": {"body_tail": "500 SSL Authentication Error at db"}}
+SSL = {"status": "fail", "summary": "api check mismatch", "details": {"http_status": 500, "body_tail": "500 SSL Authentication Error at db"}}
 
 
 class Base(ProveCase):
@@ -47,6 +47,17 @@ class History(Base):
         self.assertEqual([h["status"] for h in hist], ["fail"])
         self.assertTrue((self.home / "runs/r1/evidence/history/B1.jsonl").is_file())
         self.assertEqual(self.history()[0]["failure"]["kind"], "assert")
+
+    def test_a_failed_write_leaves_the_history_whole(self):
+        self.prove(FAIL)
+        self.prove(PASS)
+        before = (self.home / "runs/r1/evidence/history/B1.jsonl").read_text(encoding="utf-8")
+        with mock.patch.object(core.os, "replace", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                core.keep_history("r1", "B1")
+        folder = self.home / "runs/r1/evidence/history"
+        self.assertEqual((folder / "B1.jsonl").read_text(encoding="utf-8"), before)
+        self.assertEqual([p.name for p in folder.iterdir()], ["B1.jsonl"])  # no temp file left behind
 
     def test_history_is_capped(self):
         results = [FAIL if i % 2 == 0 else PASS for i in range(core.HISTORY_CAP + 6)]
@@ -98,10 +109,24 @@ class SslClassification(Base):
     def test_table_is_extensible(self):
         import re
         with mock.patch.object(prove, "ENV_BODY_CLASSES", prove.ENV_BODY_CLASSES + [(re.compile("quota exhausted"), "quota")]):
-            rec = {"type": "api", "status": "fail", "summary": "x", "details": {"body_tail": "quota exhausted"}}
+            rec = {"type": "api", "status": "fail", "summary": "x", "details": {"http_status": 503, "body_tail": "quota exhausted"}}
             self.assertEqual(prove.classify(rec), ("env", "quota"))
         rec = {"type": "api", "status": "fail", "summary": "x", "details": {"body_tail": "quota exhausted"}}
         self.assertEqual(prove.classify(rec), ("assert", None))
+
+    def test_only_a_server_error_answer_is_classified_by_its_body(self):
+        body = "SSL Authentication Error"
+        for status in (200, 302, 404, 422):  # a page or an assertion that merely quotes the text
+            rec = {"type": "api", "status": "fail", "summary": "x", "details": {"http_status": status, "body_tail": body}}
+            self.assertEqual(prove.classify(rec), ("assert", None), status)
+        for status in (500, 503):
+            rec = {"type": "api", "status": "fail", "summary": "x", "details": {"http_status": status, "body_tail": body}}
+            self.assertEqual(prove.classify(rec), ("env", "db"), status)
+
+    def test_a_record_without_status_needs_a_request_level_error(self):
+        details = {"body_tail": "SSL Authentication Error"}
+        self.assertEqual(prove.classify({"type": "browser", "status": "fail", "summary": "x", "details": details}), ("assert", None))
+        self.assertEqual(prove.classify({"type": "api", "status": "error", "summary": "x", "details": details}), ("env", "db"))
 
     def test_a_test_check_mentioning_it_is_not_env(self):
         rec = {"type": "test", "status": "fail", "summary": "SSL Authentication Error", "details": {}}
@@ -117,6 +142,17 @@ class Flaky(Base):
         self.assertTrue(self.evidence("B1")["flaky"])
         self.assertIn("FLAKY: B1", out)
         self.assertEqual(core.flaky_checks("r1"), ["B1"])
+
+    def test_an_env_or_timeout_failure_then_a_pass_is_not_flaky(self):
+        for body in (SSL, {"status": "fail", "summary": "timed out after 30s"},
+                     {"status": "fail", "summary": "ECONNREFUSED 127.0.0.1"}):
+            with self.subTest(body["summary"]):
+                self.acs([{"id": "B1", "type": "api", "repo": "Web", "path": "/x", "expect": {"status": 200}}])
+                with mock.patch("factory.commands.prove.dispatch", return_value=body):
+                    cli("prove", "r1")
+                with mock.patch("factory.commands.prove.dispatch", return_value=PASS):
+                    cli("prove", "r1")
+                self.assertNotIn("flaky", self.evidence("B1"))
 
     def test_pass_only_is_not_flaky(self):
         self.prove(PASS)

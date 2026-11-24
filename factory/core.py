@@ -18,6 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 VERSION = "0.1.0"
 SCHEMA_VERSION = 1
@@ -567,6 +568,18 @@ def write_evidence(run_id: str, check: dict, body: dict, repo_path: Path | None,
     return record
 
 
+def url_origin(url) -> tuple[str, str, int] | None:
+    """(scheme, host, port) of an http(s) URL (default ports filled in, host lower-cased), else None."""
+    try:
+        parsed = urlparse(str(url))
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    return parsed.scheme, parsed.hostname.lower(), port or (443 if parsed.scheme == "https" else 80)
+
+
 HISTORY_CAP = 20  # attempts kept per check in evidence/history/<id>.jsonl (the latest stays in evidence/<id>.json)
 HISTORY_DETAIL_KEYS = ("check_digest", "mode", "run_heads", "fail_kind", "env_kind", "flaky", "http_status")
 
@@ -603,7 +616,15 @@ def keep_history(run_id: str, check_id: str) -> None:
     lines = [json.dumps(a, ensure_ascii=False) for a in evidence_history(run_id, check_id)]
     lines.append(json.dumps(_slim_attempt(prev), ensure_ascii=False))
     hist.parent.mkdir(parents=True, exist_ok=True)
-    hist.write_text(chr(10).join(lines[-HISTORY_CAP:]) + chr(10), encoding="utf-8")
+    tmp = hist.with_name(f"{hist.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")  # temp file + replace: never a torn history
+    try:
+        tmp.write_text(chr(10).join(lines[-HISTORY_CAP:]) + chr(10), encoding="utf-8")
+        os.replace(tmp, hist)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def evidence_history(run_id: str, check_id: str) -> list[dict]:
@@ -624,15 +645,17 @@ def evidence_history(run_id: str, check_id: str) -> list[dict]:
 
 
 def is_flaky(history: list[dict], record: dict) -> bool:
-    """`record` (a pass) is flaky when an earlier attempt of the same check FAILED with the same check digest at the same
-    repo sha (and, for runtime evidence, the same `run_heads`): the check flipped without any change to code or check."""
+    """`record` (a pass) is flaky when an earlier attempt of the same check FAILED an assertion (`failure.kind` is `assert`: a
+    timeout, env or setup failure followed by a pass is an infrastructure recovery, not a flaky check) with the same check
+    digest at the same repo sha (and, for runtime evidence, the same `run_heads`): the check flipped without any change."""
     det = record.get("details") if isinstance(record.get("details"), dict) else {}
     digest, heads = det.get("check_digest"), det.get("run_heads")
     if record.get("status") != "pass" or not digest:
         return False
     for old in history:
         odet = old.get("details") if isinstance(old.get("details"), dict) else {}
-        if (old.get("status") == "fail" and odet.get("check_digest") == digest and old.get("git_sha") == record.get("git_sha")
+        failure = old.get("failure") if isinstance(old.get("failure"), dict) else {}
+        if (old.get("status") == "fail" and failure.get("kind") == "assert" and odet.get("check_digest") == digest and old.get("git_sha") == record.get("git_sha")
                 and odet.get("run_heads") == heads):
             return True
     return False

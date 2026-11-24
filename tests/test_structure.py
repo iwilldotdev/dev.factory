@@ -16,8 +16,8 @@ BANNED = ["".join(p) for p in (
     ("play", "wright"), ("pupp", "eteer"), ("sele", "nium"), ("cypr", "ess"), ("jenk", "ins"), ("sonar", "qube"), ("sla", "ck"),
     ("az", "ure"), ("n", "pm"), ("ya", "rn"), ("pn", "pm"), ("dot", "net"), ("pyt", "est"), ("je", "st"), ("es", "lint"), ("dock", "er"),
     ("kuber", "netes"), ("mav", "en"), ("grad", "le"))]
-# Decision 13: harness adapter ids may appear in their own generated files only (none in M1).
-HARNESS_ALLOW: dict[str, set[str]] = {}
+# Decision 13: a harness adapter id may appear in the module that generates its file and in the test of that file only.
+HARNESS_ALLOW: dict[str, set[str]] = {"".join(("cla", "ude")): {"dev_factory/harness.py", "tests/test_harness.py"}}
 CI_DIR = "." + "git" + "hub"
 SKIP_DIRS = {".git", CI_DIR, "__pycache__", ".tmp", "node_modules", "dist"}
 
@@ -84,6 +84,7 @@ class SizeTests(unittest.TestCase):
     def test_adapter_text_is_at_most_100_lines(self):
         from dev_factory import harness
         self.assertLessEqual(len(harness.agents_md_section().splitlines()), 100)
+        self.assertEqual(sorted(harness.FILES) + ["none"], sorted(harness.IDS))
 
 
 class SafetyTests(unittest.TestCase):

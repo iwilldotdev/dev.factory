@@ -9,6 +9,7 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_confirm, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
+    from .harness import IDS
     p = argparse.ArgumentParser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
     p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
@@ -29,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--name", help="project name (default: the directory name)")
     sp.add_argument("--repo", action="append", metavar="PATH", help="repo path (repeat for a workspace; default .)")
     sp.add_argument("--base", default="main", help="base branch of the repos (default main)")
-    sp.add_argument("--harness", default="none", help="write a harness adapter: agents-md or none")
+    sp.add_argument("--harness", default="none", help="write a harness adapter: " + ", ".join(IDS))
     sp.add_argument("--import", dest="import_file", metavar="FILE", help="convert a v0 workspace or project file")
     add("check", cmd_check, "validate the configuration")
     sp = add("status", cmd_status, "status of a run, or of the project with --config", [scoped])

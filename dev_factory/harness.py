@@ -6,7 +6,8 @@ from pathlib import Path
 from . import __version__
 from .util import FactoryError, fwd
 
-IDS = ("agents-md", "none")
+IDS = ("agents-md", "claude-code", "none")
+FILES = {"agents-md": "AGENTS.md", "claude-code": "CLAUDE.md"}  # a host that does not read AGENTS.md gets its own file (decision 13)
 BEGIN, END = "<!-- factory:begin -->", "<!-- factory:end -->"
 
 AGENTS_MD = f"""{BEGIN}
@@ -40,6 +41,24 @@ Plan and proof (after intake):
 - Bug runs: `factory reproduce` runs the reproducing checks on the base, and `factory verify` also proves red-green.
 - `factory gate reproduce` and `factory gate verify` only read evidence; `factory metrics` shows time per phase and loops.
 
+Review (after verify passes). Pass `--actor <name>` on every command you run: a reviewer may not share an actor with the builder.
+- `factory review example` prints the review JSON. A fresh reviewer who did not build it writes one file per kind and runs
+  `factory review record --kind code|qa --file <file>`. The code review lists `changed_values` (`[]` when none); the qa review has one
+  `exercises` entry per AC; one reviewer may record both. A review is bound to the commits and plan it saw.
+- A CHANGES review with a blocker or major finding spends one loop of `autonomy.max_loops` (shared with plan amends); past the cap the
+  run blocks and the user decides (`--decision`). Fix, commit, run verify, then record a new review.
+- `factory gate review` needs both reviews APPROVE at the current commits and plan.
+
+Ship (after the review gate). The CLI never pushes or calls a remote; you run the intents with your own tools.
+- `factory ship plan [--ticket none|comment|transition|both] [--update] [--pipeline]` writes the intents and the change body under ship/.
+  Under `autonomy.ship = "ask"` ask the user before every intent; `draft-auto` allows a push and a draft change. Ticket writes always ask.
+- After the action, save the change as the provider reports it and run `factory ingest change --raw <file> --contract <file>` (an
+  adapter in `[providers.change]` does this inside `factory ship verify`). A contract you wrote is proof only after
+  `factory confirm change:<id> --user-said "<words>"`. The same holds for a pipeline when `ship.require_pipeline` is set;
+  `factory waive pipeline:<id> --user-said "<words>"` waives that one pipeline.
+- `factory ship verify` compares the readback with the plan, and `factory gate ship` ends the run's ship phase. Ready and merge
+  are never automatic; `factory next` prints the briefing for the user.
+
 Rules the CLI enforces:
 - Only `verify` and `reproduce` write evidence; a gate passes on records, never on a claim.
 - A decision needs the user's own words in `--user-said`, and one recorded decision unblocks once.
@@ -56,12 +75,12 @@ def agents_md_section() -> str:
 
 
 def write(root: Path, harness: str) -> list[str]:
-    """Write the adapter for `harness` under `root`; an existing AGENTS.md keeps everything outside the markers."""
+    """Write the adapter for `harness` under `root`; an existing file keeps everything outside the markers."""
     if harness == "none":
         return []
-    if harness != "agents-md":
+    if harness not in FILES:
         raise FactoryError(f"unknown harness {harness!r}; available: {', '.join(IDS)}")
-    path = root / "AGENTS.md"
+    path = root / FILES[harness]
     block = agents_md_section()
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if BEGIN in text and END in text:
@@ -69,5 +88,5 @@ def write(root: Path, harness: str) -> list[str]:
         text = head + block.rstrip("\n") + rest.split(END, 1)[1]
     else:
         text = text + ("\n" if text and not text.endswith("\n\n") else "") + block
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="\n")
     return [f"wrote {fwd(path)} (factory section)"]

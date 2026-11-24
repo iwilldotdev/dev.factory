@@ -219,17 +219,18 @@ Common fields on every event:
 | `worktree` | `repo`, `path`, `branch`, `branch_point`, `throwaway` (bool), `setup` (`pass`, `fail` or `none`), and on failure `setup_exit`, `setup_tail`. A repeated event for the same repo means the setup ran again |
 | `gate` | `name`, `result` (`pass` or `fail`), `reasons` (list); a passing `reproduce` adds `diagnosis` (sha256 of `diagnosis.md`) |
 | `plan_locked` | lock fields from `plan-json.md`, `seq` (1 = initial lock) |
-| `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135]. An amend that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
+| `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135]. A `review` loop adds `heads`, `round` and `review` (the kind): one fix round spends one loop however many reviewers found it. A loop that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
 | `env` | `repo`, `action` (`up`, `down`, `restart` or `fail`), `pid`, `create_time`, `group`, `cwd`, `sha`, `kind` (on failure: `files`, `port`, `health`, `start` or `restore`) |
 | `evidence` | evidence record, §6 |
 | `review` | review record, §7 |
 | `blocker` | `id`, `kind` (`question`, `decision`, `infra` or `tooling`), `reason` [L-140, L-152] |
 | `unblock` | `blocker`, `decision` |
-| `ship_planned` | `plan_sha256`, `heads` |
-| `ship_verified` | `result`, `heads`, `mismatches`; identical states are de-duplicated [L-151] |
+| `ship_planned` | `plan_sha256` (of `ship/plan.json`), `body_sha256`, `heads`, `update` (bool), `decision` (the consumed `--allow-behind` decision, or null) |
+| `ship_verified` | `result`, `heads`, `mismatches`, `plan_sha256`; an identical state is not recorded twice [L-151] |
 | `design_review` | `frame`, `frame_hash`, `user_said`: one per approx frame, needed by `gate review` [L-186] |
 | `design_refresh` | `frame`, `version`, `raw_sha256`, `changed` (bool): re-acquisition of an exact frame before ship [L-09, L-122] |
-| `confirm` | `check` or `contract`, `user_said`, `heads` (human checks and user-confirmed facts) [L-21, L-24] |
+| `confirm` | `check` or `contract` (`<kind>:<id>`), `user_said`, `heads` (human checks and user-confirmed facts). A contract confirmation covers only the ingest before it [L-21, L-24] |
+| `waiver` | `pipeline` (an id), `user_said`: covers that pipeline only, never a newer one [L-20] |
 | `claim` | `session`, `takeover` (bool) [L-184] |
 | `tokens` | `session`, `input`, `output` [L-183] |
 | `mirror` | `repo`, `target`, `branch`, `commits`, `result` (`applied` or `conflict`) [L-95] |
@@ -294,9 +295,33 @@ The stored event adds:
 | `round` | derived from earlier events |
 | `repos` | full SHAs |
 | `bound` | `{core_hash}` for code, `{plan_hash}` for qa [L-18, L-137] |
+| `lock_seq` | the plan lock it was recorded under |
+| `independent_of` | the actor hints on evidence and run-worktree events at that time; the reviewer name and `--actor` must not be among them |
+| `resolved` | normalized to `round:id`; rounds count per kind |
 | `hash` | sha256 of the canonical record |
 
 Refusals [L-23]:
 
 - APPROVE with `gap > 0`, `not_checked > 0`, any `blocker` or `major` finding, or any `exercises: false`
 - SHAs that are not the current HEADs
+- a run whose verify does not hold or whose plan lock drifted, and a reviewer name or `--actor` that is also a builder hint
+- CHANGES with no finding; a `resolved` entry that names no finding of an earlier round
+
+## 8. Ship plan (`ship/plan.json`, written by `factory ship plan`)
+
+`ship/body.md` is the change description: the AC list, the AC x check x status table (command, exit code, result, evidence id), the last 10 output lines per check, flaky attempts, changed values, up to 20 unresolved minors with a count, the reviews, and the commits-behind line. It never links into the run folder [L-144].
+
+`ship/plan.json` holds `heads`, `title`, `draft`, `mode` (`autonomy.ship`), `behind` per repo (`count`, `ref`, `note`; a note says when `git fetch` is needed first [L-108]), `rows` (the table, which `ship verify` looks for in the readback), and `intents`, each with an `id`, `intent` and `needs_user`:
+
+| `intent` | Fields | Runs without asking in `draft-auto` |
+|---|---|---|
+| `push` | `repo`, `remote`, `branch`, `sha` | yes |
+| `change_request` | `repo`, `action` (`create` or `update`), `change_id`, `source_branch`, `target_branch`, `title`, `draft`, `body_file`, `reviewers` | only with `draft` true |
+| `set_draft` | `repo`, `change_id`, `draft` | only with `draft` true |
+| `readback` | `repo`, `raw`, `contract_file`, `ingest` (the command), `adapter` (true when `[providers.change] fetch` reads it back in `ship verify`) | yes |
+| `pipeline` | `repo`, `sha`, `optional`, `ingest`; planned with `--pipeline` or `require_pipeline` | yes |
+| `issue_comment`, `issue_transition` | `ticket`, `body_md` or `to` | never |
+
+Under `autonomy.ship = "ask"` every intent has `needs_user`. Ready and merge are not intents. The CLI runs none of them [L-145].
+
+`ship verify` compares a `change` contract recorded after the plan with the intent: title, `draft` [L-154], branches, `head_sha` equal to the planned head, `state` open, planned reviewers, every table row and no local link [L-153, L-144]. The contract must be `source: adapter` or confirmed by the user after it was ingested [L-21]. With `ship.require_pipeline`, the newest pipeline of the change (or the newest contract for the pushed head) must be proof-grade, for the pushed SHA, and `success` or waived by id [L-20, L-155].

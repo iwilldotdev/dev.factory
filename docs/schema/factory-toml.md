@@ -115,8 +115,8 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 |---|---|---|---|
 | `title` | template: `{key}`, `{summary}` | `"[{key}] - {summary}"` | an empty or null value falls back to the default [L-142] |
 | `draft` | bool | `true` | |
-| `ticket` | `"none"`, `"comment"` or `"transition"` | `"none"` | default for `ship plan --ticket` [L-145] |
-| `transition_to` | string | none | required when `ticket = "transition"` |
+| `ticket` | `"none"`, `"comment"`, `"transition"` or `"both"` | `"none"` | default for `ship plan --ticket` [L-145] |
+| `transition_to` | string | none | required when `ticket` is `"transition"` or `"both"` |
 | `reviewers` | list of `{scm = "...", tracker = "..."}` | `[]` | both identities, validated by `factory check` [L-143] |
 | `require_pipeline` | bool | `false` | makes `gate ship` require a green pipeline contract [L-19, L-155] |
 

@@ -120,6 +120,7 @@ from .env_lease import (  # noqa: F401  slot math and per-repo leases live there
 )
 
 IS_WIN = os.name == "nt"
+CREATE_NO_WINDOW = 0x08000000
 
 
 # ---------- config helpers ----------
@@ -713,14 +714,18 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
         resolved = shutil.which(cmd[0])
         if resolved:
             cmd[0] = resolved
-    proc_env = {**os.environ, **{k: str(v) for k, v in (env.get("env_vars") or {}).items()}}
+    # output of the whole process tree must reach the log at once: unbuffered Python, no ANSI colours in the log
+    proc_env = {"PYTHONUNBUFFERED": "1", "FORCE_COLOR": "0", **os.environ,
+                **{k: str(v) for k, v in (env.get("env_vars") or {}).items()}}
     if slots_configured(env):
         proc_env["FACTORY_SLOT"] = str(slot)
     _env_dir(ws).mkdir(parents=True, exist_ok=True)
     log = log_path(ws, alias, slot)
     kwargs: dict = {}
     if IS_WIN:
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        # CREATE_NO_WINDOW (own hidden console), not DETACHED_PROCESS: a console-less `cmd.exe` (every `npm`/`.cmd` shim)
+        # drops the redirected stdout/stderr of the `node`/`python` it spawns, so the log stayed empty.
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
     with open(log, "wb") as logf:

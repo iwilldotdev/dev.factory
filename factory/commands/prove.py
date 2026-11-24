@@ -788,6 +788,32 @@ def _preflight_files(run: dict, ws: dict, aliases: list[str], rep: Reporter, sto
             rep.env_fail(alias, "files", missing[0])
 
 
+def _preflight_requests(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict) -> None:
+    """`env.preflight[].request` (test data over HTTP, e.g. the test user's project is not expired): a failing request is
+    `ENV-FAIL kind=data` naming the preflight, and the repo's runtime checks are not run. Only against an env that
+    answers (an env that is down is reported by its first runtime check, not as a data problem)."""
+    try:
+        from .env import _health_url, health_ok, is_shared, request_preflights, run_slot
+    except ImportError:
+        return
+    for alias in aliases:
+        if alias in stopped:
+            continue
+        try:
+            slot = 0 if is_shared(ws, run, alias) else run_slot(run, alias)
+            if not any(isinstance(i.get("request"), dict) for i in (repo_conf(ws, alias).get("env") or {}).get("preflight") or []):
+                continue
+            if not health_ok(_health_url(ws, alias, slot)):
+                continue
+            failed = request_preflights(ws, run, alias)
+        except FactoryError:
+            continue
+        if failed:
+            name, why = failed[0]
+            stopped[alias] = f"preflight {name}: {why}"
+            rep.env_fail(alias, "data", f"{name}: {why}")
+
+
 def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reuse: bool, rep: Reporter,
                 stopped: dict, prior=None, targets: list | None = None) -> None:
     """Once before the runtime batch: `env.seed.reset` of every runtime repo that declares it (and still has a runtime
@@ -1072,6 +1098,7 @@ def cmd_prove(args) -> int:
     _preflight_files(run, ws, runtime_aliases, rep, stopped, target=(only_target or targets[0]) if hotfix_of(run) else None)
     if not args.check:
         _reset_data(run, ws, checks, runtime_aliases, reuse, rep, stopped, prior=prior_of, targets=targets)
+    _preflight_requests(run, ws, runtime_aliases, rep, stopped)  # after the reset: it checks the data the checks will use
     seen_runtime: set[str] = set()
     last_sig: tuple | None = None
     batch_stop: str | None = None

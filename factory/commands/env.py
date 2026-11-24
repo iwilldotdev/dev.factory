@@ -868,9 +868,142 @@ def run_preflights(workspace: dict, run: dict | None, alias: str, target: str | 
     repo = repo_conf(workspace, alias)
     out = []
     for item in (repo.get("env") or {}).get("preflight") or []:
+        if not item.get("cmd"):  # a `request` entry: see request_preflights
+            continue
         code, text = _run_argv(workspace, run, repo["alias"], item["cmd"], _cwd_for(workspace, run, repo["alias"], target))
         if code != 0:
             out.append((str(item.get("name") or "preflight"), code, text))
+    return out
+
+
+# ---------- test data preflight over HTTP: env.preflight[].request ----------
+
+REQUEST_TIMEOUT_S = 15.0
+BODY_LIMIT = 65536
+
+
+def http_fetch(url: str, method: str = "GET", headers: dict | None = None,
+               timeout: float = REQUEST_TIMEOUT_S) -> tuple[int | None, str, str | None]:
+    """(status, body text up to 64 KiB, transport error). Redirects are not followed (a 3xx is the answer)."""
+    req = urllib.request.Request(url, method=method.upper(), headers=headers or {})
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read(BODY_LIMIT).decode("utf-8", errors="replace"), None
+    except urllib.error.HTTPError as err:
+        try:
+            body = err.read(BODY_LIMIT).decode("utf-8", errors="replace")
+        except OSError:
+            body = ""
+        return err.code, body, None
+    except (urllib.error.URLError, OSError, ValueError) as err:
+        return None, "", str(getattr(err, "reason", err))
+
+
+def json_path(data, path: str):
+    """Value at a dotted path (`items.0.active`); a missing step raises KeyError."""
+    cur = data
+    for step in str(path).split("."):
+        if isinstance(cur, list):
+            try:
+                cur = cur[int(step)]
+            except (ValueError, IndexError):
+                raise KeyError(path) from None
+        elif isinstance(cur, dict) and step in cur:
+            cur = cur[step]
+        else:
+            raise KeyError(path)
+    return cur
+
+
+def response_problem(spec: dict, status: int | None, body: str) -> str | None:
+    """Why a response does not meet a preflight `request` spec (`expect_status` default 200, `expect_body_contains`,
+    `expect_json` {dotted.path: value}), else None."""
+    want = spec.get("expect_status", 200)
+    wanted = [want] if isinstance(want, int) else list(want)
+    if status not in wanted:
+        return f"status {status if status is not None else 'no answer'}, expected {'/'.join(map(str, wanted))}"
+    needle = spec.get("expect_body_contains")
+    if needle is not None and str(needle) not in body:
+        return f"body does not contain {needle!r} (got {body.strip()[:120]!r})"
+    expect_json = spec.get("expect_json")
+    if expect_json:
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return f"body is not JSON (got {body.strip()[:120]!r})"
+        for path, value in expect_json.items():
+            try:
+                got = json_path(data, path)
+            except KeyError:
+                return f"JSON path {path} is absent"
+            if got != value:
+                return f"JSON path {path} is {got!r}, expected {value!r}"
+    return None
+
+
+def storage_headers(ws: str, alias: str, slot: int, url: str, user: str | None = None,
+                    bearer_key: str | None = None) -> tuple[dict, str | None]:
+    """Headers built from the stored login session of the repo slot (`factory env login`): a `Cookie` header from the
+    Playwright storage state cookies that match `url`, and, with `bearer_key`, `Authorization: Bearer` from that
+    localStorage key of the matching origin. Returns (headers, error)."""
+    path = storage_state_path(ws, alias, user, slot)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, f"no stored login session ({path.name}); run `factory env login {ws} {alias}`"
+    parsed = urlparse(url)
+    host, req_path, now_s = (parsed.hostname or "").lower(), parsed.path or "/", time.time()
+    cookies = []
+    for c in state.get("cookies") or []:
+        domain = str(c.get("domain") or "").lstrip(".").lower()
+        exp = c.get("expires", -1)
+        if domain and host != domain and not host.endswith("." + domain):
+            continue
+        if not req_path.startswith(str(c.get("path") or "/")) or (isinstance(exp, (int, float)) and 0 < exp < now_s):
+            continue
+        cookies.append(f"{c.get('name')}={c.get('value')}")
+    headers = {"Cookie": "; ".join(cookies)} if cookies else {}
+    if bearer_key:
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        for o in state.get("origins") or []:
+            if o.get("origin") != origin:
+                continue
+            for item in o.get("localStorage") or []:
+                if item.get("name") == bearer_key and item.get("value"):
+                    headers["Authorization"] = f"Bearer {item['value']}"
+        if "Authorization" not in headers:
+            return headers, f"localStorage key {bearer_key!r} not found for {origin} in the stored login session"
+    return headers, None
+
+
+def request_preflights(workspace: dict, run: dict | None, alias: str) -> list[tuple[str, str]]:
+    """Failed `env.preflight[].request` entries of the repo against the running env of the run's slot: [(name, why)].
+    A request is `{method (GET), path | url, headers, auth: "storage", user, bearer_local_storage, expect_status (200),
+    expect_body_contains, expect_json, timeout_s}`; `auth: "storage"` sends the stored login session (cookies, optionally
+    a bearer token from localStorage). Empty when all pass or none is configured."""
+    repo = repo_conf(workspace, alias)
+    alias, ws = repo["alias"], workspace["name"]
+    items = [i for i in (repo.get("env") or {}).get("preflight") or [] if isinstance(i.get("request"), dict)]
+    if not items:
+        return []
+    slot = 0 if is_shared(workspace, run, alias) else run_slot(run, alias)
+    root = base_url(workspace, alias, slot)
+    out: list[tuple[str, str]] = []
+    for item in items:
+        spec, name = item["request"], str(item.get("name") or "preflight")
+        method = spec.get("method") or "GET"
+        url = spec.get("url") or root + "/" + str(spec.get("path") or "").lstrip("/")
+        headers = {str(k): str(v) for k, v in (spec.get("headers") or {}).items()}
+        if spec.get("auth") == "storage":
+            auth, err = storage_headers(ws, alias, slot, url, spec.get("user"), spec.get("bearer_local_storage"))
+            if err:
+                out.append((name, err))
+                continue
+            headers = {**auth, **headers}
+        status, body, err = http_fetch(url, method, headers, float(spec.get("timeout_s") or REQUEST_TIMEOUT_S))
+        problem = f"no answer ({err})" if err else response_problem(spec, status, body)
+        if problem:
+            out.append((name, f"{method} {url}: {problem}"))
     return out
 
 
@@ -1383,6 +1516,10 @@ def _cmd_check(args) -> int:
                 detail = f"{name} exited {code}" + (f": {text.splitlines()[-1]}" if text else "")
                 print(f"{alias}: preflight {name} FAILED ({detail})")
                 print(f"ENV-FAIL repo={alias} kind=preflight detail={name}")
+                st = {"code": EXIT_UNHEALTHY}
+            for name, why in request_preflights(ws, run, alias):
+                print(f"{alias}: preflight {name} FAILED ({why})")
+                print(env_fail_line(alias, "data", f"{name}: {why}"))
                 st = {"code": EXIT_UNHEALTHY}
         else:
             print(f"{alias}: NOT healthy ({st['kind']}) {st['detail']}")

@@ -104,7 +104,7 @@ def _argv_ok(value) -> bool:
 
 
 def _data_errors(alias: str, env: dict) -> list[str]:
-    """env.seed (null or {cmd, cwd, reset}) and env.preflight ([{name, cmd}]): commands are argv arrays."""
+    """env.seed (null or {cmd, cwd, reset}) and env.preflight ([{name, cmd} | {name, request}]): commands are argv arrays."""
     errors: list[str] = []
     seed = env.get("seed")
     if seed is not None:
@@ -119,11 +119,61 @@ def _data_errors(alias: str, env: dict) -> list[str]:
     pre = env.get("preflight")
     if pre is not None:
         if not isinstance(pre, list):
-            errors.append(f"{alias}: env.preflight must be an array of {{name, cmd}}")
+            errors.append(f"{alias}: env.preflight must be an array of {{name, cmd}} or {{name, request}}")
         else:
             for i, item in enumerate(pre):
-                if not (isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"] and _argv_ok(item.get("cmd"))):
-                    errors.append(f"{alias}: env.preflight[{i}] needs name (string) and cmd (non-empty array of strings)")
+                if not (isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"]):
+                    errors.append(f"{alias}: env.preflight[{i}] needs name (string) and cmd (non-empty array of strings) "
+                                  "or request (object)")
+                elif ("cmd" in item) == ("request" in item):
+                    errors.append(f"{alias}: env.preflight[{i}] needs exactly one of cmd (non-empty array of strings) "
+                                  "or request (object)")
+                elif "cmd" in item and not _argv_ok(item["cmd"]):
+                    errors.append(f"{alias}: env.preflight[{i}].cmd must be a non-empty array of strings")
+                elif "request" in item:
+                    errors.extend(_request_errors(f"{alias}: env.preflight[{i}].request", item["request"]))
+    return errors
+
+
+REQUEST_KEYS = {"method", "path", "url", "headers", "auth", "user", "bearer_local_storage", "expect_status",
+                "expect_body_contains", "expect_json", "timeout_s"}
+
+
+def _request_errors(where: str, req) -> list[str]:
+    """env.preflight[].request: {method, path | url, headers, auth: "storage", user, bearer_local_storage, expect_status,
+    expect_body_contains, expect_json, timeout_s} (DESIGN section 14)."""
+    if not isinstance(req, dict):
+        return [f"{where} must be an object"]
+    isint = lambda v: isinstance(v, int) and not isinstance(v, bool)  # noqa: E731
+    errors = [f"{where}: unknown key {k!r} ({', '.join(sorted(REQUEST_KEYS))})" for k in req if k not in REQUEST_KEYS]
+    if ("path" in req) == ("url" in req):
+        errors.append(f"{where} needs exactly one of path (string starting with /) or url (http(s) URL)")
+    elif "path" in req and not (isinstance(req["path"], str) and req["path"].startswith("/")):
+        errors.append(f"{where}.path must be a string starting with /")
+    elif "url" in req and not (isinstance(req["url"], str) and re.match(r"^https?://", req["url"])):
+        errors.append(f"{where}.url must be an http(s) URL")
+    if "method" in req and req["method"] not in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+        errors.append(f"{where}.method must be an HTTP method")
+    status = req.get("expect_status", 200)
+    if not (isint(status) or (isinstance(status, list) and status and all(isint(s) for s in status))):
+        errors.append(f"{where}.expect_status must be an integer or a non-empty array of integers")
+    if "expect_body_contains" in req and not (isinstance(req["expect_body_contains"], str) and req["expect_body_contains"]):
+        errors.append(f"{where}.expect_body_contains must be a non-empty string")
+    if "expect_json" in req and not (isinstance(req["expect_json"], dict) and req["expect_json"]
+                                     and all(isinstance(k, str) and k for k in req["expect_json"])):
+        errors.append(f"{where}.expect_json must be a non-empty object of dotted.path -> expected value")
+    if "headers" in req and not (isinstance(req["headers"], dict)
+                                 and all(isinstance(k, str) and isinstance(v, (str, int)) for k, v in req["headers"].items())):
+        errors.append(f"{where}.headers must be an object of strings")
+    if "auth" in req and req["auth"] != "storage":
+        errors.append(f"{where}.auth must be 'storage' (the stored login session of `factory env login`)")
+    for key in ("user", "bearer_local_storage"):
+        if key in req and not (isinstance(req[key], str) and req[key]):
+            errors.append(f"{where}.{key} must be a non-empty string")
+        if key in req and req.get("auth") != "storage":
+            errors.append(f"{where}.{key} needs auth: 'storage'")
+    if "timeout_s" in req and not ((isint(req["timeout_s"]) or isinstance(req["timeout_s"], float)) and req["timeout_s"] > 0):
+        errors.append(f"{where}.timeout_s must be a positive number")
     return errors
 
 

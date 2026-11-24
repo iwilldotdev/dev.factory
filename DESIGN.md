@@ -90,6 +90,8 @@ Feedback turns change threads and failed pipeline jobs into findings and returns
 | `verify` | Every effective check (plan plus standing) has a `pass` at its repo's current HEAD, from a clean worktree, under the locked spec hash. For runtime checks, every served repo's head is current and the server started at it [L-01, L-07, L-08, L-09, L-12, L-69, L-85]. `flaky` never counts [L-14]. Each affected repo has a commit past `branch_point` [L-87]. Each bug `cmd` reproduction has a red-green pass [L-34]. |
 | `review` | The `verify` conditions hold. The latest `code` review is APPROVE, bound to the current SHAs and the core-plan hash. The latest `qa` review is APPROVE, bound to the current SHAs and the full plan hash [L-18, L-137]. Each approx design frame has a user design review (section 9). |
 | `ship` | The `review` conditions hold. Exact design frames are fresh (section 9). Each change readback has proof-grade source [L-21] and matches the ship plan. With `require_pipeline`, the latest pipeline for the pushed head is `success`, or a user waiver names that pipeline id [L-20, L-155]. |
+| `report` (review runs) | The plan lock holds, the latest `code` and `qa` reviews cover the current commits (their verdicts are the outcome, not a failure), and a `review report` is recorded for them [L-185]. |
+| `ship` on a hotfix | Also: every mirror target is mirrored, its `mirror: true` checks pass at the mirror head, the ship plan has one titled change per mirror, and the mirror diff equals the base fix or a user decision names the divergent files [L-41, L-95, L-100]. |
 
 `prove` is gone as a phase. A green pipeline never proves an AC [L-19].
 
@@ -289,15 +291,17 @@ The proposed caps (decision 16) replace PIVOT §3 once approved.
 
 | Module | Lines | Module | Lines |
 |---|---|---|---|
-| `config` | 300 | `verify` (order, reuse, reproduce, red-green) | 350 |
+| `config` | 300 | `verify` (order, reuse, reproduce, red-green, `--mirror`) | 380 (378 now; cap 400) |
 | `project` (discovery, init, check) | 200 | `git` (worktrees, branch point, clean) | 300 |
 | `run` (events, state) | 250 | `env` | 400 |
 | `contracts` (validation, fetch, ingest) | 300 | `gates` | 350 |
 | `plan` (validation, lock, amend, loops) | 350 | `review` | 200 |
 | `proc` (spawn, timeout, tree kill, classify) | 250 | `ship` | 350 |
 | `checks/cmd`, `checks/http`, `checks/browser` | 150, 150, 120 | `metrics` | 200 |
-| `checks/visual`, `checks/style` | 120, 120 | `next` | 250 |
-| `design` (frames, PNG header, table, expect, crop box, approx, freshness) | 400 | `cli` | 340 |
+| `checks/visual`, `checks/style` | 120, 120 | `next` | 300 |
+| `design` (frames, PNG header, table, expect, crop box, approx, freshness) | 400 | `cli` | 370 |
+
+M6 modules (lines now): `mirror` 175, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core 8,053 of 8,500.
 
 Command overhead is at most 1 s, excluding checks. The CLI installs through the standard Python entry point, apart from any working tree, with an optional version pin [L-130, L-149] (decision 3).
 

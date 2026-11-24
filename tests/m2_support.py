@@ -72,12 +72,19 @@ class M2Case(FactoryCase):
         self.write(".gitignore", ".factory/\n")
 
     def prepare(self, kind: str = "feature", plan: dict | None = None, ticket: str = "ABC-1", lock: bool = True, **ticket_over) -> Path:
-        """Start a run, pass intake, create the worktree, write the plan and (by default) lock it."""
+        """Start a run, pass intake, create the worktree, write the plan and (by default) lock it. The finished tree is built once
+        per module for the same inputs and copied back afterwards."""
+        plan = plan if plan is not None else self.default_plan(kind)
+        self.cached("prepare", lambda: self._prepare(kind, plan, ticket, lock, **ticket_over), kind, json.dumps(plan, sort_keys=True), ticket, lock,
+                    json.dumps(ticket_over, sort_keys=True))
+        return self.proj / ".factory" / "runs" / ticket
+
+    def _prepare(self, kind: str, plan: dict, ticket: str, lock: bool, **ticket_over) -> Path:
         run = self.start(ticket)
         self.ingest_ticket(run, id=ticket, type=kind, **ticket_over)
         self.ok("gate", "intake")
         self.ok("run", "branch")
-        self.write_plan(run, plan if plan is not None else self.default_plan(kind))
+        self.write_plan(run, plan)
         if lock:
             self.ok("gate", "plan")
         return run

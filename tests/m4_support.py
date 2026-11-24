@@ -24,6 +24,16 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+_PORTS: dict[str, int] = {}
+
+
+def stable_port(label: str) -> int:
+    """A free port chosen once per test process, so a project tree built for one test can be copied back for the next."""
+    if label not in _PORTS:
+        _PORTS[label] = free_port()
+    return _PORTS[label]
+
+
 def env_toml(port: int, extra: str = "", name: str = "web", up_extra: str = "") -> str:
     up = json.dumps(f'"{PY}" "{SERVER}" {port}')
     return (f'\n[repo.env]\nup = {up}\nhealth = "/health"\nbase_url = "http://127.0.0.1:{port}"\nready_timeout_s = 20\n{up_extra}{extra}')
@@ -45,7 +55,7 @@ class M4Case(M2Case):
 
     def setUp(self):
         super().setUp()
-        self.port = free_port()
+        self.port = stable_port("web")
         self.runner_log = self.base / "runner.log"
         self.local_toml = self.proj / ".factory" / "local.toml"
         patcher = mock.patch.dict(os.environ, {"FAKE_RUNNER_LOG": str(self.runner_log)})
@@ -84,6 +94,10 @@ class M4Case(M2Case):
         self.addCleanup(patcher.stop)
 
     def branch(self, kind: str = "feature", ticket: str = "ABC-1") -> Path:
+        self.cached("branch", lambda: self._branch(kind, ticket), kind, ticket)
+        return self.proj / ".factory" / "runs" / ticket
+
+    def _branch(self, kind: str, ticket: str) -> Path:
         run = self.start(ticket)
         self.ingest_ticket(run, id=ticket, type=kind)
         self.ok("gate", "intake")
@@ -121,7 +135,7 @@ class WorkspaceCase(M4Case):
         patcher = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.ports = {"api": free_port(), "web": free_port()}
+        self.ports = {"api": stable_port("api"), "web": stable_port("web")}
         self.port = self.ports["web"]
         self.runner_log = self.base / "runner.log"
         patcher = mock.patch.dict(os.environ, {"FAKE_RUNNER_LOG": str(self.runner_log)})
@@ -148,7 +162,7 @@ class WorkspaceCase(M4Case):
         plan["checks"][0].update(repo="api")
         return plan
 
-    def branch(self, kind: str = "feature", ticket: str = "ABC-1") -> Path:
+    def _branch(self, kind: str, ticket: str) -> Path:
         run = self.start(ticket, "--repos", "api,web")
         self.ingest_ticket(run, id=ticket, type=kind)
         self.ok("gate", "intake")

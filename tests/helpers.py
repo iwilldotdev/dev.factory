@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -19,6 +21,8 @@ PY = Path(sys.executable).as_posix()
 FAKE_ADAPTER = (Path(__file__).resolve().parent / "fake_adapter.py").as_posix()
 _TMP_ROOTS: list[str] = []
 _GIT_FIXTURE: list[Path] = []
+_CASE_ROOT: list[Path] = []
+_SPARE = [0]
 
 
 def lesson(*ids: str):
@@ -33,6 +37,40 @@ def tmpdir(prefix: str = "fac tory's ") -> Path:
     path = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
     _TMP_ROOTS.append(str(path))
     return path
+
+
+def rmtree(path: Path, tries: int = 20) -> bool:
+    """Remove a tree, clearing read-only bits (git objects) and waiting for handles that a killed process still holds."""
+    def force(func, p, _exc):
+        os.chmod(p, 0o700)
+        func(p)
+    for _ in range(tries):
+        if not Path(path).exists():
+            return True
+        try:
+            shutil.rmtree(path, **{"onexc" if sys.version_info >= (3, 12) else "onerror": force})
+        except OSError:
+            time.sleep(0.1)
+    return not Path(path).exists()
+
+
+def case_root() -> Path:
+    """One temp root per test process: every case runs at the same path, so a finished tree copied back needs no path rewriting."""
+    if not _CASE_ROOT:
+        _CASE_ROOT.append(tmpdir())
+    return _CASE_ROOT[0]
+
+
+def tree_hash(root: Path) -> str:
+    """Names and contents of every file under `root`: the starting point a snapshot was built from."""
+    h = hashlib.sha1()
+    for p in sorted(Path(root).rglob("*")):
+        try:
+            if p.is_file():
+                h.update(p.relative_to(root).as_posix().encode() + b"\0" + p.read_bytes() + b"\0")
+        except OSError:
+            h.update(b"unreadable")
+    return h.hexdigest()
 
 
 @atexit.register
@@ -79,7 +117,11 @@ class FactoryCase(unittest.TestCase):
     TOML = 'schema = 1\n\n[project]\nname = "demo"\n\n[[repo]]\npath = "."\nname = "web"\n'
 
     def setUp(self):
-        self.base = tmpdir()
+        self.base = case_root() / "case"
+        if not rmtree(self.base):  # a process of the previous test still holds it: use a spare path (snapshots notice the new path)
+            _SPARE[0] += 1
+            self.base = case_root() / f"case-{_SPARE[0]}"
+        self.base.mkdir()
         self.proj = self.base / "project"
         self.proj.mkdir()
         env = {"HOME": str(self.base / "home"), "USERPROFILE": str(self.base / "home"),
@@ -89,6 +131,19 @@ class FactoryCase(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.write("factory.toml", self.TOML)
+
+    def cached(self, name: str, build, *args) -> bool:
+        """Run `build()` once per module for this exact starting tree and arguments; later calls copy the finished tree back
+        over the case directory (paths are identical, so git worktrees and recorded paths stay valid). True when restored."""
+        store = case_root() / ("snap-" + hashlib.sha1(repr((name, args, tree_hash(self.base))).encode()).hexdigest()[:16])
+        if (store / "path").is_file() and (store / "path").read_text(encoding="utf-8") == str(self.base) and rmtree(self.base):
+            shutil.copytree(store / "data", self.base, symlinks=True)
+            return True
+        build()
+        if not store.exists():
+            shutil.copytree(self.base, store / "data", symlinks=True)
+            (store / "path").write_text(str(self.base), encoding="utf-8")
+        return False
 
     def write(self, rel: str, text: str, root: Path | None = None) -> Path:
         path = (root or self.proj) / rel

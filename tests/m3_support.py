@@ -12,9 +12,14 @@ class M3Case(M2Case):
     """`ready()` leaves a locked plan, one fix commit, passing verify evidence and a passing verify gate."""
 
     def ready(self, kind: str = "feature", extra_toml: str = "", **kw) -> Path:
+        self.run_dir = self.proj / ".factory" / "runs" / kw.get("ticket", "ABC-1")
+        self.cached("ready", lambda: self._ready(kind, extra_toml, **kw), kind, extra_toml, json.dumps(kw, sort_keys=True, default=str))
+        return self.run_dir
+
+    def _ready(self, kind: str, extra_toml: str, plan: dict | None = None, ticket: str = "ABC-1", lock: bool = True, **over) -> None:
         if extra_toml:
             self.write("factory.toml", self.TOML + extra_toml)
-        self.run_dir = self.prepare(kind, **kw)
+        self.run_dir = self._prepare(kind, plan if plan is not None else self.default_plan(kind), ticket, lock, **over)
         if kind == "bug":
             self.write("diagnosis.md", "## Root cause\nVALUE is 1 in app.py.\n\n## Evidence\ncheck.py prints VALUE=1.\n\n"
                                        "## Ruled out\nThe check itself.\n\n## Scenario\nTicket scenario used.\n", root=self.run_dir)
@@ -23,7 +28,6 @@ class M3Case(M2Case):
         self.fix()
         self.ok("verify", "--actor", "builder-1")
         self.ok("gate", "verify")
-        return self.run_dir
 
     def head(self) -> str:
         return git("rev-parse", "HEAD", cwd=self.tree())
@@ -62,9 +66,12 @@ class ShipCase(M3Case):
 
     def to_ship(self, kind: str = "feature", **kw) -> Path:
         self.ready(kind, **kw)
+        self.cached("to_ship", self._approve, kind, json.dumps(kw, sort_keys=True, default=str))
+        return self.run_dir
+
+    def _approve(self) -> None:
         self.approve_both()
         self.ok("gate", "review")
-        return self.run_dir
 
     def ship_plan(self, *flags: str) -> dict:
         self.ok("ship", "plan", *flags)

@@ -172,13 +172,17 @@ function tokenize(cmd) {
   const tokens = [];
   let buf = '';
   let inWord = false;
+  let start = 0;
+  let at = 0;
   const push = () => {
-    if (inWord) tokens.push({ t: 'word', v: buf });
+    if (inWord) tokens.push({ t: 'word', v: buf, raw: cmd.slice(start, at) });
     buf = '';
     inWord = false;
   };
   for (let i = 0; i < cmd.length; i += 1) {
     const c = cmd[i];
+    at = i;
+    if ((c === "'" || c === '"') && !inWord) start = i;
     if (c === "'" || c === '"') {
       const end = cmd.indexOf(c, i + 1);
       const stop = end < 0 ? cmd.length : end;
@@ -210,22 +214,24 @@ function tokenize(cmd) {
       push();
       tokens.push({ t: 'in' });
     } else {
+      if (!inWord) start = i;
       buf += c;
       inWord = true;
     }
   }
+  at = cmd.length;
   push();
   return tokens;
 }
 
 function segments(tokens) {
   const segs = [];
-  let cur = { words: [], redirs: [] };
+  let cur = { words: [], raws: [], redirs: [] };
   for (let i = 0; i < tokens.length; i += 1) {
     const tok = tokens[i];
     if (tok.t === 'op') {
       segs.push(cur);
-      cur = { words: [], redirs: [] };
+      cur = { words: [], raws: [], redirs: [] };
     } else if (tok.t === 'redir' || tok.t === 'in' || tok.t === 'dup') {
       const next = tokens[i + 1];
       if (next && next.t === 'word') {
@@ -234,6 +240,7 @@ function segments(tokens) {
       }
     } else {
       cur.words.push(tok.v);
+      cur.raws.push(tok.raw === undefined ? tok.v : tok.raw);
     }
   }
   segs.push(cur);
@@ -242,9 +249,9 @@ function segments(tokens) {
 
 const WRAPPERS = new Set(['sudo', 'env', 'command', 'nice', 'nohup', 'time', 'exec', 'builtin', '&', '.']);
 const DESTRUCTIVE = new Set(['rm', 'rmdir', 'del', 'erase', 'rd', 'unlink', 'shred', 'remove-item', 'ri',
-  'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'truncate']);
+  'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'truncate', 'icacls', 'cacls', 'attrib', 'takeown', 'chgrp']);
 const WRITERS = new Set(['tee', 'sponge', 'touch', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'new-item', 'ni',
-  'clear-content', 'clc', 'ln', 'mklink', 'chmod', 'chown', 'export-csv', 'export-clixml', 'mkdir', 'md']);
+  'clear-content', 'clc', 'ln', 'mklink', 'chmod', 'chown', 'export-csv', 'export-clixml', 'mkdir', 'md', 'junction']);
 const EDITORS = new Set(['vi', 'vim', 'nvim', 'nano', 'emacs', 'notepad', 'notepad++', 'code', 'ed', 'ex', 'micro', 'subl', 'gedit', 'pico']);
 const GIT_WRITES = new Set(['checkout', 'restore', 'rm', 'mv', 'clean', 'reset', 'stash', 'apply', 'switch']);
 const COPIERS = new Set(['cp', 'copy', 'copy-item', 'cpi', 'xcopy', 'install', 'rsync', 'scp']);
@@ -289,6 +296,7 @@ const VERB_LIST = [
   'copy-item', 'move-item', 'rename-item', 'clear-content', 'export-csv', 'export-clixml', 'sc', 'ac', 'ni', 'ri',
   'mi', 'rni', 'cpi', 'clc', 'writealltext', 'writeallbytes', 'writealllines', 'appendalltext', 'appendallbytes',
   'writefile', 'write_text', 'write_bytes', 'writefilesync', 'appendfile', 'appendfilesync', 'rmsync', 'rmtree',
+  'icacls', 'cacls', 'attrib', 'takeown', 'chgrp', 'junction',
 ];
 const WRITE_VERBS = new RegExp(
   `(?:^|[\\s;&|(\`'"=\\[.:])(?:${VERB_LIST.join('|')})(?=[\\s;&|)'"(\\[:]|$)`
@@ -341,7 +349,9 @@ function inlineInterpreter(words) {
 }
 
 // Any write call in a code blob: the "writes files" signature (combined with a protected name below).
-const SCRIPT_WRITE = /(?<!std(?:out|err)(?:\.buffer)?)\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
+const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\((?:[^()\n]|\([^()\n]*\))*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|\.open\(\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|\bos\.open\(|\bO_(?:WRONLY|RDWR|TRUNC|CREAT|APPEND|EXCL)\b|\bfdopen\(|\bopenSync\(|\bsys\.std(?:out|err)\s*=(?!=)|\bprocess\.std(?:out|err)\s*=(?!=)|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
+// Writing to the process's own stdout/stderr is output, not a file write (unless the stream was reassigned: SCRIPT_WRITE flags that).
+const STD_STREAM_WRITE = /\b(?:sys|process)\.std(?:out|err)(?:\.buffer)?\.write\w*\(/gi;
 const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
 // The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
 const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
@@ -353,7 +363,9 @@ const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
  */
 function scriptWritesRun(code) {
   const text = String(code);
-  return SCRIPT_WRITE.test(text) && (PROTECTED_NAME.test(text) || HOME_NAME.test(text));
+  const reassigned = /\b(?:sys|process)\.std(?:out|err)\s*=(?!=)/i.test(text);
+  const scan = reassigned ? text : text.replace(STD_STREAM_WRITE, '(');
+  return SCRIPT_WRITE.test(scan) && (PROTECTED_NAME.test(text) || HOME_NAME.test(text));
 }
 
 /** Content of a script file inside the temp dir (the session scratchpad is one), else null. */
@@ -394,24 +406,230 @@ function taintedByAssignment(command, ctx) {
   return (command.match(ASSIGNMENT) || []).some((m) => runsMention(m, ctx.home) || textMentionsProtected(m, ctx));
 }
 
+// ---------- target-aware certainty ----------
+//
+// The target-aware path may ALLOW a segment that mentions a protected path together with a write verb only when it is
+// positively established that (1) every write destination is fully resolved, literal and outside the protected tree and
+// (2) the protected path appears only as a plain literal read source of a modelled command. Anything else falls back to
+// the coarse rule (mention + write verb = deny).
+
+/** Glob, brace, expansion and odd-spelling markers in ONE raw word (quotes still present). */
+function oddWord(raw) {
+  const r = String(raw);
+  const bare = r.replace(/^['"]+|['"]+$/g, '');
+  const e = expandVars(bare);
+  if (/[*?{()]|\[[^\]]*\]/.test(e)) return true;
+  if (/\$\(|`|\$['"]|::|~\d|[<>]\(/.test(r) || /\$\{/.test(e)) return true;
+  if (UNRESOLVED_VAR.test(e)) return true;
+  if (/^[\\/]{2}/.test(bare)) return true;
+  if (/^~[^\\/]/.test(bare)) return true;
+  if (/\\/.test(bare) && /\//.test(bare)) return true;
+  const body = e.replace(/^-+[A-Za-z][\w-]*[:=]/, '').replace(/^[A-Za-z]:(?=[\\/]|$)/, '');
+  if (/:/.test(body)) return true;
+  return body.split(/[\\/]/).some((c) => c && c !== '.' && c !== '..' && /[. ]$/.test(c));
+}
+
+/** Path readings of a word: itself, a flag's attached value (`-Path:X`, `--target-directory=X`, `-tX`), without backslashes. */
+function pathCands(v) {
+  const s = String(v);
+  const out = [s];
+  if (/^-/.test(s)) {
+    const eq = s.search(/[=:]/);
+    if (eq > 0) out.push(s.slice(eq + 1));
+    if (!/^--/.test(s)) for (let i = 2; i < Math.min(s.length, 60); i += 1) out.push(s.slice(i));
+  }
+  if (/\\/.test(s)) out.push(s.replace(/\\/g, ''));
+  return out.filter(Boolean);
+}
+
+/** The word, read in any way, is a protected path, an ancestor of one or inside the protected tree. */
+function candProtected(v, ctx) {
+  return pathCands(v).some((c) => wordProtected(c, ctx, true));
+}
+
+/** The word names a protected path somewhere inside it without BEING one (script text, `a:b`, `-c:w! path`). */
+function unparsedMention(v, ctx) {
+  return textMentionsProtected(String(v), ctx) && !candProtected(v, ctx);
+}
+
+const SH_KEYWORDS = new Set(['for', 'while', 'until', 'select', 'foreach', 'foreach-object', '%', 'read', 'xargs', 'mapfile', 'readarray']);
+const REMOVER_LIKE = new Set([...DESTRUCTIVE, ...WRITERS, ...EDITORS]);
+const POSIX_COPIERS = new Set(['cp', 'install', 'rsync', 'scp']);
+const WIN_COPIERS = new Set(['copy', 'xcopy', 'robocopy', 'copy-item', 'cpi']);
+const CP_SHORT = 'adfinpruvxPLHTbRZ';
+const RSYNC_SHORT = 'avrzhucnPiltpogDxqWdLkKSyHAXm';
+const SCP_SHORT = 'rpqCv';
+const CP_LONG = new Set(['recursive', 'force', 'verbose', 'archive', 'no-clobber', 'update', 'interactive', 'dereference', 'no-dereference',
+  'remove-destination', 'one-file-system', 'parents', 'no-target-directory', 'strip-trailing-slashes', 'attributes-only', 'debug',
+  'copy-contents', 'backup', 'preserve', 'no-preserve', 'reflink', 'sparse', 'context', 'target-directory', 'link', 'symbolic-link',
+  'directory', 'compare', 'mode', 'owner', 'group', 'strip', 'preserve-timestamps', 'suffix']);
+const RSYNC_LONG = new Set(['archive', 'verbose', 'recursive', 'compress', 'dry-run', 'progress', 'human-readable', 'update', 'checksum',
+  'times', 'perms', 'links', 'delete', 'delete-before', 'delete-after', 'delete-during', 'delete-excluded', 'remove-source-files',
+  'link-dest', 'copy-dest', 'exclude', 'include', 'partial', 'inplace', 'stats', 'itemize-changes', 'size-only', 'ignore-existing']);
+const VALUE_LONG = new Set(['mode', 'owner', 'group', 'suffix', 'exclude', 'include', 'compare', 'strip', 'link-dest', 'copy-dest']);
+
+function windowsSwitch(w) { return /^\/[A-Za-z?-]+(?::.*)?$/.test(w); }
+
 /**
- * Coarse net for commands whose destination is not modelled: one segment that mentions a run path AND carries a
- * write-capable verb. Skipped: factory CLI segments, read-only commands, inline interpreter code (judged by
- * scriptWritesRun) and TARGET_AWARE commands (judged by their destination in bashWriteReason).
+ * For a plain copier: `{ src, writeAny }` where `src` holds the indexes (into args) that are plain literal read SOURCES and
+ * `writeAny` says the command can alias or remove its sources (links, moves); null when the command or one of its flags
+ * cannot be classified.
+ */
+function copierRoles(cmd, args) {
+  const pos = [];
+  let explicitDest = false;
+  let destAll = false;
+  let writeAny = false;
+  if (POSIX_COPIERS.has(cmd)) {
+    const shorts = cmd === 'cp' || cmd === 'install' ? CP_SHORT : cmd === 'rsync' ? RSYNC_SHORT : SCP_SHORT;
+    const longs = cmd === 'rsync' ? RSYNC_LONG : cmd === 'scp' ? new Set() : CP_LONG;
+    for (let i = 0; i < args.length; i += 1) {
+      const a = args[i];
+      if (a === '--') { for (let j = i + 1; j < args.length; j += 1) pos.push(j); break; }
+      if (/^--./.test(a)) {
+        const name = a.slice(2).split('=')[0].toLowerCase();
+        if (!longs.has(name)) return null;
+        const attached = a.includes('=');
+        if (name === 'target-directory') { explicitDest = true; if (!attached) i += 1; }
+        else if (name === 'link' || name === 'symbolic-link' || name === 'link-dest' || name === 'copy-dest' || name === 'remove-source-files') {
+          writeAny = true;
+          if (!attached && VALUE_LONG.has(name)) i += 1;
+        } else if (name === 'directory') destAll = true;
+        else if (!attached && VALUE_LONG.has(name)) i += 1;
+        continue;
+      }
+      if (/^-./.test(a)) {
+        for (let k = 1; k < a.length; k += 1) {
+          const ch = a[k];
+          if (ch === 't' && (cmd === 'cp' || cmd === 'install')) {
+            explicitDest = true;
+            if (k === a.length - 1) i += 1;
+            break;
+          }
+          if ((ch === 'l' || ch === 's') && cmd === 'cp') { writeAny = true; continue; }
+          if (ch === 'd' && cmd === 'install') { destAll = true; continue; }
+          if (!shorts.includes(ch)) return null;
+        }
+        continue;
+      }
+      pos.push(i);
+    }
+    const src = new Set();
+    if (explicitDest) pos.forEach((i) => src.add(i));
+    else if (!destAll) {
+      if (pos.length < 2) return null;
+      pos.slice(0, -1).forEach((i) => src.add(i));
+    }
+    return { src, writeAny };
+  }
+  // copy, xcopy, robocopy, Copy-Item: cmd switches and PowerShell flags
+  const ps = cmd === 'copy-item' || cmd === 'cpi';
+  const src = new Set();
+  let pathFlag = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (windowsSwitch(a)) {
+      if (/^\/mov(?:e)?$/i.test(a)) writeAny = true;
+      continue;
+    }
+    if (/^-[A-Za-z]/.test(a)) {
+      const colon = a.indexOf(':');
+      const name = (colon > 0 ? a.slice(1, colon) : a.slice(1)).toLowerCase();
+      if (colon > 0) { if (/^d/.test(name)) explicitDest = true; continue; }
+      if (/^(?:p|pa|pat|path|l|li|lit|lite|liter|litera|literal|literalp|literalpa|literalpat|literalpath)$/.test(name)) {
+        pathFlag = true;
+        src.add(i + 1);
+        i += 1;
+        continue;
+      }
+      if (/^d/.test(name)) { explicitDest = true; i += 1; continue; }
+      if (/^(?:recurse|force|container|passthru|whatif|confirm|verbose|debug|usetransaction|r|f|v)$/.test(name)) continue;
+      return null;
+    }
+    pos.push(i);
+  }
+  if (cmd === 'robocopy') {
+    if (pos.length < 2) return null;
+    src.add(pos[0]);
+  } else if (ps) {
+    if (!pathFlag && pos.length) src.add(pos[0]);
+  } else if (explicitDest) pos.forEach((i) => src.add(i));
+  else {
+    if (pos.length < 2) return null;
+    pos.slice(0, -1).forEach((i) => src.add(i));
+  }
+  return { src, writeAny };
+}
+
+const EDITOR_CMD_FLAGS = /^(?:-c|-s|-S|--cmd|-e|\+.*)$/;
+
+/**
+ * True only when the segment is a modelled command whose every write destination is certain to lie outside the
+ * protected tree and which names protected paths only as plain read sources. False means: use the coarse rule.
+ */
+function certainSegment(seg, ctx) {
+  if (seg.raws.some(oddWord) || seg.redirs.some(oddWord)) return false;
+  const w = stripPrefix(seg.words);
+  if (!w.length) return true;
+  const cmd = baseName(w[0]);
+  const args = w.slice(1);
+  if (SHELLS.has(cmd)) return true; // the body is analysed as a command of its own
+  if (args.some((a) => unparsedMention(a, ctx))) return false;
+  const touches = args.some((a) => candProtected(a, ctx));
+  if (POSIX_COPIERS.has(cmd) || WIN_COPIERS.has(cmd)) {
+    if (!touches) return true;
+    const roles = copierRoles(cmd, args);
+    if (!roles || roles.writeAny) return false;
+    return args.every((a, i) => !candProtected(a, ctx) || (roles.src.has(i) && !/^-/.test(a)));
+  }
+  if (EDITORS.has(cmd) && (cmd === 'ex' || cmd === 'ed' || args.some((a) => EDITOR_CMD_FLAGS.test(a)))) return false;
+  return !touches;
+}
+
+/** Hides statement separators inside `$(...)`, `<(...)`, `>(...)` and backticks so a segment keeps its substitution body. */
+function maskSubstitutions(cmd) {
+  let out = '';
+  let depth = 0;
+  let tick = false;
+  for (let i = 0; i < cmd.length; i += 1) {
+    const c = cmd[i];
+    if (c === '(' && (cmd[i - 1] === '$' || cmd[i - 1] === '<' || cmd[i - 1] === '>')) depth += 1;
+    else if (depth > 0 && c === '(') depth += 1;
+    else if (depth > 0 && c === ')') depth -= 1;
+    else if (c === '`') tick = !tick;
+    out += (depth > 0 || tick) && /[;&|\n]/.test(c) ? ' \u0001 ' : c;
+  }
+  return out;
+}
+
+/**
+ * Coarse net: a segment that mentions a run path AND carries a write-capable verb is denied. Skipped: factory CLI
+ * segments, read-only commands, inline interpreter code (judged by scriptWritesRun) and modelled commands that
+ * certainSegment() proves harmless (their destination is judged in bashWriteReason). A mention that is NOT proven
+ * harmless (glob, expansion, odd spelling, loop) also makes a write verb in ANY other segment a deny, as before the
+ * per-segment rule: `for f in R/*; do rm $f; done`.
  */
 function verbMentionReason(command, ctx) {
   const tainted = taintedByAssignment(command, ctx);
-  for (const seg of segments(tokenize(command))) {
+  const COARSE = 'command mentions run files together with a write-capable verb';
+  let uncertain = false;
+  let verbElsewhere = false;
+  for (const seg of segments(tokenize(maskSubstitutions(command)))) {
     const w = stripPrefix(seg.words);
     if (!w.length || isFactory(w) || readOnlySegment(seg.words) || inlineInterpreter(seg.words)) continue;
     const cmd = baseName(w[0]);
     const text = seg.words.join(' ');
-    if (!(runsMention(text, ctx.home) || (tainted && /[$%]/.test(text)))) continue;
+    if (!(runsMention(text, ctx.home) || (tainted && /[$%]/.test(text)))) {
+      if (WRITE_VERBS.test(text)) verbElsewhere = true;
+      continue;
+    }
     if (EVAL_CMDS.has(cmd)) return 'eval of command text mentioning run files';
-    if (TARGET_AWARE.has(cmd) || inPlaceEditor(cmd, w.slice(1))) continue;
-    if (WRITE_VERBS.test(text)) return 'command mentions run files together with a write-capable verb';
+    const modelled = TARGET_AWARE.has(cmd) || inPlaceEditor(cmd, w.slice(1));
+    if (modelled && certainSegment(seg, ctx)) continue;
+    if (WRITE_VERBS.test(text)) return COARSE;
+    if (seg.raws.some(oddWord) || SH_KEYWORDS.has(cmd)) uncertain = true;
   }
-  return '';
+  return uncertain && verbElsewhere ? COARSE : '';
 }
 
 /**
@@ -490,9 +708,61 @@ function waitCmdBodies(command) {
   return bodies;
 }
 
+// ---------- heredoc bodies ----------
+
+// Commands that only consume a heredoc as text (message, notes). A heredoc fed to a shell, an interpreter, eval, xargs
+// or any other command keeps being analysed as commands: its body may be executed.
+const HEREDOC_READERS = new Set(['cat', 'tee', 'wc', 'grep', 'head', 'tail', 'sort', 'uniq', 'jq', 'gh', 'git', 'factory', 'less', 'more', 'base64']);
+const HEREDOC_EXEC = /\b(?:bash|sh|zsh|dash|ksh|cmd|powershell|pwsh|python3?|py|node|deno|bun|ruby|perl|php|eval|source|xargs|iex|invoke-expression|ssh|env|sudo)\b/i;
+const DATA_FILE = /\.(?:md|txt|json|ya?ml|log|csv|html?|xml|diff|patch)$/i;
+
+function heredocIsData(line, command, ctx) {
+  const at = line.indexOf('<<');
+  const before = line.slice(0, at);
+  if (/\$\(|`|[<>]\(/.test(before)) return false; // the text flows into another command's arguments
+  if (HEREDOC_EXEC.test(line)) return false;
+  const seg = segments(tokenize(line)).find((sg) => sg.words.length && stripPrefix(sg.words).length);
+  const segs = segments(tokenize(line));
+  if (!seg) return false;
+  for (const sg of segs) {
+    const w = stripPrefix(sg.words);
+    if (!w.length) continue;
+    const cmd = baseName(w[0]);
+    if (!(HEREDOC_READERS.has(cmd) || isFactory(w))) return false;
+    if (cmd === 'git' && !w.some((a) => a === 'commit' || a === 'tag')) return false;
+    const files = [...sg.redirs, ...(cmd === 'tee' ? w.slice(1).filter((a) => !a.startsWith('-')) : [])];
+    for (const f of files) {
+      if (f === '/dev/null' || f === 'NUL') continue;
+      if (!DATA_FILE.test(f) || oddWord(f) || candProtected(f, ctx) || command.split(f).length !== 2) return false;
+    }
+  }
+  return true;
+}
+
+/** Drops the body of heredocs whose reader only treats it as data, so prose in a message is not parsed as commands. */
+function stripHeredocs(command, ctx) {
+  if (!command.includes('<<')) return command;
+  const lines = command.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    out.push(line);
+    const m = !/<<</.test(line) && line.match(/<<(-?)\s*(['"]?)([A-Za-z_][\w-]*)\2/);
+    if (!m) continue;
+    let end = -1;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const t = m[1] ? lines[j].replace(/^\t+/, '') : lines[j];
+      if (t.trimEnd() === m[3]) { end = j; break; }
+    }
+    if (end > i && heredocIsData(line, command, ctx)) i = end;
+  }
+  return out.join('\n');
+}
+
 /** Returns a reason string when the shell command writes a protected path, else ''. */
 function bashWriteReason(command, ctxIn, depth = 0) {
   let ctx = ctxIn;
+  if (depth === 0) command = stripHeredocs(command, ctx);
   if (depth > 3) return textMentionsProtected(command, ctx) ? 'nested command touching run files' : '';
   for (const body of waitCmdBodies(command)) {
     const r = bashWriteReason(body, ctx, depth + 1);

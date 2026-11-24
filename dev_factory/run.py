@@ -1,0 +1,155 @@
+"""Runs: `events.jsonl` is the only run state; everything else is derived from it [L-15, L-164, L-165]."""
+from __future__ import annotations
+
+import os
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Callable
+
+from . import __version__
+from .util import FactoryError, canonical, now_iso
+
+KINDS = ("feature", "bug", "hotfix", "epic", "review")
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
+
+@contextmanager
+def _locked(path: Path):
+    """Exclusive lock on `<events>.lock` held while reading and appending."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                if sys.platform == "win32":
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise FactoryError("timed out waiting for the run's event lock", 1)
+                time.sleep(0.01)
+        try:
+            yield
+        finally:
+            if sys.platform == "win32":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+class Run:
+    def __init__(self, runs_dir: Path, rid: str):
+        self.id = rid
+        self.dir = Path(runs_dir) / rid
+        self.events_path = self.dir / "events.jsonl"
+
+    def exists(self) -> bool:
+        return self.events_path.is_file()
+
+    def read(self) -> list[dict]:
+        events: list[dict] = []
+        try:
+            lines = self.events_path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return events
+        import json
+        for n, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            try:
+                events.append(json.loads(line))
+            except ValueError as exc:
+                raise FactoryError(f"{self.events_path.as_posix()} line {n} is not valid JSON: {exc}") from exc
+        return events
+
+    def append(self, event: dict | Callable[[list[dict]], dict | None], actor: str | None = None) -> dict | None:
+        """Append one event as one line, in one write, under the lock. A callable sees the current events
+        under the lock and returns the event (or None to append nothing), so ids and de-duplication cannot race."""
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with _locked(self.dir / "events.lock"):
+            ev = event(self.read()) if callable(event) else event
+            if ev is None:
+                return None
+            ev = {"v": 1, "ts": now_iso(), "cli": __version__, **ev}
+            if actor:
+                ev["actor"] = actor
+            data = (canonical(ev) + "\n").encode("utf-8")
+            fd = os.open(str(self.events_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+            finally:
+                os.close(fd)
+            return ev
+
+    def state(self) -> dict:
+        return derive(self.read())
+
+
+def derive(events: list[dict]) -> dict:
+    """Everything a command needs to know about a run, computed from its events."""
+    st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
+                "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
+                "human": [], "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
+    consumed: set[str] = set()
+    for i, ev in enumerate(events):
+        t = ev.get("type")
+        st["first_ts"] = st["first_ts"] or ev.get("ts")
+        st["last_ts"] = ev.get("ts")
+        if t == "run_started":
+            st.update(ticket=ev.get("ticket"), kind=ev.get("kind"), repos=list(ev.get("repos") or []))
+        elif t == "repos":
+            st["repos"] = list(ev.get("repos") or [])
+        elif t == "retype":
+            st.update(kind=ev.get("kind"), retype_at=i)
+        elif t == "contract":
+            st["contracts"][(ev["kind"], ev["id"])] = ev
+            st["contract_at"] = i
+        elif t == "media":
+            st["media"][ev["attachment"]] = ev
+        elif t == "question":
+            st["questions"][ev["id"]] = {"id": ev["id"], "text": ev.get("text", ""), "ref": ev.get("ref"), "answered": None}
+        elif t == "answer" and ev.get("question") in st["questions"]:
+            st["questions"][ev["question"]]["answered"] = ev.get("user_said")
+            if ev.get("decision"):
+                st["decisions"][ev["decision"]] = {"id": ev["decision"], "user_said": ev.get("user_said"), "via": "answer"}
+        elif t == "decision":
+            st["decisions"][ev["id"]] = {"id": ev["id"], "user_said": ev.get("user_said"), "via": "decide"}
+        elif t == "human":
+            st["human"].append(ev)
+        elif t == "blocker":
+            st["blockers"][ev["id"]] = {"id": ev["id"], "kind": ev.get("kind"), "reason": ev.get("reason"), "open": True}
+        elif t == "unblock" and ev.get("blocker") in st["blockers"]:
+            st["blockers"][ev["blocker"]]["open"] = False
+        elif t == "gate":
+            st["gates"][ev["name"]] = {"result": ev.get("result"), "reasons": ev.get("reasons", []), "at": i}
+        elif t == "worktree":
+            st["worktrees"].append(ev)
+        elif t == "env":
+            if ev.get("action") == "fail":
+                st["env_failures"].append(ev)
+            elif ev.get("action") in ("up", "restart"):
+                st["env_failures"] = []
+        elif t == "closed":
+            st["closed"] = ev
+        if t in ("unblock", "loop") and ev.get("decision"):
+            consumed.add(ev["decision"])
+    for did, d in st["decisions"].items():
+        d["consumed"] = did in consumed
+    return st
+
+
+def next_id(prefix: str, events: list[dict], etype: str) -> str:
+    return f"{prefix}-{sum(1 for e in events if e.get('type') == etype) + 1}"

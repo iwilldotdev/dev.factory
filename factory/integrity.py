@@ -182,6 +182,43 @@ def acs_snapshot(run_id: str) -> tuple[dict, str | None]:
     return checks, hashlib.sha256(json.dumps(rest, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _ac_digests(run_id: str) -> dict[str, str]:
+    try:
+        data = json.loads((run_dir(run_id) / "acs.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    acs = data.get("acs") if isinstance(data, dict) else None
+    return {a["id"]: hashlib.sha256(json.dumps(a, sort_keys=True).encode("utf-8")).hexdigest()
+            for a in acs or [] if isinstance(a, dict) and isinstance(a.get("id"), str)}
+
+
+def remember_plan(run: dict) -> None:
+    """At `run replan`, keep what the locked plan was so the next lock can say what the replan changed."""
+    lock = run.get("plan_lock") if isinstance(run.get("plan_lock"), dict) else {}
+    run["replan_from"] = {"files": dict(lock.get("files") or {}), "checks": dict(lock.get("checks") or {}),
+                          "acs": _ac_digests(run["id"])}
+
+
+def _fill_replan(run: dict) -> None:
+    """Write what changed since `remember_plan` into the last `replan` event (files, check ids, AC ids)."""
+    before = run.pop("replan_from", None)
+    if not isinstance(before, dict):
+        return
+    files = plan_files(run["id"])
+    checks, _ = acs_snapshot(run["id"])
+    acs = _ac_digests(run["id"])
+
+    def diff(old: dict, new: dict) -> list[str]:
+        return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+
+    for e in reversed(run.get("events", [])):
+        if e.get("kind") == "replan":
+            e["data"]["changed"] = diff(before.get("files") or {}, files)
+            e["data"]["changed_checks"] = diff(before.get("checks") or {}, checks)
+            e["data"]["changed_acs"] = diff(before.get("acs") or {}, acs)
+            break
+
+
 def lock_plan(run: dict, reason: str = "plan gate", keep_seq: bool = False, keep_workspace: bool = False) -> dict:
     """Record run["plan_lock"] (caller saves). `seq` = first event index evidence must come after. `keep_workspace`
     (amend-check) carries the previous workspace digest and autonomy caps instead of re-reading workspace.json, so a
@@ -195,6 +232,8 @@ def lock_plan(run: dict, reason: str = "plan gate", keep_seq: bool = False, keep
         autonomy = old["autonomy"] if isinstance(old.get("autonomy"), dict) else _autonomy(run["workspace"])
     else:
         ws_digest, autonomy = workspace_digest(run["workspace"]), _autonomy(run["workspace"])
+    if not keep_seq:
+        _fill_replan(run)
     run["plan_lock"] = {"at": now(), "seq": seq, "digest": _digest(files), "files": files,
                         "checks": checks, "acs_rest": rest,
                         "code_scope": code_scope(run["id"], files),

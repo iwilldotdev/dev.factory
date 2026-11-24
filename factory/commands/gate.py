@@ -1312,7 +1312,7 @@ def cmd_gate(args) -> int:
                 if rounds >= max_rounds:
                     block(run, f"max_review_rounds ({max_rounds}) reached with CHANGES; user decision needed", "build")
                     errors = errors + [f"review round {rounds} >= max_review_rounds {max_rounds}: run blocked"]
-                elif run["loops"]["build"] > limit:
+                elif run["loops"]["build"] - run["loops"].get("build_approved", 0) > limit:  # approved rewinds do not count
                     block(run, f"max_build_loops ({limit}) exceeded; user decision needed", "build")
                     errors = errors + [f"loops.build {run['loops']['build']} > max_build_loops {limit}: run blocked"]
                 else:

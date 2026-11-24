@@ -243,7 +243,8 @@ class AmendTests(core_support.FactoryCase):
         self.assertEqual(rc, 0, out)
         run = core.run_load(self.run_id)
         self.assertEqual(run["phase"], "prove")
-        self.assertEqual(run["loops"]["replan"], 1)
+        self.assertEqual(run["loops"]["amend"], 1)  # counts against max_replans, but is not a replan
+        self.assertNotIn("replan", run["loops"])
         self.assertEqual(integrity.lock_errors(run), [])
         self.assertEqual(run["plan_lock"]["checks"]["CHK-1"]["timeout_s"], 120)
         ev = [e for e in run["events"] if e["kind"] == "amend_check"]
@@ -255,14 +256,14 @@ class AmendTests(core_support.FactoryCase):
         self.edit(timeout_s=120)
         rc, out = self.amend()
         self.assertEqual(rc, 0, out)
-        self.assertEqual(core.run_load(self.run_id)["loops"].get("replan", 0), 0)
+        self.assertEqual(core.run_load(self.run_id)["loops"].get("amend", 0), 0)
 
     def test_selector_amend_always_counts_and_allows_spec_changes(self):
         self.start([self.browser()], allow_timing_amends=True)
         (core.run_dir(self.run_id) / "checks" / "a.spec.ts").write_text("two", encoding="utf-8")
         rc, out = self.amend("selector")
         self.assertEqual(rc, 0, out)
-        self.assertEqual(core.run_load(self.run_id)["loops"]["replan"], 1)
+        self.assertEqual(core.run_load(self.run_id)["loops"]["amend"], 1)
 
     def test_timing_amend_refuses_spec_change_and_other_fields(self):
         self.start([self.browser()])

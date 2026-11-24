@@ -700,6 +700,12 @@ def _cap_block(run: dict, text: str, resume: str) -> None:
                       "then `factory run unblock` and retry with --decision <n>"])
 
 
+def _plan_loops(loops: dict) -> int:
+    """Replans plus check amendments without a user decision: what `autonomy.max_replans` caps."""
+    return (loops.get("replan", 0) - loops.get("replan_approved", 0)
+            + loops.get("amend", 0) - loops.get("amend_approved", 0))
+
+
 def cmd_replan(args) -> int:
     """The one legit way to change acs.json/checks/figma/diagnosis after the plan gate: back to plan, lock cleared."""
     run = run_load(args.run)
@@ -711,12 +717,13 @@ def cmd_replan(args) -> int:
     decision = _use_decision(run, getattr(args, "decision", None), "replan")
     if decision is None:
         cap = integrity.locked_autonomy(run).get("max_replans", 2)
-        if loops.get("replan", 0) - loops.get("replan_approved", 0) + 1 > cap:
+        if _plan_loops(loops) + 1 > cap:
             _cap_block(run, f"max_replans ({cap}) reached without a user decision", run["phase"])
     loops["replan"] = loops.get("replan", 0) + 1
     if decision is not None:
         loops["replan_approved"] = loops.get("replan_approved", 0) + 1
     changed = integrity.changed_files(run) if isinstance(run.get("plan_lock"), dict) else []
+    integrity.remember_plan(run)  # the next plan lock fills `changed` of this event with what the replan changed
     event(run, "replan", reason=args.reason, **{"from": run["phase"]}, changed=changed, loop=loops["replan"],
           decision=getattr(args, "decision", None))
     event(run, "loop", replan=loops["replan"])
@@ -808,13 +815,13 @@ def cmd_amend_check(args) -> int:
         if not free:
             if args.by != "user":
                 cap = autonomy.get("max_replans", 2)
-                if loops.get("replan", 0) - loops.get("replan_approved", 0) + 1 > cap:
-                    raise FactoryError(f"max_replans ({cap}) reached: amend-check counts like a replan without a user "
-                                       "decision; ask the user and retry with --by user --user-said")
-            loops["replan"] = loops.get("replan", 0) + 1
+                if _plan_loops(loops) + 1 > cap:
+                    raise FactoryError(f"max_replans ({cap}) reached: amend-check counts against it like a replan without "
+                                       "a user decision; ask the user and retry with --by user --user-said")
+            loops["amend"] = loops.get("amend", 0) + 1  # a check-only amendment is not a replan in the metrics
             if args.by == "user":
-                loops["replan_approved"] = loops.get("replan_approved", 0) + 1
-            event(run, "loop", replan=loops["replan"])
+                loops["amend_approved"] = loops.get("amend_approved", 0) + 1
+            event(run, "loop", amend=loops["amend"])
         event(run, "amend_check", check=args.check, amend=args.kind, reason=reason, fields=fields, by=args.by,
               user_said=said or None, counted=not free, phase=run["phase"])
         integrity.lock_plan(run, f"amend-check {args.check}", keep_seq=True, keep_workspace=True)
@@ -843,17 +850,20 @@ def cmd_rewind(args) -> int:
         raise FactoryError(f"run {run['id']} is in phase {current}; rewind goes back to an earlier phase")
     loops = run.setdefault("loops", {"build": 0, "review": 0})
     decision = _use_decision(run, getattr(args, "decision", None), "rewind")
-    if decision is None:  # counts into loops.build and blocks past max_build_loops
+    key = args.phase  # the loop of the phase the rewind goes back to (build or prove)
+    if decision is None:  # blocks past max_build_loops
         limit = integrity.locked_autonomy(run).get("max_build_loops", 3)
-        if loops.get("build", 0) + 1 > limit:
+        if loops.get(key, 0) - loops.get(key + "_approved", 0) + 1 > limit:
             _cap_block(run, f"max_build_loops ({limit}) reached by rewinds without a user decision", current)
-        loops["build"] = loops.get("build", 0) + 1
-        event(run, "loop", build=loops["build"])
-    event(run, "rewind", reason=args.reason, **{"from": current, "to": args.phase}, loop=loops["build"],
+    loops[key] = loops.get(key, 0) + 1
+    if decision is not None:  # counted, but not against the cap
+        loops[key + "_approved"] = loops.get(key + "_approved", 0) + 1
+    event(run, "loop", **{key: loops[key]})
+    event(run, "rewind", reason=args.reason, **{"from": current, "to": args.phase}, loop=loops[key],
           decision=getattr(args, "decision", None))
     gate._set_phase(run, args.phase)
     run_save(run)
-    _emit(args, {"phase": args.phase, "loops": loops}, f"phase {current} -> {args.phase} (build loop {loops['build']})")
+    _emit(args, {"phase": args.phase, "loops": loops}, f"phase {current} -> {args.phase} ({key} loop {loops[key]})")
     return 0
 
 
@@ -1206,5 +1216,5 @@ def register(sub) -> None:
     p.add_argument("phase", choices=REWIND_TO)
     p.add_argument("reason")
     p.add_argument("--decision", type=int, help="user decision # (run decide --by user, this phase); else counts "
-                   "into loops.build and blocks past autonomy.max_build_loops")
+                   "into the loop of the phase it goes back to (loops.build or loops.prove) and blocks past autonomy.max_build_loops")
     p.set_defaults(func=cmd_rewind)

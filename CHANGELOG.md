@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: `escaped_findings` dedup falls back to file and line when a finding has neither text nor id, and the plan lock fills `replan.changed` only when it was empty. Found by the independent review of the intake-skill-metrics branch: distinct findings collapsed and a recorded list was overwritten. Tests: `tests/test_metrics_escaped.py`, `tests/test_loops_metrics.py`.
 - fix: session ids accept only `[A-Za-z0-9_-]+`. Found by the independent review of the intake-skill-metrics branch (`t2.py`): a `*` id matched every transcript and a path id read any file. `run session` refuses other ids, `metrics` ignores stored invalid ones, and a non-owner caller gets a warning but is still registered. Test: `tests/test_metrics_sessions.py`.
 - fix: `run rewind` caps the sum of build and prove loops (minus approved ones) at `max_build_loops`. Found by the independent review of the intake-skill-metrics branch: rewinds to `prove` had their own budget, so the allowed loops doubled. Test: `tests/test_loops_metrics.py`.
 - fix: a metrics refresh (`run close`, final gates) on a run with no registered session keeps the token fields of the existing `metrics.json` and sets `tokens_note`. Found by the independent review of the intake-skill-metrics branch (`t2.py`): the refresh overwrote real token numbers with nothing. Test: `tests/test_metrics_timing.py`.

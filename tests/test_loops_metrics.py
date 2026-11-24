@@ -33,6 +33,20 @@ class ReplanChangedTests(IntegrityCase):
         self.assertIn("checks/note.txt", data["changed"])
         self.assertNotIn("replan_from", run)
 
+    def test_changed_recorded_at_replan_time_is_not_overwritten(self):
+        self.proved()
+        self.ok("run", "replan", self.rid, "x")
+        run = core.run_load(self.rid)
+        ev = next(e for e in reversed(run["events"]) if e["kind"] == "replan")
+        ev["data"]["changed"] = ["acs.json"]  # recorded when the replan was made
+        core.run_save(run)
+        (self.rd / "checks" / "note.txt").write_text("v2\n", encoding="utf-8")
+        self.ok("gate", self.rid, "plan")
+        data = next(e for e in reversed(core.run_load(self.rid)["events"]) if e["kind"] == "replan")["data"]
+        self.assertEqual(data["changed"], ["acs.json"])
+        self.assertIn("changed_checks", data)
+        self.assertIn("changed_acs", data)
+
     def test_old_run_without_replan_from_still_relocks(self):
         self.proved()
         self.ok("run", "replan", self.rid, "x")

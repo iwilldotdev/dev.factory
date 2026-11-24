@@ -213,7 +213,8 @@ def _fill_replan(run: dict) -> None:
 
     for e in reversed(run.get("events", [])):
         if e.get("kind") == "replan":
-            e["data"]["changed"] = diff(before.get("files") or {}, files)
+            if not e["data"].get("changed"):  # what the replan recorded at the time wins; fill only when empty
+                e["data"]["changed"] = diff(before.get("files") or {}, files)
             e["data"]["changed_checks"] = diff(before.get("checks") or {}, checks)
             e["data"]["changed_acs"] = diff(before.get("acs") or {}, acs)
             break

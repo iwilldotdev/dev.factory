@@ -180,7 +180,10 @@ def _escaped(run: dict, rd: Path) -> dict:
             for f in rec.get("findings") or []:
                 if not isinstance(f, dict):
                     continue
-                key = (p.stem.rsplit("-", 1)[0], f.get("file"), f.get("text") or f.get("id"))
+                what = f.get("text") or f.get("id")
+                if not what:  # nothing to tell two findings apart but where they are
+                    what = (f.get("file"), f.get("line"))
+                key = (p.stem.rsplit("-", 1)[0], f.get("file"), what)
                 if key in seen:
                     continue
                 seen.add(key)

@@ -35,6 +35,13 @@ class EscapedFindingsTests(FactoryCase):
         self.review("code-2", "2026-01-01T04:00:00+00:00", [self.f("F1", "major", "same")])
         self.assertEqual(metrics.compute("ws-dev-1")["escaped_findings"]["count"], 1)
 
+    def test_findings_without_text_or_id_are_told_apart_by_file_and_line(self):
+        self.make_run("ws-dev-1", events=[PASS_PROVE])
+        self.review("code-1", "2026-01-01T02:00:00+00:00",
+                    [{"severity": "major", "file": "a.ts", "line": 1}, {"severity": "major", "file": "a.ts", "line": 9},
+                     {"severity": "major", "file": "b.ts", "line": 1}])
+        self.assertEqual(metrics.compute("ws-dev-1")["escaped_findings"]["count"], 3)
+
     def test_no_prove_pass_means_zero(self):
         self.make_run("ws-dev-1", events=[])
         self.review("code-1", "2026-01-01T02:00:00+00:00", [self.f("F1", "major")])

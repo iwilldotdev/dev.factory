@@ -366,7 +366,7 @@ def commit_bytes(repo: Path, rel: str, data: bytes, msg: str = "[Area] - change"
 
 
 class Placement(MirrorDiffCase):
-    """Same lines in another place are a divergence (hunk key = function context + unchanged neighbours)."""
+    """Same lines in another function are a divergence (placement = git function context, not the neighbour lines)."""
 
     GUARD = "  if (x == null) return null;\n"
 
@@ -386,8 +386,9 @@ class Placement(MirrorDiffCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("same lines, different place/context", out)
 
-    def test_placement_is_checked_without_any_function_context(self):
-        """No git function context at all (every line indented): the unchanged neighbours alone catch the move."""
+    def test_without_any_function_context_the_changed_lines_alone_count(self):
+        """No git function context at all (every line indented): the place cannot be told, so the same changed lines
+        pass wherever they sit (the neighbours are not part of the comparison), and different ones still fail."""
         text = "".join(f"  row {i}\n" for i in range(8))
         repo = self.repo_dirs["React"]
         for t in ("homolog", "pack"):
@@ -400,10 +401,10 @@ class Placement(MirrorDiffCase):
         commit_file(wt, "data.txt", text.replace("  row 1\n", "  row 1\n  added\n"), "[Area] - fix")
         mwt = self.mirror_wt()
         commit_file(mwt, "data.txt", text.replace("  row 5\n", "  row 5\n  added\n"), "[Area] - fix")
-        errs = self.errors()
-        self.assertTrue(any("data.txt" in e and "different place" in e for e in errs), errs)
-        commit_file(mwt, "data.txt", text.replace("  row 1\n", "  row 1\n  added\n"), "[Area] - fix again")
         self.assertEqual(self.errors(), [])
+        commit_file(mwt, "data.txt", text.replace("  row 5\n", "  row 5\n  added!\n"), "[Area] - fix again")
+        errs = self.errors()
+        self.assertTrue(any("data.txt" in e for e in errs), errs)
 
     def test_shifted_offsets_with_the_same_neighbours_still_pass(self):
         self.base_fix(util=self.guarded("a"))
@@ -415,6 +416,123 @@ class Placement(MirrorDiffCase):
         mwt = self.mirror_wt()
         commit_file(mwt, "src/util.js", "// banner\n" * 5 + self.guarded("a"), "[Area] - fix")
         self.assertEqual(self.errors(), [])
+
+
+class ContextAndImports(MirrorDiffCase):
+    """Changed lines decide; placement is the function context; imports of a moved module are masked."""
+
+    CONSUMER = ('import a from "./a";\nimport b from "./b";\nimport { old } from "./mod/compare";\n\n'
+                'export function run(a) {\n  return a;\n}\n')
+    MODULE = "export const old = 1;\nexport const shouldSkip = () => false;\n"
+    GUARD = "  if (x == null) return null;\n"
+
+    def prepare(self, base_files, pack_files, moves=()):
+        repo = self.repo_dirs["React"]
+        for t, files in (("homolog", base_files), ("pack", pack_files)):
+            sh("git", "checkout", "-q", t, cwd=repo)
+            for rel, content in files.items():
+                commit_file(repo, rel, content, "[Area] - seed")
+            if t == "pack":
+                for old, new in moves:
+                    (repo / Path(new).parent).mkdir(parents=True, exist_ok=True)
+                    sh("git", "mv", old, new, cwd=repo)
+                    sh("git", "commit", "-q", "-m", "[Area] - move", cwd=repo)
+            sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=repo)
+        sh("git", "checkout", "-q", "main", cwd=repo)
+        wt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
+        sh("git", "reset", "-q", "--hard", "homolog", cwd=wt)
+        return wt
+
+    def pack_consumer(self, spec="@shared/compare"):
+        """The consumer on `pack`: another second import, another specifier, another line in the function."""
+        return (self.CONSUMER.replace('import b from "./b";', 'import b2 from "./b2";')
+                .replace('"./mod/compare"', f'"{spec}"').replace("  return a;", "  const t = 1;\n  return a;"))
+
+    @staticmethod
+    def fixed(text: str) -> str:
+        return (text.replace("{ old }", "{ old, shouldSkip }")
+                .replace("run(a) {\n", "run(a) {\n  if (shouldSkip(a)) return null;\n"))
+
+    def test_moved_module_via_another_specifier_other_neighbours_other_import_context_pass(self):
+        wt = self.prepare({"src/consumer.js": self.CONSUMER, "src/mod/compare.js": self.MODULE},
+                          {"src/consumer.js": self.pack_consumer(), "src/mod/compare.js": self.MODULE},
+                          moves=[("src/mod/compare.js", "shared/compare.js")])
+        commit_file(wt, "src/consumer.js", self.fixed(self.CONSUMER), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/consumer.js", self.fixed(self.pack_consumer()), "[Area] - fix")
+        self.assertEqual(self.errors(), [])
+        rc, out = cli("run", "mirror-diff", self.rid)
+        self.assertEqual(rc, 0, out)
+
+    def test_specifier_change_not_backed_by_a_moved_module_fails(self):
+        wt = self.prepare({"src/consumer.js": self.CONSUMER, "src/mod/compare.js": self.MODULE},
+                          {"src/consumer.js": self.pack_consumer(), "src/mod/compare.js": self.MODULE})  # nothing moved
+        commit_file(wt, "src/consumer.js", self.fixed(self.CONSUMER), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/consumer.js", self.fixed(self.pack_consumer()), "[Area] - fix")
+        errs = self.errors()
+        self.assertTrue(any("src/consumer.js" in e and "@shared/compare" in e for e in errs), errs)
+
+    def test_a_different_module_is_not_masked_by_another_moved_one(self):
+        wt = self.prepare({"src/consumer.js": self.CONSUMER, "src/mod/compare.js": self.MODULE},
+                          {"src/consumer.js": self.pack_consumer("@shared/other"), "src/mod/compare.js": self.MODULE},
+                          moves=[("src/mod/compare.js", "shared/compare.js")])
+        commit_file(wt, "src/consumer.js", self.fixed(self.CONSUMER), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/consumer.js", self.fixed(self.pack_consumer("@shared/other")), "[Area] - fix")
+        self.assertTrue(self.errors())
+
+    def test_same_function_with_different_neighbour_lines_passes(self):
+        base = UTIL.replace("function a() {\n", "function a() {\n  const k = 0;\n")
+        pack = UTIL.replace("function a() {\n  return 1;", "function a() {\n  const q = 5;\n  return 1;")
+        wt = self.prepare({"src/util.js": base}, {"src/util.js": pack})
+        commit_file(wt, "src/util.js", base.replace("function a() {\n", "function a() {\n" + self.GUARD), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", pack.replace("function a() {\n", "function a() {\n" + self.GUARD), "[Area] - fix")
+        self.assertEqual(self.errors(), [])
+
+    def test_same_lines_in_another_function_shows_both_contexts(self):
+        wt = self.prepare({}, {})
+        commit_file(wt, "src/util.js", UTIL.replace("function a() {\n", "function a() {\n" + self.GUARD), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", UTIL.replace("function c() {\n", "function c() {\n" + self.GUARD), "[Area] - fix")
+        errs = self.errors()
+        self.assertTrue(any("different place" in e and "base in `function a() {`" in e and "mirror in `function c() {`" in e
+                            for e in errs), errs)
+
+    def test_one_of_two_changed_lines_moved_to_another_function_fails(self):
+        wt = self.prepare({}, {})
+        base = UTIL.replace("function a() {\n", "function a() {\n" + self.GUARD).replace("function b() {\n", "function b() {\n" + self.GUARD)
+        mirror = UTIL.replace("function a() {\n", "function a() {\n" + self.GUARD).replace("function c() {\n", "function c() {\n" + self.GUARD)
+        commit_file(wt, "src/util.js", base, "[Area] - fix")
+        commit_file(self.mirror_wt(), "src/util.js", mirror, "[Area] - fix")
+        self.assertTrue(any("different place" in e for e in self.errors()))
+
+    def test_different_changed_lines_in_the_same_function_still_fail(self):
+        wt = self.prepare({}, {})
+        commit_file(wt, "src/util.js", UTIL.replace("return 1;", "return 10;"), "[Area] - fix")
+        commit_file(self.mirror_wt(), "src/util.js", UTIL.replace("return 1;", "return 11;"), "[Area] - fix")
+        self.assertTrue(self.errors())
+
+
+class ImportDetection(unittest.TestCase):
+    def test_import_like_lines_across_languages(self):
+        for line in ('import x from "y";', '} from "y";', 'from "y"', 'import "y";', "const x = require('y');",
+                     "from pkg.mod import thing", "import pkg.mod", '#include "y.h"', 'export * from "y";'):
+            self.assertTrue(mirrordiff._is_import(line), line)
+        for line in ("using System.Text;", "return 1;", "const important = 2;", "  one,"):
+            self.assertFalse(mirrordiff._is_import(line), line)
+
+    def test_masking_needs_a_moved_module(self):
+        moved = frozenset({"compare"})
+        a = mirrordiff._norm_line('} from "../helpers/compare";', False, moved)
+        b = mirrordiff._norm_line('} from "@shared/compare";', False, moved)
+        self.assertEqual(a, b)
+        self.assertNotEqual(mirrordiff._norm_line('} from "../helpers/other";', False, moved),
+                            mirrordiff._norm_line('} from "@shared/other";', False, moved))
+        self.assertEqual(mirrordiff._norm_line("from a.compare import x", False, moved),
+                         mirrordiff._norm_line("from b.compare import x", False, moved))
+        self.assertEqual(mirrordiff._norm_line("  return '../helpers/compare';", False, moved), "  return '../helpers/compare';")
 
 
 class ExactBytes(MirrorDiffCase):

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import json
 import os
 import re
 import subprocess
@@ -46,8 +47,13 @@ def main() -> int:
     ap.add_argument("--tests-dir", type=Path, default=ROOT / "tests")
     ap.add_argument("--out", type=Path, default=ROOT / ".tmp" / "test-output")
     ap.add_argument("--list", action="store_true", help="print the modules and exit")
+    ap.add_argument("--save-hints", action="store_true", help="write the measured module times to tests/durations.json (the scheduling hint)")
     args = ap.parse_args()
-    mods = sorted(p for p in args.tests_dir.glob("test_*.py") if not args.patterns or any(s in p.stem for s in args.patterns))
+    hints_file = args.tests_dir / "durations.json"
+    hints = json.loads(hints_file.read_text(encoding="utf-8")) if hints_file.is_file() else {}
+    # the slowest modules start first, so the last ones to finish are short (a hint only: any module missing from it runs last)
+    mods = sorted((p for p in args.tests_dir.glob("test_*.py") if not args.patterns or any(s in p.stem for s in args.patterns)),
+                  key=lambda p: (-hints.get(p.stem, 0), p.stem))
     if args.list:
         print("\n".join(m.stem for m in mods))
         return 0
@@ -56,6 +62,9 @@ def main() -> int:
     with cf.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
         results = list(pool.map(lambda m: run_module(m, args.out, args.timeout), mods))
     total = time.monotonic() - start
+    if args.save_hints and not args.patterns:
+        hints_file.write_text(json.dumps({r["name"]: round(r["secs"]) for r in sorted(results, key=lambda r: r["name"])}, indent=0) + "\n",
+                              encoding="utf-8", newline="\n")
     for r in sorted(results, key=lambda r: r["name"]):
         state = "TIMEOUT" if r["timed_out"] else "ok" if r["code"] == 0 else "FAIL"
         print(f"{state:<8}{r['name']:<28}{r['tests']:>4} tests {r['secs']:6.1f}s")

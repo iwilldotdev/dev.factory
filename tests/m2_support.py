@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import PY, FactoryCase, git, tmpdir
+from tests.helpers import PY, FactoryCase, git, head_of, tmpdir
 
 CHECK_PY = '''import sys
 import app
@@ -126,7 +126,7 @@ class M2Case(FactoryCase):
         (tree / rel).write_text(text, newline="\n")
         git("add", "-A", cwd=tree)
         git("commit", "-q", "-m", msg, cwd=tree)
-        return git("rev-parse", "HEAD", cwd=tree)
+        return head_of(tree)
 
     def commit_many(self, files: dict[str, str], msg: str, tree: Path | None = None) -> str:
         tree = tree or self.tree()
@@ -135,7 +135,7 @@ class M2Case(FactoryCase):
             (tree / rel).write_text(text, newline="\n")
         git("add", "-A", cwd=tree)
         git("commit", "-q", "-m", msg, cwd=tree)
-        return git("rev-parse", "HEAD", cwd=tree)
+        return head_of(tree)
 
     def fix(self, tree: Path | None = None) -> str:
         return self.commit("app.py", "VALUE = 2\n", "fix: value", tree)

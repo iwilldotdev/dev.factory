@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tests.helpers import git
+from tests.helpers import head_of
 from tests.m2_support import M2Case
 
 
@@ -30,7 +30,7 @@ class M3Case(M2Case):
         self.ok("gate", "verify")
 
     def head(self) -> str:
-        return git("rev-parse", "HEAD", cwd=self.tree())
+        return head_of(self.tree())
 
     def review_input(self, kind: str = "code", verdict: str = "APPROVE", **over) -> dict:
         data = {"verdict": verdict, "reviewer": "fresh-reviewer", "repos": {"web": self.head()[:7]}, "findings": [],

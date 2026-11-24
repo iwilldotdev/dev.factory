@@ -164,13 +164,14 @@ def _up_one(project, run: Run, name: str, path: Path, restart: bool, wait_s: flo
 
 def _ready(project, rc: dict, env: dict, pid: int, url: str, path: Path, run: Run, user: str | None, secrets: list[str]) -> tuple[str, str] | None:
     """Wait for health (up to `ready_timeout_s`), then warm up, run the data preflight and log in [L-40, L-50, L-84]."""
-    end = time.monotonic() + env["ready_timeout_s"]
+    end, pause = time.monotonic() + env["ready_timeout_s"], 0.04
     while not localhttp.healthy(url, 2):
         if proc.create_time(pid) is None:
             return "start", "the process exited before the health URL answered"
         if time.monotonic() >= end:
             return "health", f"{url} did not answer below 500 within ready_timeout_s={env['ready_timeout_s']}"
-        time.sleep(0.25)
+        time.sleep(pause)
+        pause = min(pause * 1.6, 0.25)  # a server that is up in a fraction of a second is noticed in one; a slow one is polled every 0.25 s
     if (why := envdata.warmup(env["base_url"], env.get("warmup", []))):
         return "warmup", why
     if (why := envdata.preflight(project, rc, path, run.id, env["base_url"])):

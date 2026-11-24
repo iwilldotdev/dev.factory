@@ -80,13 +80,20 @@ def _cleanup() -> None:
 
 
 def git(*args: str, cwd: Path) -> str:
-    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
+               GIT_AUTHOR_DATE="2026-01-01T00:00:00Z", GIT_COMMITTER_DATE="2026-01-01T00:00:00Z")  # same inputs, same commit: snapshots can be reused
     out = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
                           "-c", "init.defaultBranch=main", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=60)
     if out.returncode:
         raise RuntimeError(f"git {args} failed: {out.stderr}")
     return out.stdout.strip()
+
+
+def head_of(tree: Path) -> str:
+    """HEAD of a work tree without starting a process when the files say it."""
+    from dev_factory import git as product_git
+    return product_git._read_head(tree) or git("rev-parse", "HEAD", cwd=tree)
 
 
 def copy_git_fixture(dest: Path) -> Path:

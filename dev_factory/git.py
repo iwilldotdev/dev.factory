@@ -44,8 +44,8 @@ def _once(key: tuple, compute):
     return _MEMO[key]
 
 
-def _read_head(path: Path) -> str | None:
-    """HEAD of a work tree from its files (no process): the usual layouts only, anything else returns None and git is asked."""
+def _gitdirs(path: Path) -> tuple[Path, Path] | None:
+    """(git dir of a work tree, the common git dir that holds the refs) from the files, for the usual layouts only."""
     try:
         dot = Path(path) / ".git"
         gitdir = dot
@@ -54,19 +54,23 @@ def _read_head(path: Path) -> str | None:
             if not text.startswith("gitdir:"):
                 return None
             gitdir = (Path(path) / text[7:].strip()).resolve()
-        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
-        if not head.startswith("ref: "):
-            return head if SHA.match(head) else None
         common = gitdir
         if (gitdir / "commondir").is_file():
             common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
-        ref = head[5:]
-        for base in (gitdir, common):
+        return gitdir, common
+    except (OSError, ValueError):
+        return None
+
+
+def _loose_or_packed(dirs: tuple[Path, Path], ref: str) -> str | None:
+    try:
+        for base in dict.fromkeys(dirs):
             if (base / ref).is_file():
                 sha = (base / ref).read_text(encoding="utf-8").strip()
                 return sha if SHA.match(sha) else None
-        if (common / "packed-refs").is_file():
-            for line in (common / "packed-refs").read_text(encoding="utf-8").splitlines():
+        packed = dirs[1] / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
                 if line.endswith(" " + ref) and line[:1] not in "#^":
                     return line.split()[0] if SHA.match(line.split()[0]) else None
     except (OSError, ValueError):
@@ -74,9 +78,29 @@ def _read_head(path: Path) -> str | None:
     return None
 
 
+def _read_head(path: Path) -> str | None:
+    """HEAD of a work tree from its files (no process); anything unusual returns None and git is asked."""
+    dirs = _gitdirs(path)
+    try:
+        head = (dirs[0] / "HEAD").read_text(encoding="utf-8").strip() if dirs else ""
+    except OSError:
+        return None
+    if head.startswith("ref: "):
+        return _loose_or_packed(dirs, head[5:])
+    return head if SHA.match(head) else None
+
+
+def _read_branch(path: Path, ref: str) -> str | None:
+    """A local or remote-tracking branch from its ref file; a name that a tag could also mean goes to git."""
+    dirs = _gitdirs(path)
+    if not dirs or not re.fullmatch(r"[A-Za-z0-9._/-]+", ref) or ".." in ref or ref.endswith(".lock") or _loose_or_packed(dirs, f"refs/tags/{ref}"):
+        return None
+    return _loose_or_packed(dirs, f"refs/heads/{ref}") or _loose_or_packed(dirs, f"refs/remotes/{ref}")
+
+
 def rev(repo: Path, ref: str) -> str | None:
     """Full SHA of a ref, or None when it does not resolve."""
-    if ref == "HEAD" and (fast := _read_head(repo)):
+    if (fast := _read_head(repo) if ref == "HEAD" else _read_branch(repo, ref)):
         return fast
 
     def ask():
@@ -98,14 +122,29 @@ def dirty(path: Path) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+_HISTORY: dict[tuple, int | bool] = {}  # answers about two commit ids never change, so they are kept for the life of the process
+
+
 def ahead(path: Path, base: str) -> int:
-    if _read_head(path) == base:
+    head = _read_head(path)
+    if head == base:
         return 0
+    if head and SHA.match(base):
+        key = ("ahead", head, base)
+        if key not in _HISTORY:
+            _HISTORY[key] = int(git(path, "rev-list", "--count", f"{base}..{head}").out.strip() or 0)
+        return _HISTORY[key]
     return int(_once(("ahead", str(path), base), lambda: git(path, "rev-list", "--count", f"{base}..HEAD").out.strip()) or 0)
 
 
 def is_ancestor(path: Path, old: str, new: str) -> bool:
-    return git(path, "merge-base", "--is-ancestor", old, new, check=False).exit == 0
+    key = ("ancestor", old, new)
+    if key in _HISTORY:
+        return bool(_HISTORY[key])
+    res = git(path, "merge-base", "--is-ancestor", old, new, check=False)
+    if SHA.match(old) and SHA.match(new) and res.exit in (0, 1):
+        _HISTORY[key] = res.exit == 0
+    return res.exit == 0
 
 
 def show_file(path: Path, sha: str, rel: str) -> bytes:
@@ -176,7 +215,9 @@ def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: st
 
 def remove_tree(main: Path, path: Path) -> None:
     """Remove a throwaway worktree. Links inside it are unlinked, never followed [L-72]."""
-    if git(main, "worktree", "remove", str(path), check=False).exit != 0 and path.exists():
+    if git(main, "worktree", "remove", str(path), check=False).exit == 0:
+        return
+    if path.exists():
         shutil.rmtree(path, ignore_errors=True)
     git(main, "worktree", "prune", check=False)
 
@@ -216,3 +257,4 @@ def commit_problems(path: Path, bp: str, base: str, pattern: str | None, forbidd
             if any(re.match(rf"^\s*{re.escape(key)}\s*:", line, re.I) for line in body.splitlines()):
                 problems.append(f"{sha[:7]}: carries the forbidden trailer {key}")
     return problems
+

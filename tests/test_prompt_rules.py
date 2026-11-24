@@ -53,5 +53,14 @@ class BlockedCapTests(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+class OrchestratorDisciplineTests(unittest.TestCase):
+    def test_language_and_no_hand_edits(self):
+        text = read(SKILL / "SKILL.md")
+        self.assertIn("talk to the user in the user's language", text)
+        self.assertIn("Artifacts, commits, run files and CLI text keep their own conventions", text)
+        self.assertIn("never edit specs, checks, `acs.json` or product code yourself", text)
+        self.assertLessEqual(len(text.splitlines()), 135)
+
+
 if __name__ == "__main__":
     unittest.main()

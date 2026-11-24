@@ -1,8 +1,9 @@
 """Mirror diff gate (DESIGN section 9): a hotfix mirror carries the SAME CHANGES as the base fix.
 
 Per code repo and mirror target, the net change of the base branch (merge-base(base target, HEAD)..HEAD of the base
-worktree) is compared with the net change of the mirror branch. Commits and branches may differ; the changed lines may
-not. A recorded user decision ("mirror diff: <reason>") can allow one named divergence (`run["mirror_allow"]`).
+worktree) is compared with the net change of the mirror branch. Commits and branches may differ; the changed lines, and
+the place they sit in, may not. A recorded user decision ("mirror diff: <reason>") can allow one named divergence
+(`run["mirror_allow"]`).
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from collections import Counter
 
 from .core import (FactoryError, code_repos, event, git, hotfix_of, now, repo_path_for_run, run_base_branch,
@@ -20,6 +22,7 @@ EXCERPT_LINES = 6        # lines shown per hunk
 EXCERPT_WIDTH = 120      # characters kept per line
 EXCERPT_HUNKS = 3        # hunks shown per file and side
 ERROR_FILES = 10         # files named in one gate failure
+PATHSPEC_CHARS = 20000   # rename detection is limited to the changed paths while they fit one command line
 
 # Relative import/require paths: "./x", '../y/z' in quotes; python `from .pkg import`.
 _REL_QUOTED = re.compile(r"""(['"`])\.{1,2}/[^'"`\n]*\1""")
@@ -28,7 +31,7 @@ _REL_PY = re.compile(r"\bfrom\s+\.+[\w.]*\s+import\b")
 
 def _norm_line(line: str, relaxed: bool) -> str:
     """Exact text, except (relaxed, file at another path on the other side) relative import paths are masked.
-    Whitespace is never touched: a reformat must show."""
+    Whitespace is never touched: a reformat, a trailing space or a CR must show."""
     if not relaxed:
         return line
     line = _REL_QUOTED.sub(lambda m: f"{m.group(1)}<rel>{m.group(1)}", line)
@@ -40,72 +43,108 @@ def _resolve(path, ref: str) -> str:
     return gate.resolve_base(path, ref)
 
 
-def _parse_diff(text: str) -> dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]]:
-    """{path: [(removed lines, added lines), ...]} from `git diff --no-renames -U0`; one entry per -U0 hunk.
-    Binary files are one hunk holding the new blob id."""
-    files: dict[str, list] = {}
-    cur = None
-    removed: list[str] = []
-    added: list[str] = []
-    last = None
+def _git(wt, *args: str) -> str:
+    """git output as exact text: bytes, no strip, no newline translation (a CRLF or a trailing space must show),
+    decoded utf-8 with surrogateescape so any byte survives. Callers split on "\\n" only. Local to this module: the
+    shared `core.git` (universal newlines + strip) stays as it is for every other caller."""
+    proc = subprocess.run(["git", "-C", str(wt), *args], capture_output=True)
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace").strip()
+        raise FactoryError(f"git {' '.join(args)} failed in {wt}: {err}")
+    return proc.stdout.decode("utf-8", "surrogateescape")
 
-    def flush() -> None:
-        nonlocal removed, added
-        if cur is not None and (removed or added):
-            files[cur].append((tuple(removed), tuple(added)))
-        removed, added = [], []
 
-    for raw in text.split("\n"):
-        if raw.startswith("diff --git a/"):
-            flush()
-            rest = raw[len("diff --git a/"):]
-            n = (len(rest) - 3) // 2  # no renames: "a/<p> b/<p>"
-            cur = rest[:n]
-            files.setdefault(cur, [])
-            last = None
-        elif cur is None:
-            continue
-        elif raw.startswith("@@"):
-            flush()
-            last = None
-        elif raw.startswith("index "):
-            files[cur].append(((), ("BLOBID " + raw.split()[1].split("..")[-1],)))  # replaced if the file has text hunks
-        elif raw.startswith("Binary files"):
-            continue
+def _show(text: str, show_cr: bool = False) -> str:
+    """Printable text. A carriage return is shown (as \\r) only when a line-ending difference is what diverges;
+    elsewhere a CRLF file would carry it on every line."""
+    if show_cr:
+        text = text.replace("\r", "\\r")
+    elif text.endswith("\r"):
+        text = text[:-1]
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+# A hunk is (function context, lines): the text git puts after the second `@@` (may be empty) and the body of a `-U1`
+# diff hunk, every line with its one-character prefix: " " unchanged neighbour, "-" removed, "+" added.
+
+def _norm_hunk(h: tuple, relaxed: bool) -> tuple:
+    ctx, lines = h
+    return (_norm_line(ctx, relaxed), tuple(l[:1] + _norm_line(l[1:], relaxed) for l in lines))
+
+
+def _parse_patch(chunk: list[str]) -> list[tuple]:
+    """Hunks of one file's patch (the lines of one `diff --git` chunk, header included)."""
+    hunks = []
+    ctx = None
+    body: list[str] = []
+    for raw in chunk:
+        if raw.startswith("@@"):
+            if ctx is not None and body:
+                hunks.append((ctx, tuple(body)))
+            m = re.match(r"@@ [^@]*@@ ?(.*)$", raw)
+            ctx, body = (m.group(1) if m else ""), []
+        elif ctx is None:
+            continue  # file header
         elif raw.startswith("\\"):
-            if last is not None:
-                last[-1] += "\\NONL"
-        elif raw.startswith("+++") or raw.startswith("---"):
-            continue
-        elif raw.startswith("-"):
-            removed.append(raw[1:])
-            last = removed
-        elif raw.startswith("+"):
-            added.append(raw[1:])
-            last = added
-    flush()
-    # a text file has real hunks after its `index` record: drop the blob placeholder then
-    for path, hunks in files.items():
-        real = [h for h in hunks if not (h[0] == () and len(h[1]) == 1 and h[1][0].startswith("BLOBID "))]
-        placeholders = [h for h in hunks if h not in real]
-        if real:
-            files[path] = real
-        elif placeholders:
-            files[path] = placeholders[-1:]
-    return files
+            if body:
+                body[-1] += "\\NONL"
+        elif raw[:1] in (" ", "-", "+"):
+            body.append(raw)
+    if ctx is not None and body:
+        hunks.append((ctx, tuple(body)))
+    return hunks
 
 
-def _net_diff(wt, base_ref: str) -> dict:
-    mb = git(wt, "merge-base", base_ref, "HEAD")
-    out = git(wt, "-c", "core.quotepath=off", "diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0",
-              "--src-prefix=a/", "--dst-prefix=b/", mb, "HEAD")
-    return _parse_diff(out)
+def _parse_raw(raw: str) -> list[tuple[str, str, str, bool]]:
+    """[(path, status, new blob id, same blob?)] from `git diff --raw -z --no-renames`: `:om nm osha nsha S\\0path\\0`."""
+    tok = raw.split("\0")
+    out = []
+    i = 0
+    while i + 1 < len(tok) and tok[i].startswith(":"):
+        meta = tok[i][1:].split()
+        out.append((tok[i + 1], meta[4], meta[3], meta[2] == meta[3]))
+        i += 2
+    return out
 
 
-def _renames(wt, base_ref: str, mirror_ref: str) -> dict[str, str]:
-    """{path on the mirror target: path on the base target} for files moved between the two target branches."""
-    out = git(wt, "-c", "core.quotepath=off", "-c", "diff.renameLimit=10000", "diff", "--name-status", "-M",
-              "--diff-filter=R", "-z", base_ref, mirror_ref, check=False)
+def _net_diff(wt, base_ref: str) -> tuple[str, dict]:
+    """(merge-base, {path: [hunk, ...]}) for merge-base(base_ref, HEAD)..HEAD. Paths come from `--raw -z` (never quoted)
+    and the patch is cut at its `diff --git` lines and matched to them in order: no path is parsed from a header."""
+    mb = _git(wt, "merge-base", base_ref, "HEAD").strip()
+    common = ["-c", "core.quotePath=false", "diff", "--no-renames", "--no-color", "--no-ext-diff", "--no-textconv"]
+    entries = _parse_raw(_git(wt, *common, "--raw", "-z", "--no-abbrev", mb, "HEAD"))
+    if not entries:
+        return mb, {}
+    chunks: list[list[str]] = []
+    for line in _git(wt, *common, "-U1", "--src-prefix=a/", "--dst-prefix=b/", mb, "HEAD").split("\n"):
+        if line.startswith("diff --git "):  # hunk bodies always start with " ", "+", "-" or "\\": never a false header
+            chunks.append([])
+        if chunks:
+            chunks[-1].append(line)
+    if len(chunks) != len(entries):
+        raise FactoryError(f"git diff listed {len(entries)} file(s) but {len(chunks)} patch(es) in {wt}")
+    files: dict[str, list] = {}
+    for (path, status, new_sha, same), chunk in zip(entries, chunks):
+        hunks = _parse_patch(chunk)
+        if not hunks:
+            if same:
+                continue  # mode-only change: ignored
+            hunks = [("", (f"+<no text hunks: binary, empty or submodule; {status} {new_sha}>",))]
+        files[path] = hunks
+    return mb, files
+
+
+def _renames(wt, base_ref: str, mirror_ref: str, paths: set[str]) -> dict[str, str]:
+    """{path on the mirror target: path on the base target} for files moved between the two target branches. Detection
+    is limited to `paths` (the files of the two net diffs): a rename needs its old and its new path in it, and both are,
+    because the base fix touches the old path and the mirror the new one. Too many paths for a command line: whole tree."""
+    if not paths:
+        return {}
+    spec = sorted(paths)
+    if sum(len(p) + 1 for p in spec) > PATHSPEC_CHARS:
+        spec = []
+    out = _git(wt, "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "diff.renameLimit=10000", "diff",
+               "--name-status", "-M", "--diff-filter=R", "-z", base_ref, mirror_ref, "--", *spec)
     tok = out.split("\0")
     moved = {}
     for i in range(0, len(tok) - 2, 3):  # -z: status, old, new
@@ -114,11 +153,18 @@ def _renames(wt, base_ref: str, mirror_ref: str) -> dict[str, str]:
     return moved
 
 
-def _excerpt(hunks: list) -> list[str]:
+def _changed(h: tuple) -> list[str]:
+    return [l for l in h[1] if l[:1] in ("+", "-")]
+
+
+def _excerpt(hunks: list, show_cr: bool = False) -> list[str]:
+    """Capped text of the first hunks. A hunk longer than the cap shows only its changed lines (the neighbours would
+    push the change out of view); a short one shows its neighbours too, since they are what can differ."""
     out = []
-    for removed, added in hunks[:EXCERPT_HUNKS]:
-        lines = [("-" + l) for l in removed] + [("+" + l) for l in added]
-        shown = [l if len(l) <= EXCERPT_WIDTH else l[:EXCERPT_WIDTH] + "..." for l in lines[:EXCERPT_LINES]]
+    for h in hunks[:EXCERPT_HUNKS]:
+        body = list(h[1]) if len(h[1]) <= EXCERPT_LINES else _changed(h)
+        lines = ([f"@@ {h[0]}"] if h[0] else []) + body
+        shown = [_show(l if len(l) <= EXCERPT_WIDTH else l[:EXCERPT_WIDTH] + "...", show_cr) for l in lines[:EXCERPT_LINES]]
         if len(lines) > EXCERPT_LINES:
             shown.append(f"... (+{len(lines) - EXCERPT_LINES} more line(s))")
         out.append("\n".join(shown))
@@ -127,16 +173,33 @@ def _excerpt(hunks: list) -> list[str]:
     return out
 
 
-def _lines(hunks: list) -> tuple[Counter, Counter]:
-    rem, add = Counter(), Counter()
-    for r, a in hunks:
-        rem.update(r)
-        add.update(a)
-    return rem, add
+def _delta(f: dict, side: str) -> list[str]:
+    """Changed lines present on `side` ("base_only"/"mirror_only") and missing on the other one."""
+    other = "mirror_only" if side == "base_only" else "base_only"
+    mine = Counter(l for h in f[side] for l in _changed(h))
+    theirs = Counter(l for h in f[other] for l in _changed(h))
+    return list((mine - theirs).elements())
+
+
+def _no_cr(h: tuple) -> tuple:
+    return (h[0].rstrip(chr(13)), tuple(l.replace(chr(13), "") for l in h[1]))
+
+
+def _grouped(hunks: list) -> dict[str, Counter]:
+    """Changed lines (not neighbours) per function context."""
+    out: dict[str, Counter] = {}
+    for h in hunks:
+        out.setdefault(h[0], Counter()).update(_changed(h))
+    return out
 
 
 def compare_files(base: dict, mirror: dict, moved: dict[str, str]) -> list[dict]:
-    """Divergent files between two parsed net diffs. `moved` maps mirror-target paths to base-target paths."""
+    """Divergent files between two parsed net diffs. `moved` maps mirror-target paths to base-target paths.
+
+    Hunk key = (git function context, -U1 hunk body: the changed lines plus their immediate unchanged neighbours), every
+    line exact. The exact keys must match as a multiset. Hunks left over (diff grouped the same lines differently) still
+    match when, inside each NON-EMPTY function context, their changed lines are the same multiset; a leftover hunk with
+    no function context never matches that way, so the same text placed elsewhere in the file is a divergence."""
     keyed: dict[str, tuple[str, list]] = {}
     for path, hunks in mirror.items():
         keyed[moved.get(path, path)] = (path, hunks)
@@ -152,14 +215,28 @@ def compare_files(base: dict, mirror: dict, moved: dict[str, str]) -> list[dict]
             continue
         mpath, mh = keyed[key]
         relaxed = mpath != key
-        bh = [(tuple(_norm_line(l, relaxed) for l in r), tuple(_norm_line(l, relaxed) for l in a)) for r, a in base[key]]
-        mh = [(tuple(_norm_line(l, relaxed) for l in r), tuple(_norm_line(l, relaxed) for l in a)) for r, a in mh]
+        bh = [_norm_hunk(h, relaxed) for h in base[key]]
+        mh = [_norm_hunk(h, relaxed) for h in mh]
         cb, cm = Counter(bh), Counter(mh)
-        if cb == cm or _lines(bh) == _lines(mh):  # same hunks, or the same lines grouped differently by diff
+        if cb == cm:
             continue
-        out.append({"file": key, "mirror_file": mpath if relaxed else None, "kind": "hunks",
-                    "base_only": list((cb - cm).elements()), "mirror_only": list((cm - cb).elements())})
+        left_b, left_m = list((cb - cm).elements()), list((cm - cb).elements())
+        if all(h[0] for h in left_b + left_m) and _grouped(left_b) == _grouped(left_m):
+            continue
+        same_lines = Counter(l for h in bh for l in _changed(h)) == Counter(l for h in mh for l in _changed(h))
+        eol_only = Counter(_no_cr(h) for h in bh) == Counter(_no_cr(h) for h in mh)
+        out.append({"file": key, "mirror_file": mpath if relaxed else None, "kind": "hunks", "same_lines": same_lines,
+                    "eol_only": eol_only,
+                    "base_only": left_b, "mirror_only": left_m})
     return out
+
+
+def _ref_info(wt, branch: str, used: str, merge_base: str | None) -> dict:
+    def rp(ref: str) -> str:
+        return git(wt, "rev-parse", "--verify", "--quiet", ref, check=False)
+    local, origin = rp(f"refs/heads/{branch}"), rp(f"refs/remotes/origin/{branch}")
+    return {"branch": branch, "ref": used, "tip": rp(used), "merge_base": merge_base,
+            "stale_hint": bool(local and origin and local != origin)}
 
 
 def compute(run: dict, ws: dict) -> dict | None:
@@ -176,11 +253,14 @@ def compute(run: dict, ws: dict) -> dict | None:
                 continue
             entry = {"repo": alias, "target": target, "files": []}
             try:
-                base_ref = _resolve(base_wt, run_base_branch(run, ws, alias))
-                mirror_ref = _resolve(mirror_wt, target_branch(ws, alias, target))
-                moved = _renames(base_wt, base_ref, mirror_ref)
-                base = _net_diff(base_wt, base_ref)
-                mirror = _net_diff(mirror_wt, mirror_ref)
+                bname, mname = run_base_branch(run, ws, alias), target_branch(ws, alias, target)
+                base_ref, mirror_ref = _resolve(base_wt, bname), _resolve(mirror_wt, mname)
+                entry["refs"] = {"base": _ref_info(base_wt, bname, base_ref, None),
+                                 "mirror": _ref_info(mirror_wt, mname, mirror_ref, None)}
+                base_mb, base = _net_diff(base_wt, base_ref)
+                mirror_mb, mirror = _net_diff(mirror_wt, mirror_ref)
+                entry["refs"]["base"]["merge_base"], entry["refs"]["mirror"]["merge_base"] = base_mb, mirror_mb
+                moved = _renames(base_wt, base_ref, mirror_ref, set(base) | set(mirror))
                 entry["files"] = compare_files(base, mirror, moved)
             except FactoryError as err:
                 entry["error"] = str(err)
@@ -190,7 +270,8 @@ def compute(run: dict, ws: dict) -> dict | None:
     digest_src = [[e["repo"], e["target"], e.get("error"),
                    [[f["file"], f["kind"], sorted(map(list, f["base_only"])), sorted(map(list, f["mirror_only"]))]
                     for f in e["files"]]] for e in entries]
-    digest = hashlib.sha256(json.dumps(digest_src, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(json.dumps(digest_src, sort_keys=True, ensure_ascii=False).encode("utf-8", "surrogateescape")
+                            ).hexdigest()
     divergent = any(e["files"] or e.get("error") for e in entries)
     return {"equal": not divergent, "digest": digest, "entries": entries}
 
@@ -200,9 +281,13 @@ def public(report: dict) -> dict:
     entries = []
     for e in report["entries"]:
         files = [{"file": f["file"], "mirror_file": f["mirror_file"], "kind": f["kind"],
-                  "base_only": _excerpt(f["base_only"]), "mirror_only": _excerpt(f["mirror_only"]),
+                  "same_lines": f.get("same_lines", False),
+                  "eol_only": f.get("eol_only", False),
+                  "base_only": _excerpt(f["base_only"], f.get("eol_only", False)),
+                  "mirror_only": _excerpt(f["mirror_only"], f.get("eol_only", False)),
                   "base_only_hunks": len(f["base_only"]), "mirror_only_hunks": len(f["mirror_only"])} for f in e["files"]]
-        entries.append({"repo": e["repo"], "target": e["target"], "files": files, **({"error": e["error"]} if e.get("error") else {})})
+        entries.append({"repo": e["repo"], "target": e["target"], "files": files, "refs": e.get("refs"),
+                        **({"error": e["error"]} if e.get("error") else {})})
     return {"equal": report["equal"], "digest": report["digest"], "entries": entries}
 
 
@@ -212,7 +297,28 @@ def _file_line(f: dict) -> str:
         return f"{where}: changed only on the base branch (missing on the mirror)"
     if f["kind"] == "only_mirror":
         return f"{where}: changed only on the mirror branch (not in the base fix)"
-    return f"{where}: {f['base_only_hunks']} hunk(s) only on base, {f['mirror_only_hunks']} only on mirror"
+    line = f"{where}: {f['base_only_hunks']} hunk(s) only on base, {f['mirror_only_hunks']} only on mirror"
+    if f.get("eol_only"):
+        line += " (only the line endings differ: CRLF vs LF)"
+    elif f.get("same_lines"):
+        line += " (same lines, different place/context: the surrounding code differs on the mirror target)"
+    return line
+
+
+def _refs_line(e: dict) -> str | None:
+    refs = e.get("refs")
+    if not refs:
+        return None
+    def one(r: dict) -> str:
+        return f"{r['ref']}@{(r['tip'] or '?')[:9]} merge-base {(r['merge_base'] or '?')[:9]}"
+    line = f"refs {e['repo']}/{e['target']}: compared base {one(refs['base'])}; mirror {one(refs['mirror'])}"
+    if refs["base"]["stale_hint"] or refs["mirror"]["stale_hint"]:
+        line += " (local and origin target refs differ: `git fetch` in the worktree if origin moved, then compare again)"
+    return line
+
+
+def render_refs(report: dict) -> list[str]:
+    return [l for l in (_refs_line(e) for e in report["entries"]) if l]
 
 
 def render(report: dict) -> list[str]:
@@ -228,7 +334,7 @@ def render(report: dict) -> list[str]:
                 for ex in f[key]:
                     lines.append(f"    {side}:")
                     lines.extend("      " + l for l in ex.split("\n"))
-    return lines
+    return lines + render_refs(report)
 
 
 # ---------- user exception ----------
@@ -246,12 +352,20 @@ def _decision(run: dict, n) -> dict:
     return d
 
 
+def _comparison_errors(report: dict) -> list[str]:
+    return [f"{e['repo']}/{e['target']}: {e['error']}" for e in report["entries"] if e.get("error")]
+
+
 def record_allowance(run: dict, ws: dict, n) -> None:
     """Store, on the run, the user decision #n as the allowance of the CURRENT divergence (mutates `run`; the caller saves)."""
     d = _decision(run, n)
     report = compute(run, ws)
     if report is None or report["equal"]:
         raise FactoryError("no mirror divergence to allow (the mirror diff is equal or no mirror exists yet)")
+    failed = _comparison_errors(report)
+    if failed:
+        raise FactoryError("the mirror diff could not be computed, so there is nothing the user could allow: "
+                           + "; ".join(failed))
     files: dict[str, list[str]] = {}
     for e in report["entries"]:
         names = [f["file"] for f in e["files"]]
@@ -265,6 +379,8 @@ def record_allowance(run: dict, ws: dict, n) -> None:
 
 def allowance_valid(run: dict, report: dict) -> bool:
     allow = run.get("mirror_allow")
+    if _comparison_errors(report):
+        return False  # nothing was compared: no allowance covers that
     if not isinstance(allow, dict) or allow.get("digest") != report["digest"]:
         return False
     try:
@@ -291,17 +407,26 @@ def errors(run: dict, ws: dict) -> list[str]:
             shown += 1
             ex = ""
             for side, key in (("only on base", "base_only"), ("only on mirror", "mirror_only")):
-                hunks = f[key][:1]
-                if hunks:
-                    ex += f" [{side}: " + " / ".join(_excerpt(hunks)[0].split("\n")[:3]) + "]"
+                cr = bool(f.get("eol_only"))
+                lines = [_show(l, cr) for l in _delta(f, key)[:3]]
+                if not lines and f[key]:  # same lines in another place: show the hunk with its neighbours
+                    lines = _excerpt(f[key][:1], cr)[0].split("\n")[:4]
+                if lines:
+                    ex += f" [{side}: " + " / ".join(lines) + "]"
             out.append(f"{label}: mirror diff: {_file_line({**f, 'base_only_hunks': len(f['base_only']), 'mirror_only_hunks': len(f['mirror_only'])})}{ex}")
     total = sum(len(e["files"]) for e in report["entries"])
     if total > shown:
         out.append(f"... {total - shown} more divergent file(s); `factory run mirror-diff <run>` lists all")
+    out.extend(render_refs(report))
     allow = run.get("mirror_allow")
     stale = " (the allowance recorded earlier no longer matches this divergence)" if isinstance(allow, dict) else ""
-    out.append("the mirror must carry the same changes as the base fix (adapt only moved files/import paths; no reformatting, "
-               "no relocated tests): fix the mirror branch, or with the user's explicit decision `factory run decide <run> "
+    if _comparison_errors(report):
+        out.append("the mirror diff could not be compared: no user exception covers that; fix the error above (the "
+                   "allowance applies only to a divergence that was actually compared)")
+        return out
+    out.append("the mirror must carry the same changes, in the same place, as the base fix (adapt only moved files/import paths; "
+               "no reformatting, no relocated tests): fix the mirror branch, or, when the mirror target legitimately differs "
+               "around the change, with the user's explicit decision `factory run decide <run> "
                f"\"{PREFIX} <reason>\" --by user --user-said \"<quote>\"` and --allow-mirror-divergence <n>{stale}")
     return out
 

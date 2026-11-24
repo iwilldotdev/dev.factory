@@ -1007,6 +1007,12 @@ def review_status(run_id, run, ws) -> tuple[list[str], list[str]]:
     return plain, changes
 
 
+def _prove_gate(run_id, run, ws) -> list[str]:
+    """Gate prove: the proof criteria plus, for a hotfix whose mirrors exist, the mirror diff (the first gate that can
+    see it in the normal flow: `run mirror` needs gate build passed). Rewinds re-check it in gate build; ship plan again."""
+    return _prove(run_id, run, ws) + mirrordiff.errors(run, ws)
+
+
 def proof_errors(run_id, run, ws) -> list[str]:
     """The prove-gate criteria re-checked against the current HEADs (nothing is re-collected)."""
     errors = (_review_prove if run.get("kind") == "review" else _prove)(run_id, run, ws)
@@ -1157,7 +1163,7 @@ def _batch_intake(run_id, run, ws) -> list[str]:
             if b.get("kind") == "question" and not b.get("resolved")]
 
 
-EVALUATORS = {"intake": _intake, "plan": _plan, "reproduce": _reproduce, "build": _build, "prove": _prove,
+EVALUATORS = {"intake": _intake, "plan": _plan, "reproduce": _reproduce, "build": _build, "prove": _prove_gate,
               "review": _review, "ship": _ship, "feedback": _feedback, "report": _report}
 TICKET_EVALUATORS = {k: v for k, v in EVALUATORS.items() if k != "report"}
 REVIEW_EVALUATORS = {"intake": _review_intake, "plan": _review_plan, "prove": _review_prove,
@@ -1241,8 +1247,8 @@ def cmd_gate(args) -> int:
         raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
     allow_mirror = getattr(args, "allow_mirror_divergence", None)
     if allow_mirror is not None:
-        if phase != "build":
-            raise FactoryError("--allow-mirror-divergence applies to gate build (and ship plan)")
+        if phase not in ("build", "prove"):
+            raise FactoryError("--allow-mirror-divergence applies to gate build and gate prove (and ship plan)")
         mirrordiff.record_allowance(run, ws, allow_mirror)
     ws_changed = integrity.workspace_error(run) if phase not in ("intake", "plan") else None
     if ws_changed:  # before any loop/cap logic: caps read from a changed workspace.json are not trusted
@@ -1334,5 +1340,5 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("phase", choices=list(EVALUATORS))
     p.add_argument("--allow-mirror-divergence", type=int, metavar="DECISION",
-                   help="hotfix, gate build: a user decision \"mirror diff: <reason>\" that allows the current mirror divergence")
+                   help="hotfix, gate build|prove: a user decision \"mirror diff: <reason>\" that allows the current mirror divergence")
     p.set_defaults(func=cmd_gate)

@@ -7,6 +7,7 @@ files (the mirror then has to adapt paths, nothing else).
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -354,6 +355,214 @@ class Exception_(MirrorDiffCase):
         self.assertIn("- CHANGELOG.md", mirror["description"])
         rc, out = cli("--json", "ship", "plan", self.rid)  # stored once on the run: later plans honour it
         self.assertEqual(rc, 0, out)
+
+
+def commit_bytes(repo: Path, rel: str, data: bytes, msg: str = "[Area] - change") -> None:
+    """Like commit_file but byte-exact (write_text would translate newlines on Windows)."""
+    (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+    (repo / rel).write_bytes(data)
+    sh("git", "add", "-A", cwd=repo)
+    sh("git", "commit", "-q", "-m", msg, cwd=repo)
+
+
+class Placement(MirrorDiffCase):
+    """Same lines in another place are a divergence (hunk key = function context + unchanged neighbours)."""
+
+    GUARD = "  if (x == null) return null;\n"
+
+    def guarded(self, after: str) -> str:
+        return UTIL.replace(f"function {after}() {{\n", f"function {after}() {{\n{self.GUARD}")
+
+    def base_wt(self):
+        return core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
+
+    def test_same_line_added_in_another_function_fails(self):
+        self.base_fix(util=self.guarded("a"))
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", self.guarded("b"), "[Area] - fix")
+        errs = self.errors()
+        self.assertTrue(any("src/util.js" in e and "same lines, different place/context" in e for e in errs), errs)
+        rc, out = cli("run", "mirror-diff", self.rid)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("same lines, different place/context", out)
+
+    def test_placement_is_checked_without_any_function_context(self):
+        """No git function context at all (every line indented): the unchanged neighbours alone catch the move."""
+        text = "".join(f"  row {i}\n" for i in range(8))
+        repo = self.repo_dirs["React"]
+        for t in ("homolog", "pack"):
+            sh("git", "checkout", "-q", t, cwd=repo)
+            commit_file(repo, "data.txt", text, "[Area] - data")
+            sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=repo)
+        sh("git", "checkout", "-q", "main", cwd=repo)
+        wt = self.base_wt()
+        sh("git", "reset", "-q", "--hard", "homolog", cwd=wt)
+        commit_file(wt, "data.txt", text.replace("  row 1\n", "  row 1\n  added\n"), "[Area] - fix")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "data.txt", text.replace("  row 5\n", "  row 5\n  added\n"), "[Area] - fix")
+        errs = self.errors()
+        self.assertTrue(any("data.txt" in e and "different place" in e for e in errs), errs)
+        commit_file(mwt, "data.txt", text.replace("  row 1\n", "  row 1\n  added\n"), "[Area] - fix again")
+        self.assertEqual(self.errors(), [])
+
+    def test_shifted_offsets_with_the_same_neighbours_still_pass(self):
+        self.base_fix(util=self.guarded("a"))
+        repo = self.repo_dirs["React"]
+        sh("git", "checkout", "-q", "pack", cwd=repo)
+        commit_file(repo, "src/util.js", "// banner\n" * 5 + UTIL, "[Area] - banner")
+        sh("git", "checkout", "-q", "main", cwd=repo)
+        sh("git", "update-ref", "refs/remotes/origin/pack", "pack", cwd=repo)
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", "// banner\n" * 5 + self.guarded("a"), "[Area] - fix")
+        self.assertEqual(self.errors(), [])
+
+
+class ExactBytes(MirrorDiffCase):
+    def base_wt(self):
+        return core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
+
+    def test_crlf_versus_lf_is_a_divergence(self):
+        self.base_fix()
+        commit_bytes(self.base_wt(), "src/new.js", b"a = 1\nb = 3\n")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX, "[Area] - fix")
+        commit_bytes(mwt, "src/new.js", b"a = 1\r\nb = 3\r\n")
+        errs = self.errors()
+        self.assertTrue(any("src/new.js" in e and "line endings differ" in e for e in errs), errs)
+        rc, out = cli("run", "mirror-diff", self.rid)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("\\r", out)
+
+    def test_trailing_space_on_the_last_added_line_is_a_divergence(self):
+        self.base_fix()
+        commit_bytes(self.base_wt(), "src/new.js", b"a = 1\nb = 3\n")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX, "[Area] - fix")
+        commit_bytes(mwt, "src/new.js", b"a = 1\nb = 3 \n")
+        self.assertTrue(any("src/new.js" in e for e in self.errors()))
+
+    def test_autocrlf_checkout_with_identical_committed_changes_passes(self):
+        """core.autocrlf=true (a Windows checkout): git commits LF blobs and diffs the blobs, so a CRLF working file on
+        one side and an LF one on the other are the same committed change."""
+        sh("git", "config", "core.autocrlf", "true", cwd=self.repo_dirs["React"])
+        self.base_fix()
+        wt = self.base_wt()
+        commit_bytes(wt, "src/new.js", b"a = 1\r\nb = 3\r\n")
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX, "[Area] - fix")
+        commit_bytes(mwt, "src/new.js", b"a = 1\nb = 3\n")
+        blob = subprocess.run(["git", "cat-file", "blob", "HEAD:src/new.js"], cwd=str(wt), capture_output=True).stdout
+        self.assertEqual(blob, b"a = 1\nb = 3\n")  # committed as LF
+        self.assertEqual(self.errors(), [])
+
+
+class FilesAndPaths(MirrorDiffCase):
+    def test_mode_only_change_on_one_side_is_ignored(self):
+        self.base_fix()
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX, "[Area] - fix")
+        sh("git", "update-index", "--chmod=+x", "tests/a.test.js", cwd=mwt)
+        sh("git", "commit", "-q", "-m", "[Area] - chmod", cwd=mwt)
+        self.assertIn("100755", sh("git", "diff", "--raw", "HEAD~1", "HEAD", cwd=mwt))
+        self.assertEqual(self.errors(), [])
+        self.assertTrue(self.report()["equal"])
+
+    def test_non_ascii_and_spaced_paths_are_matched_to_their_own_hunks(self):
+        a, b = "src/ação.js", "src/my file.js"
+        repo = self.repo_dirs["React"]
+        for t in ("homolog", "pack"):
+            sh("git", "checkout", "-q", t, cwd=repo)
+            commit_file(repo, a, "one\n", "[Area] - a")
+            commit_file(repo, b, "two\n", "[Area] - b")
+            sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=repo)
+        sh("git", "checkout", "-q", "main", cwd=repo)
+        wt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
+        sh("git", "reset", "-q", "--hard", "homolog", cwd=wt)
+        commit_file(wt, a, "one\nuno\n", "[Area] - fix a")
+        commit_file(wt, b, "two\ndos\n", "[Area] - fix b")
+        mwt = self.mirror_wt()
+        commit_file(mwt, a, "one\nuno\n", "[Area] - fix a")
+        commit_file(mwt, b, "two\ndos\n", "[Area] - fix b")
+        self.assertEqual(self.errors(), [])
+        commit_file(mwt, b, "two\ndos!\n", "[Area] - fix b again")
+        files = [f["file"] for f in self.report()["entries"][0]["files"]]
+        self.assertEqual(files, [b])
+
+
+class ComparisonErrors(MirrorDiffCase):
+    def test_a_comparison_error_cannot_be_covered_by_the_allowance(self):
+        self.base_fix()
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX, "[Area] - fix")
+        commit_file(mwt, "CHANGELOG.md", "pack only\n", "[Area] - changelog")
+        n = self.decide("mirror diff: changelog only on pack")
+        run = core.run_load(self.rid)
+        mirrordiff.record_allowance(run, core.workspace_load("ws"), n)
+        core.run_save(run)
+        self.assertEqual(self.errors(), [])
+        repo = self.repo_dirs["React"]  # the mirror target ref disappears: nothing can be compared
+        sh("git", "update-ref", "-d", "refs/remotes/origin/pack", cwd=repo)
+        sh("git", "branch", "-D", "pack", cwd=repo)
+        errs = self.errors()
+        self.assertTrue(any("cannot be computed" in e for e in errs), errs)
+        self.assertFalse(mirrordiff.allowance_valid(core.run_load(self.rid), self.report()))
+        n = self.decide("mirror diff: second try")
+        with self.assertRaises(core.FactoryError) as cm:
+            mirrordiff.record_allowance(core.run_load(self.rid), core.workspace_load("ws"), n)
+        self.assertIn("could not be computed", str(cm.exception))
+
+    def test_refs_and_merge_bases_are_printed_with_a_fetch_hint_when_local_and_origin_differ(self):
+        self.base_fix()
+        repo = self.repo_dirs["React"]
+        sh("git", "checkout", "-q", "pack", cwd=repo)
+        commit_file(repo, "NEWS.md", "news\n", "[Area] - news")
+        sh("git", "update-ref", "refs/remotes/origin/pack", "pack", cwd=repo)
+        sh("git", "reset", "-q", "--hard", "main", cwd=repo)  # the local `pack` is now behind origin/pack
+        sh("git", "checkout", "-q", "main", cwd=repo)
+        mwt = self.mirror_wt()
+        commit_file(mwt, "src/util.js", FIX.replace("return 2;", "return 22;"), "[Area] - fix")
+        rc, out = cli("run", "mirror-diff", self.rid, "--json")
+        self.assertEqual(rc, 1, out)
+        refs = json.loads(out)["entries"][0]["refs"]
+        self.assertEqual((refs["mirror"]["ref"], refs["base"]["ref"]), ("origin/pack", "origin/homolog"))
+        self.assertEqual(refs["mirror"]["merge_base"], sh("git", "rev-parse", "origin/pack", cwd=repo))
+        self.assertTrue(refs["mirror"]["stale_hint"])
+        self.assertFalse(refs["base"]["stale_hint"])
+        rc, out = cli("run", "mirror-diff", self.rid)
+        self.assertIn("compared base origin/homolog@", out)
+        self.assertIn("merge-base", out)
+        self.assertIn("git fetch", out)
+        self.assertTrue(any("compared base origin/homolog@" in e for e in self.errors()))
+
+
+class GateProveFlow(MirrorDiffCase):
+    def test_gate_prove_enforces_the_mirror_diff_without_a_rewind(self):
+        self.acs()
+        self.ok("gate", self.rid, "intake")
+        self.ok("gate", self.rid, "plan")
+        (core.run_dir(self.rid) / "diagnosis.md").write_text("## Root cause\nx\n\n## Evidence\ny\n\n## Ruled out\nz\n", encoding="utf-8")
+        self.ok("prove", self.rid, "--repro")
+        self.ok("gate", self.rid, "reproduce")
+        self.fix()
+        self.ok("gate", self.rid, "build")  # no mirror yet: nothing to compare
+        self.ok("run", "mirror", self.rid, "React", "--to", "pack")
+        pwt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktrees"]["pack"])
+        (pwt / "CHANGELOG.md").write_text("x\n", encoding="utf-8")
+        sh("git", "add", "CHANGELOG.md", cwd=pwt)
+        sh("git", "commit", "-q", "--amend", "--no-edit", cwd=pwt)
+        self.ok("prove", self.rid)
+        rc, out = cli("gate", self.rid, "prove")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("mirror diff", out)
+        self.assertIn("CHANGELOG.md", out)
+        self.assertEqual(core.run_load(self.rid)["phase"], "prove")
+        bad = self.decide("mirror diff: ignored", by="agent")
+        rc, out = cli("gate", self.rid, "prove", "--allow-mirror-divergence", str(bad))
+        self.assertEqual(rc, 2, out)
+        n = self.decide("mirror diff: the changelog exists only on pack")
+        rc, out = cli("gate", self.rid, "prove", "--allow-mirror-divergence", str(n))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(core.run_load(self.rid)["mirror_allow"]["decision"], n)
 
 
 class MultiRepo(MirrorDiffCase):

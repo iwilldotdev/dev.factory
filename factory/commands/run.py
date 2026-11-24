@@ -577,6 +577,7 @@ def cmd_mirror_diff(args) -> int:
                           run["mirror_allow"]["decision"] if allowed else None}, indent=2, ensure_ascii=False))
     elif report["equal"]:
         print("OK mirror diff equal: the mirror branches carry the same changes as the base fix")
+        print("\n".join(mirrordiff.render_refs(report)))
     else:
         print("DIVERGENT mirror diff" + (f" (allowed by user decision #{run['mirror_allow']['decision']})" if allowed else ""))
         print("\n".join(mirrordiff.render(report)))

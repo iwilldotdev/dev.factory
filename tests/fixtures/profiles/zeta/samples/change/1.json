@@ -1,0 +1,28 @@
+{
+  "pr": {
+    "num": 5,
+    "url": "https://code.zeta.example/org/svc/pr/5",
+    "title": "Fix save",
+    "body": "Closes ZED-7",
+    "head": {
+      "ref": "fix/save",
+      "sha": "f00d"
+    },
+    "base": {
+      "ref": "main"
+    },
+    "state": 1,
+    "is_draft": 0,
+    "by": "kim"
+  },
+  "votes": [
+    {
+      "user": "ana",
+      "verdict": "approved"
+    },
+    {
+      "user": "bo",
+      "verdict": "changes"
+    }
+  ]
+}

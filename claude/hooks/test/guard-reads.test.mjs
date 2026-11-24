@@ -129,7 +129,7 @@ test('CLI-owned and authoring paths keep their owners', () => {
     }
     assert.ok(denied(protect(write(`${RUN}/${f}`))));
   }
-  for (const f of ['acs.json', 'diagnosis.md', 'checks/CHK-1.spec.ts', 'figma/n.json']) {
+  for (const f of ['acs.json', 'diagnosis.md', 'checks/CHK-1.spec.ts', 'design/n.json']) {
     assert.ok(!denied(guard('author', write(`${RUN}/${f}`))), `author write ${f}`);
     for (const role of ['scout', 'builder', 'auditor']) assert.ok(denied(guard(role, write(`${RUN}/${f}`))), `${role} write ${f}`);
   }

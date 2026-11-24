@@ -599,7 +599,7 @@ def errors(run: dict, ws: dict) -> list[str]:
 
 
 def description_lines(run: dict, alias: str, target: str) -> list[str]:
-    """MR description section naming the user-approved divergence, for the mirror target's MR only."""
+    """Change description section naming the user-approved divergence, for the mirror target's change only."""
     hf = hotfix_of(run)
     allow = run.get("mirror_allow")
     if not hf or target == hf["base"] or not isinstance(allow, dict):

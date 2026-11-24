@@ -1,0 +1,58 @@
+{
+  "schema": "ticket.v1",
+  "key": "ZED-7",
+  "title": "Crash on save",
+  "type": "Defect",
+  "is_bug": true,
+  "status": "Open",
+  "description_md": "## Steps\n\n1. **open the file** and [save](https://zeta.example/help)\n2. _watch it fail_\n\n```\nsave(file)\n```",
+  "labels": [
+    "crash",
+    "data"
+  ],
+  "links": [
+    {
+      "kind": "blocks",
+      "key": "ZED-9",
+      "url": "https://zeta.example/t/ZED-9"
+    }
+  ],
+  "comments": [
+    {
+      "id": "9",
+      "author": "u1",
+      "created": "2023-11-14T22:13:20Z",
+      "body_md": "Seen **twice** with [logs](https://zeta.example/l).\n\n- one\n- two"
+    }
+  ],
+  "unknowns": [
+    {
+      "field": "url",
+      "reason": "not mapped"
+    },
+    {
+      "field": "acceptance_criteria",
+      "reason": "not mapped"
+    },
+    {
+      "field": "parent",
+      "reason": "not mapped"
+    },
+    {
+      "field": "assignee",
+      "reason": "not mapped"
+    },
+    {
+      "field": "attachments",
+      "reason": "not mapped"
+    },
+    {
+      "field": "description_md",
+      "reason": "rich-text mark 'u' ignored"
+    },
+    {
+      "field": "description_md",
+      "reason": "rich-text node type 'embed' descended without config"
+    }
+  ]
+}

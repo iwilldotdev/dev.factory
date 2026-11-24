@@ -1,6 +1,6 @@
 """Proof integrity: plan lock, evidence/review digests (DESIGN §2.6).
 
-The plan gate locks what the proof is measured against (acs.json, checks/**, figma/**,
+The plan gate locks what the proof is measured against (acs.json, checks/**, design/**, the design_frame/design_image raws and contracts,
 diagnosis.md, and the sha256 of workspace.json: caps, limits, quality commands). Later gates re-hash and refuse changed files: the legit path is
 `factory run replan`. Every evidence and review file written by the CLI gets an event
 with its sha256; gates refuse files whose bytes do not match their latest event.
@@ -15,7 +15,9 @@ from pathlib import Path, PurePosixPath
 from .core import event, evidence_file, file_sha256, git_head, now, run_dir, workspace_path
 
 LOCK_FILES = ("acs.json", "diagnosis.md")
-LOCK_DIRS = ("checks", "figma")
+DESIGN_PREFIXES = ("design/", "raw/design_frame/", "raw/design_image/", "contracts/design_frame/", "contracts/design_image/")
+LOCK_DIRS = ("checks", "design", "raw/design_frame", "raw/design_image", "contracts/design_frame",
+             "contracts/design_image")
 
 
 # Directories under checks/ where tools drop generated output (screenshots, traces, reports): not plan.
@@ -155,7 +157,7 @@ def _digest(files: dict[str, str]) -> str:
 
 
 def code_scope(run_id: str, files: dict[str, str] | None = None) -> str:
-    """Digest of what the `code` review depends on: AC ids and text, diagnosis, figma pack and the workspace.
+    """Digest of what the `code` review depends on: AC ids and text, diagnosis, design frames and the workspace.
     Changing only checks/ or the checks of acs.json (a replan of how things are proven) leaves it equal."""
     rd = run_dir(run_id)
     files = plan_files(run_id) if files is None else files
@@ -164,7 +166,7 @@ def code_scope(run_id: str, files: dict[str, str] | None = None) -> str:
         acs = [[a.get("id"), a.get("text")] for a in data.get("acs") or [] if isinstance(a, dict)]
     except (OSError, ValueError, AttributeError):
         acs = None
-    keep = {k: v for k, v in files.items() if k == "diagnosis.md" or k.startswith("figma/")}
+    keep = {k: v for k, v in files.items() if k == "diagnosis.md" or k.startswith(DESIGN_PREFIXES)}
     return hashlib.sha256(json.dumps({"acs": acs, "files": keep}, sort_keys=True).encode("utf-8")).hexdigest()
 
 

@@ -1,6 +1,6 @@
 """Collector `screenshot`: visual evidence the user asked for (DESIGN §12). Captures, never compares.
 
-`path`: one capture of the page (`capture`, like `visual` without the Figma compare).
+`path`: one capture of the page (`capture`, like `visual` without the design compare).
 `spec`: a Playwright spec with the steps to reach the state (hover, click, fill); the browser CLI runs it with
 `--screenshot on`, so every test ends with a screenshot; `page.screenshot({path: testInfo.outputPath("x.png")})`
 adds named shots. At HEAD the steps must pass; in BEFORE mode (`collect_before`, the unfixed base; never a key of

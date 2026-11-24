@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "id": "j1",
+      "name": "lint",
+      "stage": "check",
+      "state": "ok",
+      "soft": false
+    },
+    {
+      "id": "j2",
+      "name": "e2e",
+      "stage": "test",
+      "state": "bad",
+      "soft": true
+    }
+  ]
+}

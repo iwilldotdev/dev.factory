@@ -1,0 +1,21 @@
+{
+  "run": {
+    "id": 31,
+    "sha": "f00d",
+    "code": 3,
+    "steps": [
+      {
+        "id": 1,
+        "name": "build",
+        "code": 2,
+        "required": true
+      },
+      {
+        "id": 2,
+        "name": "lint",
+        "code": 3,
+        "required": false
+      }
+    ]
+  }
+}

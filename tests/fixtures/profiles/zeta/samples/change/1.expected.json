@@ -1,0 +1,38 @@
+{
+  "schema": "change.v1",
+  "repo": "svc",
+  "number": 5,
+  "url": "https://code.zeta.example/org/svc/pr/5",
+  "title": "Fix save",
+  "description_md": "Closes ZED-7",
+  "source_branch": "fix/save",
+  "target_branch": "main",
+  "head_sha": "f00d",
+  "state": "open",
+  "draft": false,
+  "author": "kim",
+  "approvals": {
+    "known": true,
+    "by": [
+      "ana"
+    ]
+  },
+  "unknowns": [
+    {
+      "field": "project",
+      "reason": "not mapped"
+    },
+    {
+      "field": "reviewers",
+      "reason": "not mapped"
+    },
+    {
+      "field": "threads",
+      "reason": "not mapped"
+    },
+    {
+      "field": "pipelines",
+      "reason": "not mapped"
+    }
+  ]
+}

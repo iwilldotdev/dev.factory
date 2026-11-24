@@ -244,7 +244,7 @@ for (const t of [`ls ${R}/evidence | xargs rm`, `ls ${R}/evidence | xargs -I{} r
   `touch ${R}/run.json`, `touch -d 2000-01-01 ${R}/run.json`, `touch -t 200001010000 ${R}/run.json`, `touch ${R}/evidence/x`, `mkdir ${R}/evidence/x`, `mkdir -p ${R}/evidence/x`, `md ${R}\\evidence\\x`, `mkfifo ${R}/run.json`,
   `mknod ${R}/run.json p`, `mktemp -p ${R}/evidence`, `mktemp ${R}/evidence/XXXX`, `rmdir ${R}/evidence`, `rmdir --ignore-fail-on-non-empty ${R}/evidence`, `rm -d ${R}/evidence`, `rm --recursive --force ${R}/evidence`,
   `rm -i ${R}/run.json`, `rm -v ${R}/run.json`, `rm -- ${R}/run.json`, `rm ./x ${R}/run.json`, `rm /tmp/x ${R}/run.json`, `rm ${R}/evidence/*`, `rm -rf ${R}/evidence/`, `rm -rf ${R}/evidence/.`, `rm -rf ${R}/evidence/..`,
-  `rm ${R}/reviews/code-1.json`, `rm ${R}/ship-plan.json`, `rm ${R}/metrics.json`, `rm ${R}/baseline/x`, `rm ${R}/review-report.md`, `rm ${R}/acs.json`, `rm ${R}/checks/x`, `rm ${R}/figma/x.png`, `rm ${R}/diagnosis.md`,
+  `rm ${R}/reviews/code-1.json`, `rm ${R}/ship-plan.json`, `rm ${R}/metrics.json`, `rm ${R}/baseline/x`, `rm ${R}/review-report.md`, `rm ${R}/acs.json`, `rm ${R}/checks/x`, `rm ${R}/design/x.png`, `rm ${R}/diagnosis.md`,
   `rm ~/.factory/env/ws/a.pid`, `echo 1 > ~/.factory/env/ws/a.pid`, `rm ~/.factory/env/ws/a.storage.json`]) W(t);
 
 return P;
@@ -414,7 +414,7 @@ for (const t of [
   `rmdir ${R}/reviews`, `rmdir -p ${R}/remote/a`, `mkdir ${R}/evidence2`, `mkdir -p ${R}/evidence/x`, `mkdir ${R}/checks`, `touch ${R}/run.json.tmp`,
   `touch ${R}/run.json`, `touch -r ${R}/run.json ${S}/f`, `mv ${R}/remote ${R}/evidence`, `mv ${R}/remote/a ${R}/remote/b`, `mv ${R}/evidence ${S}/e`,
   `mv ${R}/remote ${S}/r`, `mv ${S}/r ${R}/remote`, `mv -t ${R} ${S}/f`, `mv ${S}/f ${R}/remote/run.json`, `mv ${R} ${S}/r1`, `mv ${S}/x ${R}/acs.json`,
-  `mv ${S}/x ${R}/diagnosis.md`, `mkdir ${R}/figma`, `touch ${R}/checks/x`, `mv ${S}/x ${R}/review-report.md`, `mv ${S}/x ${R}/metrics.json`,
+  `mv ${S}/x ${R}/diagnosis.md`, `mkdir ${R}/design`, `touch ${R}/checks/x`, `mv ${S}/x ${R}/review-report.md`, `mv ${S}/x ${R}/metrics.json`,
   `rm ${ST}`, `rm -r ${H}/.factory/env`, `rm -r ${H}/.factory/env/ws`, `touch ${H}/.factory/env/ws/x.pid`,
   `rm -r ${R}/../_inbox`, `rm -r ${H}/.factory/runs/_inbox/s1`, `rm -r ${H}/.factory/runs/_inbox`,
   `sed -i s/a/b/w${R}/run.json ${S}/f`, `sed -i 's/a/b/w ${R}/run.json' ${S}/f`, `sed -i s,a,b, ${R}/run.json`,

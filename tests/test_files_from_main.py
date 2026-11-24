@@ -156,7 +156,7 @@ class Containment(unittest.TestCase):
         self.assertFalse((plain / ".env").exists())
 
     def test_a_review_worktree_that_ignores_nothing_keeps_no_copy(self):
-        # the shape of `run branch --mr`: a `.env` copied there would be one `git add -A` from a commit
+        # the shape of `run branch --change`: a `.env` copied there would be one `git add -A` from a commit
         (self.wt / ".gitignore").write_text("", encoding="utf-8")
         copied, skipped = self.copy([".env"])
         self.assertEqual(copied, [])
@@ -244,7 +244,7 @@ class ReviewWorktree(ReviewCase):
         ignore_env(self.repo_dirs["React"])
         (self.repo_dirs["React"] / ".env").write_text("TOKEN=abc", encoding="utf-8")
         rid = self.start_single()
-        out = self.ok("run", "branch", rid, "React", "--mr", "669")
+        out = self.ok("run", "branch", rid, "React", "--change", "669")
         self.assertIn("copied from main checkout: .env", out)
         wt = Path(core.run_load(rid)["repos"]["React"]["worktree"])
         self.assertEqual((wt / ".env").read_text(encoding="utf-8"), "TOKEN=abc")

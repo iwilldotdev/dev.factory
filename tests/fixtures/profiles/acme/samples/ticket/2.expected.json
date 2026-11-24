@@ -1,0 +1,40 @@
+{
+  "schema": "ticket.v1",
+  "key": "ACME-30",
+  "url": "https://acme.example/browse/ACME-30",
+  "title": "Add export button",
+  "type": "Story",
+  "is_bug": false,
+  "status": "Open",
+  "description_md": "",
+  "unknowns": [
+    {
+      "field": "acceptance_criteria",
+      "reason": "not mapped"
+    },
+    {
+      "field": "labels",
+      "reason": "null"
+    },
+    {
+      "field": "parent",
+      "reason": "null"
+    },
+    {
+      "field": "assignee",
+      "reason": "not mapped"
+    },
+    {
+      "field": "links",
+      "reason": "not mapped"
+    },
+    {
+      "field": "attachments",
+      "reason": "null"
+    },
+    {
+      "field": "comments",
+      "reason": "not mapped"
+    }
+  ]
+}

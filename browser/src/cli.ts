@@ -81,9 +81,9 @@ async function doCapture(out: string): Promise<Result> {
 
 async function doCompare(out: string): Promise<Result> {
   await mkdir(out, { recursive: true });
-  const figmaPath = required("--figma");
+  const designPath = required("--design");
   const appPath = required("--app");
-  const figma = await readFile(figmaPath);
+  const design = await readFile(designPath);
   const app = await readFile(appPath);
   const copies = optional("--copies")?.split("|").filter(Boolean) ?? [];
   if (copies.length) {
@@ -95,26 +95,26 @@ async function doCompare(out: string): Promise<Result> {
   }
   const masksFile = optional("--masks");
   const masks = masksFile ? (JSON.parse(await readFile(masksFile, "utf8")) as Mask[]) : [];
-  const r = comparePng(figma, app, { maxDiffRatio: optionalNumber("--max-diff-ratio"), masks, fit: args.includes("--fit") });
+  const r = comparePng(design, app, { maxDiffRatio: optionalNumber("--max-diff-ratio"), masks, fit: args.includes("--fit") });
   const artifacts: string[] = [];
   if (r.diffPng) {
     await writeFile(path.join(out, "diff.png"), r.diffPng);
     artifacts.push("diff.png");
   }
-  for (const [src, name] of [[figmaPath, "figma.png"], [appPath, "app.png"]] as const) {
+  for (const [src, name] of [[designPath, "design.png"], [appPath, "app.png"]] as const) {
     if (path.resolve(src) !== path.resolve(path.join(out, name))) await copyFile(src, path.join(out, name));
     artifacts.push(name);
   }
-  const details: Record<string, unknown> = { reason: r.reason, width: r.width, height: r.height, mismatchedPixels: r.mismatchedPixels, diffRatio: r.diffRatio, figmaSize: r.figmaSize, appSize: r.appSize };
+  const details: Record<string, unknown> = { reason: r.reason, width: r.width, height: r.height, mismatchedPixels: r.mismatchedPixels, diffRatio: r.diffRatio, designSize: r.designSize, appSize: r.appSize };
   let summary: string;
   if (r.status === "pass") summary = `diffRatio ${r.diffRatio?.toFixed(4)} <= ${optionalNumber("--max-diff-ratio") ?? 0.002}`;
-  else if (r.reason === "size") summary = `size mismatch: figma ${r.figmaSize?.join("x")} vs app ${r.appSize?.join("x")}`;
+  else if (r.reason === "size") summary = `size mismatch: design ${r.designSize?.join("x")} vs app ${r.appSize?.join("x")}`;
   else if (r.reason === "pixel-diff") summary = `diffRatio ${r.diffRatio?.toFixed(4)} > ${optionalNumber("--max-diff-ratio") ?? 0.002}`;
   else summary = `compare failed: ${r.reason}`;
   return { status: r.status, summary, artifacts, details };
 }
 
-type MapEntry = { id: string; selector: string; expect: Expect; tolerance_px?: number };
+type MapEntry = { id: string; selector: string; expect: Expect; tolerance_px?: number; color_delta_e?: number; font_size_px?: number };
 
 async function doProbe(out: string): Promise<Result> {
   const map = JSON.parse(await readFile(required("--map"), "utf8")) as { node?: string; entries: MapEntry[] };
@@ -163,7 +163,7 @@ async function doProbe(out: string): Promise<Result> {
           gap: cs.columnGap, width: r.width, height: r.height, opacity: cs.opacity,
         };
       });
-      const props = compareStyles(e.expect ?? {}, actual as Record<string, unknown>, e.tolerance_px ?? 1);
+      const props = compareStyles(e.expect ?? {}, actual as Record<string, unknown>, e.tolerance_px ?? 1, { colorDeltaE: e.color_delta_e, fontSizePx: e.font_size_px });
       const ok = props.length > 0 && props.every((p) => p.ok);
       entries.push({ id: e.id, selector: e.selector, ok, props, ...(props.length === 0 ? { note: "no expected properties" } : {}) });
       found.push(e.selector);

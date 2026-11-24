@@ -4,7 +4,7 @@ A run that touches UI must record the user's answer to "do you want screenshots?
 (`factory run decide <run> "<answer>" --by user --user-said "<gist>" --visual yes|no`). With `yes`:
 every touched UI repo needs a `screenshot` check; bug runs also need `BEFORE-<check>` evidence captured on
 the merge-base (`prove --repro --assume-env`); the after image is the check's normal evidence at HEAD.
-`ship plan` lists before/after images in ship-plan.json and in each MR description.
+`ship plan` lists before/after images in ship-plan.json and in each change description.
 """
 
 from __future__ import annotations
@@ -235,7 +235,7 @@ def gallery(run_id: str, run: dict, alias: str | None = None, target: str | None
 
 
 def description_lines(run: dict, alias: str, target: str | None) -> list[str]:
-    """`## Visual evidence` section of an MR description (empty when the run has no screenshot checks for alias)."""
+    """`## Visual evidence` section of a change description (empty when the run has no screenshot checks for alias)."""
     items = gallery(run["id"], run, alias, target)
     if not items:
         return []

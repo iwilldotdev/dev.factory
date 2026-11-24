@@ -94,8 +94,8 @@ class LoginUserTests(unittest.TestCase):
     def ctx(self, login_user=None):
         run_dir = Path(self.tmp.name) / "run"
         (run_dir / "checks").mkdir(parents=True, exist_ok=True)
-        (run_dir / "figma").mkdir(exist_ok=True)
-        (run_dir / "figma" / "1-2.png").write_bytes(b"png")
+        from tests.design_support import write_frame_files
+        write_frame_files(run_dir, "1:2")
         (run_dir / "checks" / "a.spec.ts").write_text("x")
         (run_dir / "checks" / "map.json").write_text("{}")
         out = run_dir / "evidence" / "CHK-1"

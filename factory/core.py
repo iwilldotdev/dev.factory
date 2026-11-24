@@ -25,7 +25,7 @@ SCHEMA_VERSION = 1
 
 
 class FactoryError(Exception):
-    """Usage or configuration error (exit 2). `fetch` lists dev.mcp calls that would fix it."""
+    """Usage or configuration error (exit 2). `fetch` lists the fetch items (raw files to save) that would fix it."""
 
     def __init__(self, *args, fetch: list[dict] | None = None):
         super().__init__(*args)
@@ -64,22 +64,16 @@ def fwd(path: Any) -> str:
 
 
 def abs_path(path: Path) -> str:
-    """Absolute path with forward slashes, for dev.mcp `save_to`."""
+    """Absolute path with forward slashes, for save destinations."""
     return fwd(Path(path).expanduser().absolute())
 
 
-def fetch_item(tool: str, **args: Any) -> dict:
-    """A ready-to-use dev.mcp call: {tool, args}. save_to is always absolute, forward slashes."""
-    return {"tool": tool, "args": args}
-
-
 def fetch_call(item: dict) -> str:
-    """`tool k=v k=v` line for chat/terminal."""
-    parts = [item["tool"]]
-    for key, val in item["args"].items():
-        text = str(val).lower() if isinstance(val, bool) else str(val)
-        parts.append(f'{key}="{text}"' if re.search(r"\s", text) else f"{key}={text}")
-    return " ".join(parts)
+    """Line for chat/terminal from a fetch item `{kind, id, raw_path, hint}`: `kind id -> raw_path | hint` (the hint
+    comes from the profile), plus `; then: <ingest command>` when the item carries one."""
+    hint = item.get("hint") or "no hint in the profile: fetch it with any tool and save the raw payload at that path"
+    line = f"{item['kind']} {item['id']} -> {item['raw_path']} | {hint}"
+    return line + (f" ; then: {item['ingest']}" if item.get("ingest") else "")
 
 
 def dedupe_fetch(items: list[dict]) -> list[dict]:
@@ -88,11 +82,6 @@ def dedupe_fetch(items: list[dict]) -> list[dict]:
         if it not in out:
             out.append(it)
     return out
-
-
-def node_file(node_id: str) -> str:
-    """Figma node id '3544:5710' -> '3544-5710' (pack file stem)."""
-    return node_id.replace(":", "-")
 
 
 # ---------- time / json ----------
@@ -146,6 +135,15 @@ def repo_conf(workspace: dict, alias: str) -> dict:
         if repo.get("alias") == alias or repo.get("name") == alias:
             return repo
     raise FactoryError(f"repo {alias!r} not in workspace {workspace.get('name')}")
+
+
+def repo_for_project(workspace: dict, scm_project: str) -> dict | None:
+    """The workspace repo whose `scm_project` is `scm_project` (case-insensitive), or None."""
+    want = str(scm_project or "").strip().lower()
+    for repo in workspace.get("repos", []):
+        if want and str(repo.get("scm_project") or "").strip().lower() == want:
+            return repo
+    return None
 
 
 # ---------- runs ----------
@@ -471,7 +469,7 @@ def target_branch(workspace: dict, alias: str, target: str | None) -> str | None
 
 
 def run_base_branch(run: dict, workspace: dict, alias: str) -> str:
-    """Git branch the run's repo was branched from. `base` holds a logical target, except in review runs (a real MR branch)."""
+    """Git branch the run's repo was branched from. `base` holds a logical target, except in review runs (a real change branch)."""
     base = (run.get("repos") or {}).get(alias, {}).get("base", "main")
     return base if run.get("kind", "ticket") == "review" else target_branch(workspace, alias, base)
 

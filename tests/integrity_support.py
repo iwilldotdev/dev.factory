@@ -9,6 +9,7 @@ from pathlib import Path
 
 from factory import core
 from tests.real_support import RealCase, cli, commit_file, sh
+from tests.ticket_support import put_ticket
 
 PY = f'"{sys.executable}"'
 PASS = f'{PY} -c "pass"'
@@ -22,7 +23,7 @@ class IntegrityCase(RealCase):
         self.rid = f"ws-{ticket.lower()}"
         self.ok("run", "branch", self.rid, "React", "--base", "main")
         self.wt = Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
-        core.write_json(self.rd / "remote" / f"issue-{ticket}.json", {"key": ticket})
+        put_ticket(self.rid, ticket)
         return self.rid
 
     @property
@@ -74,10 +75,8 @@ class IntegrityCase(RealCase):
         self.ok("gate", self.rid, "review")
 
     def readbacks(self, plan: dict, sha: str | None = None) -> None:
-        for mr in plan["mrs"]:
-            core.write_json(self.rd / mr["readback"], {
-                "source_branch": mr["source_branch"], "target_branch": mr["target_branch"], "title": mr["title"],
-                "draft": True, "web_url": "http://x/mr/1", "iid": 1, "sha": sha or mr["head_sha"]})
+        from tests.change_support import put_for_plan
+        put_for_plan(self.rid, plan, **({"head_sha": sha} if sha else {}))
 
     def shipped(self) -> dict:
         self.reviewed()

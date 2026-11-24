@@ -14,7 +14,7 @@ test("different dimensions fail before pixel comparison", () => {
   const result = comparePng(solidPng(8, 8, [0, 0, 0, 255]), solidPng(9, 8, [0, 0, 0, 255]));
   assert.equal(result.status, "fail");
   assert.equal(result.reason, "size");
-  assert.deepEqual(result.figmaSize, [8, 8]);
+  assert.deepEqual(result.designSize, [8, 8]);
   assert.deepEqual(result.appSize, [9, 8]);
 });
 

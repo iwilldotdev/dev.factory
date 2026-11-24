@@ -1,21 +1,24 @@
-"""Collector `visual`: capture the running app, then pixel-compare against the Figma png."""
+"""Collector `visual`: capture the running app, then pixel-compare against the design frame image."""
 
 from __future__ import annotations
 
 import json
 
-from factory import pngcrop
+from factory import design, pngcrop
 from factory.collectors import browser as b
-from factory.core import Ctx, node_file
+from factory.core import Ctx
 
 
 def collect(check: dict, ctx: Ctx) -> dict:
     url = b.full_url(check, ctx)
     if isinstance(url, dict):
         return url
-    figma = ctx.run_dir / "figma" / f"{node_file(check['node'])}.png"
-    if not figma.is_file():
-        return b._error(f"figma png missing: figma/{figma.name}")
+    node = design.check_node(check)
+    frame = design.read_frame(ctx.run_dir, node) if node else None
+    image = design.frame_image(ctx.run_dir, frame)
+    if image is None:
+        return b._error(f"design image missing for frame {node!r}: no design_frame contract with an existing frame.image "
+                        "(factory design check)")
     adapter = b.adapter_args(check, ctx)
     if isinstance(adapter, dict):
         return adapter
@@ -39,8 +42,8 @@ def collect(check: dict, ctx: Ctx) -> dict:
     if captured["status"] != "pass":
         return b.finish(captured, out, ctx)
 
-    figma = pngcrop.cropped_figma(ctx.run_dir, check["node"], node_file(check["node"]), out) or figma
-    cmp = ["compare", "--figma", str(figma), "--app", str(out / "app.png"), "--out", str(out)]
+    image = pngcrop.cropped_design(ctx.run_dir, frame, out) or image
+    cmp = ["compare", "--design", str(image), "--app", str(out / "app.png"), "--out", str(out)]
     if check.get("max_diff_ratio") is not None:
         cmp += ["--max-diff-ratio", str(check["max_diff_ratio"])]
     if check.get("masks"):

@@ -80,10 +80,10 @@ test("capture, compare, style-probe", async (t) => {
   assert.ok(existsSync(path.join(cap, "app.png")));
 
   const cmp = path.join(dir, "cmp");
-  p = await run("compare", "--figma", path.join(cap, "app.png"), "--app", path.join(cap, "app.png"), "--out", cmp, "--copies", "Pay now");
+  p = await run("compare", "--design", path.join(cap, "app.png"), "--app", path.join(cap, "app.png"), "--out", cmp, "--copies", "Pay now");
   assert.equal(p.status, 0, p.stderr);
   assert.equal((await result(cmp)).status, "pass");
-  p = await run("compare", "--figma", path.join(cap, "app.png"), "--app", path.join(cap, "app.png"), "--out", cmp, "--copies", "Nope");
+  p = await run("compare", "--design", path.join(cap, "app.png"), "--app", path.join(cap, "app.png"), "--out", cmp, "--copies", "Nope");
   assert.equal(p.status, 1);
   assert.equal((await result(cmp)).details.reason, "copy");
 

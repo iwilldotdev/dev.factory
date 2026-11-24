@@ -1,8 +1,7 @@
-"""Crop a PNG to the node box, dropping the shadow/blur margin Figma adds to exports."""
+"""Crop a frame image to the node box, dropping the shadow/blur margin a design export adds."""
 
 from __future__ import annotations
 
-import json
 import struct
 import zlib
 from pathlib import Path
@@ -92,52 +91,44 @@ def effect_margins(effects) -> tuple[float, float, float, float]:
     """Left, top, right, bottom extent (design px) that shadows and blurs add around the node."""
     l = t = r = b = 0.0
     for e in effects or []:
-        if not isinstance(e, dict) or e.get("visible") is False:
+        if not isinstance(e, dict):
             continue
         kind = e.get("type")
         rad = float(e.get("radius") or 0)
-        if kind == "DROP_SHADOW":
+        if kind == "drop_shadow":
             sp = float(e.get("spread") or 0)
             off = e.get("offset") or {}
             ox, oy = float(off.get("x") or 0), float(off.get("y") or 0)
             ext = rad + sp
             l, t = max(l, ext - ox), max(t, ext - oy)
             r, b = max(r, ext + ox), max(b, ext + oy)
-        elif kind == "LAYER_BLUR":
+        elif kind == "layer_blur":
             l, t, r, b = max(l, rad), max(t, rad), max(r, rad), max(b, rad)
     return l, t, r, b
 
 
-def _node_entry(doc: dict, node: str) -> dict | None:
-    nodes = doc.get("nodes")
-    if isinstance(nodes, list):
-        for n in nodes:
-            if isinstance(n, dict) and n.get("id") == node:
-                return n
-        return nodes[0] if nodes and isinstance(nodes[0], dict) else None
-    return doc if isinstance(doc, dict) else None
-
-
-def node_crop_box(doc: dict, node: str, png_w: int, png_h: int):
-    """Box (x, y, w, h) in png pixels of the node inside its export, or None to leave the image alone."""
-    n = _node_entry(doc, node)
-    if not n:
+def node_crop_box(doc: dict, png_w: int, png_h: int):
+    """Box (x, y, w, h) in png pixels of the frame's root node inside its image, or None to leave the image alone.
+    `doc` is a design_frame contract: `root.box`, `root.render_box` and `root.effects` drive the crop."""
+    n = doc.get("root") if isinstance(doc, dict) else None
+    if not isinstance(n, dict):
         return None
-    bbox = n.get("absoluteBoundingBox")
-    rbox = n.get("absoluteRenderBounds")
-    if isinstance(bbox, dict) and isinstance(rbox, dict) and rbox.get("width") and rbox.get("height"):
-        scale = png_w / float(rbox["width"])
-        x = (bbox["x"] - rbox["x"]) * scale
-        y = (bbox["y"] - rbox["y"]) * scale
-        w, h = bbox["width"] * scale, bbox["height"] * scale
+    box = n.get("box") if isinstance(n.get("box"), dict) else None
+    rbox = n.get("render_box") if isinstance(n.get("render_box"), dict) else None
+    if not box:
+        return None
+    if rbox and rbox.get("w") and rbox.get("h"):
+        scale = png_w / float(rbox["w"])
+        x = (box["x"] - rbox["x"]) * scale
+        y = (box["y"] - rbox["y"]) * scale
+        w, h = box["w"] * scale, box["h"] * scale
     else:
-        size = n.get("size") or {}
-        nw, nh = size.get("width"), size.get("height")
+        nw, nh = box.get("w"), box.get("h")
         if not nw or not nh:
             return None
         if abs(png_w - nw) <= 1 and abs(png_h - nh) <= 1:
             return None
-        l, t, r, b = effect_margins((n.get("visual") or {}).get("effects") or n.get("effects"))
+        l, t, r, b = effect_margins(n.get("effects"))
         if not (l or t or r or b):
             return None
         scale = png_w / (nw + l + r)
@@ -152,17 +143,20 @@ def node_crop_box(doc: dict, node: str, png_w: int, png_h: int):
     return x, y, w, h
 
 
-def cropped_figma(run_dir: Path, node: str, stem: str, out: Path) -> Path | None:
-    """Write `out/figma-cropped.png` when the export carries an effects margin; None keeps the original."""
+def cropped_design(run_dir: Path, doc: dict, out: Path) -> Path | None:
+    """Write `out/design-cropped.png` when the frame image carries an effects margin; None keeps the original.
+    The image is the one `doc.frame.image.path` names (a design_frame contract)."""
+    rel = (((doc or {}).get("frame") or {}).get("image") or {}).get("path")
+    if not isinstance(rel, str):
+        return None
     try:
-        doc = json.loads((run_dir / "figma" / f"{stem}.json").read_text(encoding="utf-8"))
-        data = (run_dir / "figma" / f"{stem}.png").read_bytes()
-    except (OSError, ValueError):
+        data = (run_dir / rel).read_bytes()
+    except OSError:
         return None
     dims = png_dims(data)
     if not dims or not isinstance(doc, dict):
         return None
-    box = node_crop_box(doc, node, *dims)
+    box = node_crop_box(doc, *dims)
     if not box:
         return None
     try:
@@ -173,6 +167,6 @@ def cropped_figma(run_dir: Path, node: str, stem: str, out: Path) -> Path | None
     except (zlib.error, struct.error, IndexError):
         return None
     out.mkdir(parents=True, exist_ok=True)
-    target = out / "figma-cropped.png"
+    target = out / "design-cropped.png"
     target.write_bytes(res)
     return target

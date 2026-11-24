@@ -45,10 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _print_fetch(items: list[dict], stream) -> None:
-    """Ready-to-run dev.mcp calls for missing remote files (save_to is absolute, forward slashes)."""
+    """Fetch lines for missing remote files (absolute paths, forward slashes)."""
     if not items:
         return
-    print("fetch (run each dev.mcp call as-is; do not paste or rewrite the payload):", file=stream)
+    print("fetch (save each payload at its path as-is, then `factory ingest`; do not paste or rewrite it):", file=stream)
     for item in items:
         print(f"FETCH {fetch_call(item)}", file=stream)
 

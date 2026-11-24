@@ -324,11 +324,11 @@ class BatchStatusTests(FactoryCase):
                       phase=phase, **over)
 
     def test_review_batch(self):
-        mr = {"repo": "React", "iid": 7}
-        self.child("ws-dev-1", "DEV-1", "blocked", kind="review", mrs=[mr], parent="ws-rb",
+        change = {"repo": "React", "number": 7}
+        self.child("ws-dev-1", "DEV-1", "blocked", kind="review", changes=[change], parent="ws-rb",
                    blockers=[{"kind": "env", "text": "x", "resolved": False}],
                    sessions=[{"session": "abcdef123456", "claimed_at": core.now(), "pid": 1}])
-        self.child("ws-dev-2", "DEV-2", "done", kind="review", mrs=[{"repo": "Api", "iid": 9}], parent="ws-rb")
+        self.child("ws-dev-2", "DEV-2", "done", kind="review", changes=[{"repo": "Api", "number": 9}], parent="ws-rb")
         self.make_run("ws-rb", kind="review-batch", phase="intake", children=["ws-dev-1", "ws-dev-2"])
         self.write("runs/ws-dev-1/acs.json", {"acs": [], "checks": [
             {"id": "CHK-1", "type": "human"}, {"id": "CHK-2", "type": "human"}, {"id": "CHK-3", "type": "test"}]})
@@ -339,16 +339,16 @@ class BatchStatusTests(FactoryCase):
         self.assertEqual(rc, 0, out)
         rows = {r["id"]: r for r in json.loads(out)["children"]}
         a = rows["ws-dev-1"]
-        self.assertEqual((a["key"], a["phase"], a["review_mrs"], a["open_blockers"]), ("DEV-1", "blocked", ["React!7"], 1))
+        self.assertEqual((a["key"], a["phase"], a["review_changes"], a["open_blockers"]), ("DEV-1", "blocked", ["React#7"], 1))
         self.assertEqual(a["open_human_checks"], 1)
         self.assertEqual(a["owner"], "abcdef12")
         self.assertEqual(a["lease"], "ws-dev-2")
         self.assertIn("resolve blockers", a["next"])
-        self.assertEqual(rows["ws-dev-2"]["review_mrs"], ["Api!9"])
+        self.assertEqual(rows["ws-dev-2"]["review_changes"], ["Api#9"])
         self.assertEqual(rows["ws-dev-2"]["open_human_checks"], 0)
         self.assertIsNone(rows["ws-dev-2"]["owner"])
         rc, out = cli("batch", "status", "ws-rb")
-        self.assertIn("React!7", out)
+        self.assertIn("React#7", out)
 
     def test_epic_and_lease_absent(self):
         self.child("ws-dev-1", "DEV-1", "done", parent="ws-ep")
@@ -364,7 +364,7 @@ class BatchStatusTests(FactoryCase):
         rc, out = cli("--json", "epic", "status", "ws-ep")
         self.assertEqual(rc, 0, out)
         erows = json.loads(out)["children"]
-        self.assertEqual(sorted(erows[0]), ["depends_on", "id", "key", "loops", "mrs", "open_blockers", "phase", "ready", "wave"])
+        self.assertEqual(sorted(erows[0]), ["changes", "depends_on", "id", "key", "loops", "open_blockers", "phase", "ready", "wave"])
         self.assertEqual(json.loads(out)["ready"], ["DEV-2"])
 
     def test_rejects_other_kinds(self):

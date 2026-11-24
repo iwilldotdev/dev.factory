@@ -71,7 +71,7 @@ class RealCase(unittest.TestCase):
         assert rc == 0, out
         ws = core.workspace_load("ws")
         ws["worktree_root"] = str(self.tmp / "wt")
-        ws["ship"] = {"targets": ["main"], "draft_default": True, "jira_comment": "mr-links"}
+        ws["ship"] = {"targets": ["main"], "draft_default": True, "ticket_comment": "change-links"}
         ws["commit"] = {"header_regex": r"^\[[^\]]+\] - .+", "forbidden_trailers": []}
         self.repo_dirs = {}
         for i, alias in enumerate(self.repos, 1):

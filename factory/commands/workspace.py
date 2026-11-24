@@ -7,8 +7,14 @@ import re
 import string
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+from .. import design, profiles as _profiles
 from ..core import (SCHEMA_VERSION, url_origin, FactoryError, GateFailed, factory_home, read_json, secrets_path,
                     workspace_load, workspace_path, write_json)
+
+TICKET_MODES = ("none", "comment", "transition", "comment+transition")
+SHIP_KEYS = ("targets", "draft_default", "title_format", "ticket_mode", "ticket_comment", "ticket_transition",
+             "reviewers", "hotfix", "package", "pipeline_watch")
+REVIEWER_KEYS = ("scm_user", "ticket_user", "name", "email")
 
 DEFAULT_AUTONOMY = {"ship": "ask", "max_build_loops": 3, "max_review_rounds": 2, "max_replans": 2}
 
@@ -19,7 +25,7 @@ def _skeleton(name: str) -> dict:
         "name": name,
         "worktree_root": "",
         "repos": [],
-        "ship": {"targets": [], "draft_default": True},
+        "ship": {"targets": [], "draft_default": True, "ticket_mode": "comment+transition"},
         "commit": {"header_regex": None, "forbidden_trailers": []},
         "autonomy": dict(DEFAULT_AUTONOMY),
         "limits": {"max_diff_ratio": 0.03, "max_tolerance_px": 2},
@@ -56,7 +62,7 @@ def convert_profile(name: str, profile: dict) -> dict:
             "alias": repo["alias"],
             "name": repo.get("name") or repo["alias"],
             "order": repo.get("order", idx),
-            "gitlab_project": repo.get("gitlab_project"),
+            "scm_project": repo.get("scm_project"),
             "path": "",
             "quality": {},
             "env": {},
@@ -336,6 +342,56 @@ def hotfix_config_errors(ws: dict) -> list[str]:
     return errors
 
 
+def ship_config_errors(ws: dict) -> list[str]:
+    """Neutral delivery keys: ship.{targets,draft_default,title_format,ticket_mode,ticket_comment,ticket_transition,
+    reviewers[{scm_user,ticket_user}],pipeline_watch}, epics[].ticket_transition, repos[].scm_project, scm_user."""
+    errors: list[str] = []
+    ship = ws.get("ship")
+    if ship is not None and not isinstance(ship, dict):
+        return ["ship must be an object"]
+    ship = ship or {}
+    for key in ship:
+        if key not in SHIP_KEYS:
+            errors.append(f"ship.{key}: unknown key (known: {', '.join(SHIP_KEYS)})")
+    if ship.get("ticket_mode") is not None and ship["ticket_mode"] not in TICKET_MODES:
+        errors.append(f"ship.ticket_mode must be one of: {', '.join(TICKET_MODES)}")
+    if ship.get("ticket_comment") not in (None, "change-links"):
+        errors.append("ship.ticket_comment must be \"change-links\" (or absent)")
+    if ship.get("ticket_transition") is not None and not isinstance(ship["ticket_transition"], str):
+        errors.append("ship.ticket_transition must be a status name (string) or null")
+    for flag in ("draft_default", "pipeline_watch"):
+        if flag in ship and not isinstance(ship[flag], bool):
+            errors.append(f"ship.{flag} must be true or false")
+    if ship.get("title_format"):
+        from .ship import TITLE_FIELDS, validate_title_format
+        try:
+            validate_title_format(str(ship["title_format"]), TITLE_FIELDS)
+        except FactoryError as err:
+            errors.append(str(err))
+    reviewers = ship.get("reviewers") or []
+    if not isinstance(reviewers, list):
+        errors.append("ship.reviewers must be an array of scm user ids or {scm_user, ticket_user}")
+    else:
+        for i, item in enumerate(reviewers):
+            if isinstance(item, str):
+                continue
+            if not isinstance(item, dict) or not item.get("scm_user"):
+                errors.append(f"ship.reviewers[{i}] needs scm_user (a ticket identity alone cannot be a change reviewer)")
+            else:
+                for k in item:
+                    if k not in REVIEWER_KEYS:
+                        errors.append(f"ship.reviewers[{i}].{k}: unknown key (known: {', '.join(REVIEWER_KEYS)})")
+    for i, epic in enumerate(ws.get("epics") or []):
+        if isinstance(epic, dict) and epic.get("ticket_transition") is not None and not isinstance(epic["ticket_transition"], str):
+            errors.append(f"epics[{i}].ticket_transition must be a status name (string) or null")
+    for repo in ws.get("repos") or []:
+        if isinstance(repo, dict) and repo.get("scm_project") is not None and not isinstance(repo["scm_project"], str):
+            errors.append(f"{repo.get('alias') or '?'}: scm_project must be a string")
+    if ws.get("scm_user") is not None and not isinstance(ws["scm_user"], str):
+        errors.append("scm_user must be a string")
+    return errors
+
+
 def known_targets(ws: dict) -> set[str]:
     """Logical targets of the workspace: `ship.targets` plus the hotfix base and mirrors."""
     ship = ws.get("ship") or {}
@@ -494,10 +550,22 @@ def check_workspace(ws: dict) -> list[str]:
     missing.extend(_ref_errors(ws))
     if "browser_batch" in (ws.get("limits") or {}) and not isinstance(ws["limits"]["browser_batch"], bool):
         missing.append("limits.browser_batch must be true or false")
+    approx = (ws.get("limits") or {}).get("approx")
+    if approx is not None:
+        if not isinstance(approx, dict):
+            missing.append("limits.approx must be an object (px, color_delta_e, font_size_px, max_diff_ratio)")
+        else:
+            for k, v in approx.items():
+                if k not in design.APPROX_DEFAULTS:
+                    missing.append(f"limits.approx.{k}: unknown (known: {', '.join(design.APPROX_DEFAULTS)})")
+                elif isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                    missing.append(f"limits.approx.{k} must be a number >= 0")
+    missing.extend(ship_config_errors(ws))
     missing.extend(hotfix_config_errors(ws))
     missing.extend(target_branches_errors(ws))
     missing.extend(target_paths_errors(ws))
     missing.extend(orchestration_config_errors(ws))
+    missing.extend(_profiles.provider_errors(ws))
     for rule in ws.get("rules", []):
         if not rule.get("id") or not isinstance(rule.get("check"), dict):
             missing.append(f"rule needs id and check: {rule}")

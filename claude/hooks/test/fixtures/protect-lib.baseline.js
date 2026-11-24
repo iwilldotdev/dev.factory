@@ -11,11 +11,11 @@
 const os = require('os');
 
 const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md']);
-const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
-// Written by the author worker during intake/plan (and the Figma pack by MCP save_to);
+const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline', 'contracts']);
+// Written by the author worker during intake/plan (raw payloads under raw/ are free for MCP saves);
 // denied to builder/auditor/scout and to shell writes. The CLI's plan-lock hashes catch later edits.
 const OWNED_FILES = new Set(['acs.json', 'diagnosis.md']);
-const OWNED_DIRS = new Set(['checks', 'figma']);
+const OWNED_DIRS = new Set(['checks', 'design']);
 // runs/_inbox/<session>/...: scratch for scouts that have no run yet (not a run; nothing CLI-owned in it).
 const INBOX = '_inbox';
 const CONFIG = { homeRaw: '' };
@@ -76,7 +76,7 @@ function relToRuns(p, home) {
   return p.startsWith(prefix) ? p.slice(prefix.length) : null;
 }
 
-/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, figma/** (author-written). */
+/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, design/** (author-written). */
 function isAuthorOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
@@ -156,7 +156,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|contracts|checks|design)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -298,7 +298,7 @@ const WRITE_VERBS = new RegExp(
 // `.factory` only as a path segment (e.g. ~/.factory, C:\Users\x\.factory), never inside a name like `dev.factory`.
 const INTERP_REFS = /factory_home|(?:^|[^\w.-])\.factory(?=[\\/\s'"]|$)|process\.env|os\.environ|getenv|\$env:|%factory/i;
 const SCRIPT_FILE = /\.(?:py|pyw|js|mjs|cjs|ts|rb|pl|ps1|php|lua)$/i;
-const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|acs\.json|checks|figma|diagnosis\.md)/;
+const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|contracts|acs\.json|checks|design|diagnosis\.md)/;
 
 function runsMention(text, home) {
   const t = expandVars(text).replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
@@ -340,7 +340,7 @@ function inlineInterpreter(words) {
 
 // Any write call in a code blob: the "writes files" signature (combined with a protected name below).
 const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
-const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
+const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|contracts|checks|design)\b/i;
 // The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
 const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
 

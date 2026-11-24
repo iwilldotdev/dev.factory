@@ -11,6 +11,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
 
 from real_support import RealCase, cli, commit_file, core, sh
+from tests.ticket_support import put_ticket
 
 
 class UiBugCase(RealCase):
@@ -25,7 +26,7 @@ class UiBugCase(RealCase):
         self.ok("run", "start", "ws", "BUG-1", "--bug", "BUG-1")
         self.ok("run", "branch", self.rid, "React", "--base", "main")
         self.wt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
-        core.write_json(core.run_dir(self.rid) / "remote" / "issue-BUG-1.json", {"key": "BUG-1"})
+        put_ticket(self.rid, "BUG-1", type="Bug", is_bug=True)
         (core.run_dir(self.rid) / "checks" / "browser").mkdir(parents=True)
         core.write_json(core.run_dir(self.rid) / "acs.json", {"schemaVersion": 1, "acs": [
             {"id": "AC-1", "ticket": "BUG-1", "text": "button works", "kind": "bug", "checks": ["CHK-1"]}],

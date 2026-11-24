@@ -1,0 +1,674 @@
+{
+  "schema": "profile.v1",
+  "name": "acme",
+  "role": [
+    "tickets",
+    "scm",
+    "design"
+  ],
+  "refs": {
+    "ticket_key": "(?P<key>[A-Z][A-Z0-9]*-\\d+)",
+    "ticket_url": "https://acme\\.example/browse/(?P<key>[A-Z][A-Z0-9]*-\\d+)",
+    "change_url": "https://scm\\.example/(?P<project>.+?)/changes/(?P<number>\\d+)"
+  },
+  "hints": {
+    "ticket": "acme-cli ticket get {key} --out {raw_path}",
+    "change": "acme-cli change get {scm_project} {number} --with threads,approvals --out {raw_path}",
+    "change_list": "acme-cli change list {scm_project} --state open --out {raw_path}",
+    "pipeline": "acme-cli ci get {scm_project} {id} --out {raw_path}; jobs: acme-cli ci jobs {scm_project} {id} --out {raw_path}.jobs",
+    "design_frame": "acme-cli design node {file} {id} --out {raw_path}",
+    "design_image": "acme-cli design render {file} {id} --scale 1 --out {raw_path}"
+  },
+  "kinds": {
+    "ticket": {
+      "ext": "json",
+      "map": {
+        "key": {
+          "path": "id"
+        },
+        "url": {
+          "concat": [
+            "https://acme.example/browse/",
+            {
+              "path": "id"
+            }
+          ]
+        },
+        "title": {
+          "path": "head.title"
+        },
+        "type": {
+          "path": "head.kind"
+        },
+        "is_bug": {
+          "in": [
+            {
+              "lower": {
+                "path": "head.kind"
+              }
+            },
+            [
+              "bug",
+              "defect"
+            ]
+          ]
+        },
+        "status": {
+          "path": "head.state.name"
+        },
+        "description_md": {
+          "coalesce": [
+            {
+              "text_from_tree": {
+                "of": {
+                  "path": "body"
+                },
+                "config": {
+                  "text_node": "text",
+                  "text_key": "value",
+                  "children_key": "nodes",
+                  "block": {
+                    "paragraph": "p",
+                    "bullet_list": "ul",
+                    "list_item": "li"
+                  },
+                  "unknown_node": "descend"
+                }
+              }
+            },
+            {
+              "lit": ""
+            }
+          ]
+        },
+        "labels": {
+          "path": "head.tags"
+        },
+        "parent": {
+          "object": {
+            "key": {
+              "path": "head.parent.id"
+            }
+          }
+        },
+        "attachments": {
+          "each": {
+            "over": {
+              "path": "files"
+            },
+            "map": {
+              "object": {
+                "id": {
+                  "path": "@.id"
+                },
+                "name": {
+                  "path": "@.name"
+                },
+                "mime": {
+                  "lower": {
+                    "path": "@.mime"
+                  }
+                },
+                "url": {
+                  "path": "@.href"
+                }
+              }
+            }
+          }
+        }
+      },
+      "optional": [
+        "url",
+        "labels",
+        "parent",
+        "attachments",
+        "acceptance_criteria"
+      ]
+    },
+    "change": {
+      "ext": "json",
+      "map": {
+        "repo": {
+          "path": "$ctx.repo"
+        },
+        "number": {
+          "to_int": {
+            "path": "n"
+          }
+        },
+        "url": {
+          "path": "link"
+        },
+        "project": {
+          "path": "proj"
+        },
+        "title": {
+          "regex_sub": [
+            {
+              "path": "title"
+            },
+            "^(?i:draft:\\s*)",
+            ""
+          ]
+        },
+        "description_md": {
+          "coalesce": [
+            {
+              "path": "text"
+            },
+            {
+              "lit": ""
+            }
+          ]
+        },
+        "source_branch": {
+          "path": "from"
+        },
+        "target_branch": {
+          "path": "into"
+        },
+        "head_sha": {
+          "path": "tip"
+        },
+        "state": {
+          "enum": {
+            "of": {
+              "path": "status"
+            },
+            "map": {
+              "OPEN": "open",
+              "DONE": "merged",
+              "DROPPED": "closed"
+            }
+          }
+        },
+        "draft": {
+          "any": [
+            {
+              "to_bool": {
+                "path": "wip"
+              }
+            },
+            {
+              "regex": [
+                {
+                  "lower": {
+                    "path": "title"
+                  }
+                },
+                "^draft:"
+              ]
+            }
+          ]
+        },
+        "reviewers": {
+          "each": {
+            "over": {
+              "path": "reviewers"
+            },
+            "map": {
+              "path": "@.login"
+            }
+          }
+        },
+        "approvals": {
+          "object": {
+            "known": {
+              "exists": {
+                "path": "approvals"
+              }
+            },
+            "by": {
+              "each": {
+                "over": {
+                  "path": "approvals[*]"
+                },
+                "map": {
+                  "path": "@.login"
+                }
+              }
+            }
+          }
+        },
+        "threads": {
+          "each": {
+            "over": {
+              "path": "threads"
+            },
+            "map": {
+              "object": {
+                "id": {
+                  "path": "@.id"
+                },
+                "resolved": {
+                  "to_bool": {
+                    "path": "@.closed"
+                  }
+                },
+                "resolvable": {
+                  "to_bool": {
+                    "path": "@.can_close"
+                  }
+                },
+                "system": {
+                  "lit": false
+                },
+                "notes": {
+                  "each": {
+                    "over": {
+                      "path": "@.msgs"
+                    },
+                    "map": {
+                      "object": {
+                        "author": {
+                          "path": "@.by"
+                        },
+                        "body_md": {
+                          "path": "@.text"
+                        },
+                        "system": {
+                          "to_bool": {
+                            "path": "@.auto"
+                          }
+                        },
+                        "path": {
+                          "path": "@.file"
+                        },
+                        "line": {
+                          "to_int": {
+                            "path": "@.line"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "pipelines": {
+          "each": {
+            "over": {
+              "path": "ci"
+            },
+            "map": {
+              "object": {
+                "id": {
+                  "path": "@.id"
+                },
+                "sha": {
+                  "path": "@.sha"
+                },
+                "status": {
+                  "enum": {
+                    "of": {
+                      "path": "@.state"
+                    },
+                    "map": {
+                      "ok": "success",
+                      "bad": "failed",
+                      "run": "running",
+                      "wait": "pending"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "optional": [
+        "project",
+        "reviewers",
+        "threads",
+        "pipelines",
+        "author"
+      ]
+    },
+    "change_list": {
+      "ext": "json",
+      "map": {
+        "items": {
+          "each": {
+            "over": {
+              "path": "results[*]"
+            },
+            "map": {
+              "object": {
+                "repo": {
+                  "path": "$ctx.repo"
+                },
+                "number": {
+                  "to_int": {
+                    "path": "@.n"
+                  }
+                },
+                "url": {
+                  "path": "@.link"
+                },
+                "project": {
+                  "path": "@.proj"
+                },
+                "author": {
+                  "path": "@.by"
+                },
+                "title": {
+                  "path": "@.title"
+                },
+                "description_md": {
+                  "coalesce": [
+                    {
+                      "path": "@.text"
+                    },
+                    {
+                      "lit": ""
+                    }
+                  ]
+                },
+                "source_branch": {
+                  "path": "@.from"
+                },
+                "target_branch": {
+                  "path": "@.into"
+                },
+                "head_sha": {
+                  "path": "@.tip"
+                },
+                "state": {
+                  "enum": {
+                    "of": {
+                      "path": "@.status"
+                    },
+                    "map": {
+                      "OPEN": "open",
+                      "DONE": "merged",
+                      "DROPPED": "closed"
+                    }
+                  }
+                },
+                "draft": {
+                  "to_bool": {
+                    "path": "@.wip"
+                  }
+                },
+                "approvals": {
+                  "object": {
+                    "known": {
+                      "exists": {
+                        "path": "@.approvals"
+                      }
+                    },
+                    "by": {
+                      "each": {
+                        "over": {
+                          "path": "@.approvals[*]"
+                        },
+                        "map": {
+                          "path": "@.login"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "pipeline": {
+      "ext": "json",
+      "inputs": [
+        "main",
+        "jobs?"
+      ],
+      "map": {
+        "id": {
+          "path": "id"
+        },
+        "url": {
+          "path": "web"
+        },
+        "sha": {
+          "path": "commit"
+        },
+        "status": {
+          "enum": {
+            "of": {
+              "path": "state"
+            },
+            "map": {
+              "ok": "success",
+              "bad": "failed",
+              "run": "running",
+              "wait": "pending",
+              "stop": "canceled"
+            }
+          }
+        },
+        "jobs": {
+          "each": {
+            "over": {
+              "path": "$jobs.items"
+            },
+            "map": {
+              "object": {
+                "id": {
+                  "path": "@.id"
+                },
+                "name": {
+                  "path": "@.name"
+                },
+                "stage": {
+                  "path": "@.stage"
+                },
+                "status": {
+                  "enum": {
+                    "of": {
+                      "path": "@.state"
+                    },
+                    "map": {
+                      "ok": "success",
+                      "bad": "failed",
+                      "run": "running",
+                      "wait": "pending",
+                      "stop": "canceled",
+                      "skip": "skipped"
+                    }
+                  }
+                },
+                "allow_failure": {
+                  "to_bool": {
+                    "path": "@.soft"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "design_frame": {
+      "ext": "json",
+      "fidelity": "exact",
+      "map": {
+        "frame": {
+          "object": {
+            "id": {
+              "path": "id"
+            },
+            "name": {
+              "path": "name"
+            }
+          }
+        },
+        "source": {
+          "object": {
+            "file": {
+              "path": "$ctx.file"
+            },
+            "version": {
+              "path": "rev"
+            }
+          }
+        },
+        "root": {
+          "tree": {
+            "root": {
+              "path": "node"
+            },
+            "children": "kids",
+            "map": {
+              "object": {
+                "id": {
+                  "path": "@.id"
+                },
+                "name": {
+                  "path": "@.name"
+                },
+                "type": {
+                  "enum": {
+                    "of": {
+                      "path": "@.kind"
+                    },
+                    "map": {
+                      "FRAME": "frame",
+                      "TEXT": "text",
+                      "RECT": "shape",
+                      "IMG": "image"
+                    },
+                    "default": "other"
+                  }
+                },
+                "visible": {
+                  "coalesce": [
+                    {
+                      "to_bool": {
+                        "path": "@.visible"
+                      }
+                    },
+                    {
+                      "lit": true
+                    }
+                  ]
+                },
+                "box": {
+                  "object": {
+                    "x": {
+                      "path": "@.bounds.x"
+                    },
+                    "y": {
+                      "path": "@.bounds.y"
+                    },
+                    "w": {
+                      "path": "@.bounds.w"
+                    },
+                    "h": {
+                      "path": "@.bounds.h"
+                    }
+                  }
+                },
+                "render_box": {
+                  "object": {
+                    "x": {
+                      "path": "@.paint_bounds.x"
+                    },
+                    "y": {
+                      "path": "@.paint_bounds.y"
+                    },
+                    "w": {
+                      "path": "@.paint_bounds.w"
+                    },
+                    "h": {
+                      "path": "@.paint_bounds.h"
+                    }
+                  }
+                },
+                "fills": {
+                  "each": {
+                    "over": {
+                      "path": "@.fills[*]"
+                    },
+                    "where": {
+                      "eq": [
+                        {
+                          "path": "@.kind"
+                        },
+                        {
+                          "lit": "solid"
+                        }
+                      ]
+                    },
+                    "map": {
+                      "object": {
+                        "type": {
+                          "lit": "solid"
+                        },
+                        "color": {
+                          "path": "@.hex"
+                        },
+                        "opacity": {
+                          "coalesce": [
+                            {
+                              "to_float": {
+                                "path": "@.alpha"
+                              }
+                            },
+                            {
+                              "lit": 1
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                "corner_radius": {
+                  "to_float": {
+                    "path": "@.radius"
+                  }
+                },
+                "text": {
+                  "object": {
+                    "characters": {
+                      "path": "@.chars"
+                    },
+                    "font_family": {
+                      "path": "@.font.family"
+                    },
+                    "font_size": {
+                      "to_float": {
+                        "path": "@.font.size"
+                      }
+                    },
+                    "font_weight": {
+                      "to_int": {
+                        "path": "@.font.weight"
+                      }
+                    },
+                    "line_height_px": {
+                      "to_float": {
+                        "path": "@.font.lh"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "design_image": {
+      "ext": "png"
+    }
+  },
+  "cli_write_patterns": [
+    "^\\s*acme-cli\\s+(?:ticket|change|ci)\\s+(?:create|edit|comment|approve|merge|transition|retry)\\b"
+  ],
+  "mcp_read_allow": [],
+  "save_args": [
+    "out"
+  ]
+}

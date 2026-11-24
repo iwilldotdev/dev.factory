@@ -19,7 +19,7 @@ class OrchestrationConfigTest(unittest.TestCase):
         self.assertEqual(orchestration_config_errors(ws), [])
 
     def test_bad_orchestration(self):
-        errs = orchestration_config_errors({"orchestration": {"sessions": "yes", "per": "mr", "x": 1}})
+        errs = orchestration_config_errors({"orchestration": {"sessions": "yes", "per": "branch", "x": 1}})
         self.assertTrue(any("sessions must be" in e for e in errs))
         self.assertTrue(any("per must be" in e for e in errs))
         self.assertTrue(any("unknown key" in e for e in errs))

@@ -38,18 +38,12 @@ class CommitAfterProveTests(IntegrityCase):
         self.reviewed()
         plan = json.loads(self.ok("--json", "ship", "plan", self.rid))
         head = core.git_head(self.wt)
-        self.assertEqual(plan["mrs"][0]["head_sha"], head)
+        self.assertEqual(plan["changes"][0]["head_sha"], head)
         self.readbacks(plan, sha="1" * 40)  # someone pushed another commit
         rc, out = cli("ship", "verify", self.rid)
         self.assertEqual(rc, 1)
         self.assertIn("!= proven HEAD", out)
         self.readbacks(plan)
-        self.ok("ship", "verify", self.rid)
-        # diff_refs.head_sha is accepted as the readback sha
-        mr = plan["mrs"][0]
-        core.write_json(self.rd / mr["readback"], {"merge_request": {
-            "source_branch": mr["source_branch"], "target_branch": mr["target_branch"], "title": mr["title"],
-            "draft": True, "iid": 1, "diff_refs": {"head_sha": head}}})
         self.ok("ship", "verify", self.rid)
 
     def test_ship_verify_rejects_branch_moved_after_plan(self):

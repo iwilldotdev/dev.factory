@@ -1,9 +1,9 @@
-"""Ready-to-use dev.mcp calls for files the CLI is missing.
+"""Fetch lines for files the CLI is missing.
 
 The CLI never calls the network. When a gate or command needs a remote file under
-`runs/<id>/`, it prints the exact dev.mcp call (tool + args, `save_to` absolute with
-forward slashes, `overwrite: true`) so an agent runs it as-is and the payload never
-passes through the model. Unknown values stay as `<placeholders>`.
+`runs/<id>/`, it prints `{kind, id, raw_path, hint}` (absolute `raw_path` with forward slashes; `hint` is the
+profile's acquisition template) so an agent saves the payload there as-is and the payload never passes through
+the model. Unknown values stay as `<placeholders>`.
 """
 
 from __future__ import annotations
@@ -12,10 +12,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .core import abs_path, dedupe_fetch, fetch_item, node_file, repo_conf, run_dir
-
-PNG_SIG = b"\x89PNG\r\n\x1a\n"
-FILE_KEY = "<fileKey>"
+from . import contracts, profiles
+from .core import FactoryError, abs_path, dedupe_fetch, repo_conf, run_dir
 
 
 def _json(path: Path) -> Any:
@@ -25,196 +23,188 @@ def _json(path: Path) -> Any:
         return None
 
 
-def _save(run_id: str, rel: str) -> str:
-    return abs_path(run_dir(run_id) / rel)
+# ---------- contracts (provider-neutral) ----------
+
+def needs(kind: str, ident: str, ctx: dict, raw: Path | None = None) -> dict:
+    """`{kind, id, raw_path, hint}` for one missing raw payload. `ctx`: `run` (id), `ws` (workspace; picks the profile
+    of the kind's role), optional `profile` override, and any hint placeholder (`scm_project`, `number`, ...). The
+    hint is the profile's acquisition template (no tool names live in the code); None when no profile is configured.
+    `raw` overrides the destination (a file outside any run: a queue list, a shared inbox folder)."""
+    prof = None
+    ext = contracts.KIND_EXT.get(kind, "json")
+    try:
+        _, prof = profiles.profile_for(ctx.get("ws") or {}, kind, ctx.get("profile"))
+        ext = profiles.kind_ext(prof, kind)
+    except FactoryError:
+        prof = None
+    if raw is None:
+        raw = contracts.raw_path_for(run_dir(ctx["run"]), kind, contracts.safe_id(ident), ext)
+    values = {"id": ident}  # a ctx `id` (the provider's own id, e.g. a pipeline) wins over the file-name id
+    values.update({k: v for k, v in ctx.items() if k not in ("run", "ws", "profile") and v not in (None, "")})
+    values.update({"raw_path": abs_path(raw), "raw_dir": abs_path(raw.parent)})
+    if kind == "ticket":
+        values["key"] = ident
+    return {"kind": kind, "id": ident, "raw_path": abs_path(raw),
+            "hint": profiles.render_hint(prof, kind, values) if prof else None}
 
 
-# ---------- jira ----------
+def ticket_raw(run_id: str, key: str) -> Path | None:
+    """The raw payload file of a ticket in the run, whatever its extension; None when absent."""
+    d = run_dir(run_id) / "raw" / "ticket"
+    safe = contracts.safe_id(key)
+    if not d.is_dir():
+        return None
+    for p in sorted(d.iterdir()):
+        if p.is_file() and p.name.startswith(safe + ".") and "." not in p.name[len(safe) + 1:]:
+            return p
+    return None
 
-def issue_fetch(run_id: str, key: str) -> dict:
-    return fetch_item("jira_get_issue", issueIdOrKey=key, save_to=_save(run_id, f"remote/issue-{key}.json"), overwrite=True)
 
-
-def intake_fetches(run: dict) -> list[dict]:
+def intake_fetches(run: dict, ws: dict | None = None) -> list[dict]:
+    """One fetch per ticket whose raw payload is not saved yet (a saved raw without a contract needs `factory ingest`)."""
     rid = run["id"]
-    return [issue_fetch(rid, t["key"]) for t in run.get("tickets", [])
-            if not (run_dir(rid) / "remote" / f"issue-{t['key']}.json").is_file()]
+    return [needs("ticket", t["key"], {"run": rid, "ws": ws}) for t in run.get("tickets", [])
+            if ticket_raw(rid, t["key"]) is None]
 
 
-# ---------- figma ----------
+# ---------- design ----------
 
-def _unwrap_mr(data: Any) -> Any:
-    if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
-        return data["merge_request"]
-    return data
-
-
-def known_file_keys(run_id: str) -> list[str]:
-    """fileKeys already seen in acs checks, figma/meta*.json, or saved payloads."""
-    keys: list[str] = []
+def design_fetches(run_id: str, ws: dict | None = None) -> list[dict]:
+    """One `needs()` per missing raw design payload of the run's visual/style checks (image first: the frame contract
+    reads its path). Approximate frames have none: they come from `factory design add`. A saved raw without a contract
+    needs `factory ingest`, not a fetch."""
+    from . import design
     rd = run_dir(run_id)
-    acs = _json(rd / "acs.json")
-    for chk in (acs or {}).get("checks", []) if isinstance(acs, dict) else []:
-        if isinstance(chk, dict) and chk.get("fileKey"):
-            keys.append(str(chk["fileKey"]))
-    fdir = rd / "figma"
-    if fdir.is_dir():
-        for p in sorted(fdir.glob("*.json")):
-            data = _json(p)
-            if p.name == "meta.json" and isinstance(data, dict):
-                files = data.get("files") if isinstance(data.get("files"), dict) else data
-                if data.get("fileKey"):
-                    keys.append(str(data["fileKey"]))
-                keys += [k for k, v in files.items() if isinstance(v, dict)]
-            elif isinstance(data, dict) and data.get("fileKey"):
-                keys.append(str(data["fileKey"]))
-    return list(dict.fromkeys(keys))
-
-
-def _node_keys(run_id: str) -> dict[str, str]:
-    acs = _json(run_dir(run_id) / "acs.json")
-    out: dict[str, str] = {}
-    for chk in (acs or {}).get("checks", []) if isinstance(acs, dict) else []:
-        if isinstance(chk, dict) and chk.get("node") and chk.get("fileKey"):
-            out[chk["node"]] = str(chk["fileKey"])
-    return out
-
-
-def figma_fetches(run_id: str) -> list[dict]:
-    """Calls for every missing/invalid piece of the Figma pack of the run's acs.json."""
-    rd = run_dir(run_id)
-    acs = _json(rd / "acs.json")
-    nodes: list[str] = []
-    if isinstance(acs, dict):
-        for chk in acs.get("checks", []):
-            if isinstance(chk, dict) and chk.get("node") and chk["node"] not in nodes:
-                nodes.append(chk["node"])
-    keys = known_file_keys(run_id)
-    per_node = _node_keys(run_id)
-    default_key = keys[0] if len(keys) == 1 else FILE_KEY
-    fdir = rd / "figma"
+    checks = design.acs_checks(run_id)
     out: list[dict] = []
-    for node in nodes:
-        key = per_node.get(node, default_key)
-        stem = node_file(node)
-        jpath, ppath = fdir / f"{stem}.json", fdir / f"{stem}.png"
-        if _json(jpath) is None:
-            out.append(fetch_item("figma_get_design_context", fileKey=key, nodeIds=node, includeScreenshot=False,
-                                  save_to=_save(run_id, f"figma/{stem}.json"), overwrite=True))
-        try:
-            png_ok = ppath.read_bytes()[:8] == PNG_SIG
-        except OSError:
-            png_ok = False
-        if not png_ok:
-            out.append(fetch_item("figma_fetch_screenshot", fileKey=key, nodeIds=node, scale=1, format="png",
-                                  save_to=_save(run_id, f"figma/{stem}.png"), overwrite=True))
-    if nodes:
-        meta_keys = keys or [FILE_KEY]
-        have = {p.name for p in fdir.glob("meta*.json")} if fdir.is_dir() else set()
-        if not have or not _meta_ok(fdir, set(keys)):
-            for i, key in enumerate(meta_keys):
-                name = "meta.json" if len(meta_keys) == 1 else f"meta-{key}.json"
-                out.append(fetch_item("figma_get_file_meta", fileKey=key, save_to=_save(run_id, f"figma/{name}"),
-                                      overwrite=True))
+    for node in design.frame_nodes(checks):
+        if any(design.check_fidelity(c) == "approx" for c in checks if design.check_node(c) == node):
+            continue
+        ctx = {"run": run_id, "ws": ws}
+        file = design.source_file_of(checks, node)
+        if file:
+            ctx["file"] = file
+        safe = contracts.safe_id(node)
+        for kind in ("design_image", "design_frame"):
+            item = needs(kind, node, ctx)
+            ext = Path(item["raw_path"]).suffix.lstrip(".")
+            if not contracts.raw_path_for(rd, kind, safe, ext).is_file():
+                out.append(item)
     return dedupe_fetch(out)
 
 
-def _meta_ok(fdir: Path, needed: set[str]) -> bool:
-    """True when figma/meta*.json name a revision (lastModified/version) for every needed fileKey."""
-    have: set[str] = set()
-    for p in fdir.glob("meta*.json"):
-        data = _json(p)
-        if isinstance(data, dict) and isinstance(data.get("files"), dict):
-            data = data["files"]
-        entries = [data] if isinstance(data, dict) and "fileKey" in data else             [{"fileKey": k, **v} for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
-        have |= {str(e["fileKey"]) for e in entries if e.get("fileKey") and (e.get("lastModified") or e.get("version"))}
-    return bool(have) and needed <= have
-
-
-# ---------- gitlab ----------
+# ---------- delivery (ship verify, feedback) ----------
 
 def project_id(ws: dict | None, alias: str) -> str:
     try:
-        return str(repo_conf(ws or {}, alias).get("gitlab_project") or "<projectId>")
+        return str(repo_conf(ws or {}, alias).get("scm_project") or "<scm_project>")
     except Exception:
-        return "<projectId>"
+        return "<scm_project>"
 
 
-def mr_iid(run_id: str, alias: str, target: str) -> Any:
-    data = _unwrap_mr(_json(run_dir(run_id) / "remote" / f"mr-{alias}-{target}.json"))
-    return data.get("iid") if isinstance(data, dict) and data.get("iid") else "<iid>"
+def _change_doc(run_id: str, repo: str, target: str) -> dict:
+    data = _json(run_dir(run_id) / "contracts" / "change" / f"{contracts.safe_id(f'{repo}-{target}')}.json")
+    return data if isinstance(data, dict) else {}
 
 
-def mr_fetch(run_id: str, ws: dict | None, alias: str, iid: Any, name: str | None = None, **extra: Any) -> dict:
-    return fetch_item("gitlab_get_merge_request", projectId=project_id(ws, alias), mergeRequestIid=iid, **extra,
-                      save_to=_save(run_id, f"remote/{name or f'mr-{alias}-{iid}.json'}"), overwrite=True)
+def _latest_pipeline_id(doc: dict) -> Any:
+    """Id of the newest pipeline a change contract lists (numeric ids compare numerically), else None."""
+    ids = [p.get("id") for p in doc.get("pipelines") or [] if isinstance(p, dict) and p.get("id") is not None]
+    if not ids:
+        return None
+    return max(ids, key=lambda i: (0, int(i)) if str(i).isdigit() else (-1, 0))
 
 
-def review_intake_fetches(run: dict, ws: dict | None) -> list[dict]:
-    rid = run["id"]
-    out = intake_fetches(run)
-    for mr in run.get("mrs", []):
-        if not (run_dir(rid) / "remote" / f"mr-{mr['repo']}-{mr['iid']}.json").is_file():
-            out.append(mr_fetch(rid, ws, mr["repo"], mr["iid"]))
-    return out
+def change_fetch(run_id: str, ws: dict | None, repo: str, target: str, number: Any = None) -> dict:
+    """Fetch item for the change of (repo, target): its raw path, the profile hint and the `factory ingest` line.
+    `number` is the change number when known (a review run); else the one of the saved contract."""
+    ident = f"{repo}-{target}"
+    doc = _change_doc(run_id, repo, target)
+    ctx: dict = {"run": run_id, "ws": ws, "repo": repo, "scm_project": project_id(ws, repo),
+                 "number": number if number is not None else doc.get("number")}
+    item = needs("change", ident, ctx)
+    item["ingest"] = f"factory ingest {run_id} change {item['raw_path']} --id {ident} --repo {repo}"
+    return item
+
+
+def pipeline_fetch(run_id: str, ws: dict | None, repo: str, target: str) -> dict:
+    """Fetch item for the pipeline of a change: the pipeline raw plus its jobs raw (`--raw jobs=`)."""
+    ident = f"{repo}-{target}"
+    pid = _latest_pipeline_id(_change_doc(run_id, repo, target))
+    ctx: dict = {"run": run_id, "ws": ws, "repo": repo, "scm_project": project_id(ws, repo),
+                "id": pid if pid is not None else "<id>"}
+    item = needs("pipeline", ident, ctx)
+    jobs = item["raw_path"] + ".jobs"  # where the profile hint saves the jobs payload; `--raw jobs=` names it to ingest
+    item["ingest"] = f"factory ingest {run_id} pipeline {item['raw_path']} --id {ident} --repo {repo} --raw jobs={jobs}"
+    return item
+
+
+def _contract_ok(run_id: str, kind: str, ident: str) -> bool:
+    doc, problems = contracts.load_contract(run_id, kind, ident)
+    return doc is not None and not problems
 
 
 def readback_fetches(run_id: str, ws: dict | None) -> list[dict]:
-    """Missing or unreadable ship readbacks (ship verify)."""
+    """Change (and, when watched, pipeline) readbacks of the delivery plan whose contract is missing, invalid or stale."""
     plan = _json(run_dir(run_id) / "ship-plan.json")
-    out = []
-    for mr in (plan or {}).get("mrs", []) if isinstance(plan, dict) else []:
-        rel = mr.get("readback", f"remote/mr-{mr['repo']}-{mr['target']}.json")
-        if _json(run_dir(run_id) / rel) is None:
-            out.append(fetch_item("gitlab_get_merge_request", projectId=project_id(ws, mr["repo"]),
-                                  mergeRequestIid="<iid>", save_to=_save(run_id, rel), overwrite=True))
+    out: list[dict] = []
+    if not isinstance(plan, dict):
+        return out
+    watched = {(a.get("repo"), a.get("target")) for a in plan.get("actions") or [] if a.get("type") == "pipeline_watch"}
+    for c in plan.get("changes") or []:
+        ident = f"{c['repo']}-{c['target']}"
+        if not _contract_ok(run_id, "change", ident):
+            out.append(change_fetch(run_id, ws, c["repo"], c["target"]))
+        if (c["repo"], c["target"]) in watched and not _contract_ok(run_id, "pipeline", ident):
+            out.append(pipeline_fetch(run_id, ws, c["repo"], c["target"]))
     return out
 
 
 def feedback_fetches(run_id: str, ws: dict | None) -> list[dict]:
-    """Missing discussions / pipeline / jobs files for every shipped MR."""
-    rd = run_dir(run_id)
-    plan = _json(rd / "ship-plan.json")
+    """Change and pipeline readbacks (contracts) of every delivered change that are missing, invalid or stale."""
+    plan = _json(run_dir(run_id) / "ship-plan.json")
     out: list[dict] = []
-    for mr in (plan or {}).get("mrs", []) if isinstance(plan, dict) else []:
-        alias, target = mr["repo"], mr["target"]
-        tag = f"{alias}-{target}"
-        iid = mr_iid(run_id, alias, target)
-        disc = rd / "remote" / f"mr-{tag}-discussions.json"
-        if _json(disc) is None:
-            out.append(mr_fetch(run_id, ws, alias, iid, f"mr-{tag}-discussions.json",
-                                includeNotes=True, includePipelines=True))
-        pipe_id: Any = "<pipelineId>"
-        pipes = _unwrap_pipelines(_json(disc))
-        if pipes:
-            pipe_id = pipes[0].get("id", pipe_id)
-        pid = project_id(ws, alias)
-        if _json(rd / "remote" / f"pipeline-{tag}.json") is None:
-            out.append(fetch_item("gitlab_get_pipeline", projectId=pid, pipelineId=pipe_id,
-                                  save_to=_save(run_id, f"remote/pipeline-{tag}.json"), overwrite=True))
-        if _json(rd / "remote" / f"pipeline-{tag}-jobs.json") is None:
-            out.append(fetch_item("gitlab_get_pipeline_jobs", projectId=pid, pipelineId=pipe_id,
-                                  save_to=_save(run_id, f"remote/pipeline-{tag}-jobs.json"), overwrite=True))
+    for c in (plan or {}).get("changes", []) if isinstance(plan, dict) else []:
+        ident = f"{c['repo']}-{c['target']}"
+        if not _contract_ok(run_id, "change", ident):
+            out.append(change_fetch(run_id, ws, c["repo"], c["target"]))
+        if not _contract_ok(run_id, "pipeline", ident):
+            out.append(pipeline_fetch(run_id, ws, c["repo"], c["target"]))
     return out
 
 
-def _unwrap_pipelines(data: Any) -> list[dict]:
-    pipes = data.get("pipelines") if isinstance(data, dict) else None
-    return [p for p in pipes if isinstance(p, dict)] if isinstance(pipes, list) else []
+# ---------- review ----------
+
+def review_intake_fetches(run: dict, ws: dict | None) -> list[dict]:
+    """Ticket fetches plus one change fetch per change of a review run whose contract is missing, invalid or stale."""
+    rid = run["id"]
+    out = intake_fetches(run, ws)
+    for ch in run.get("changes", []):
+        ident = f"{ch['repo']}-{ch['number']}"
+        if not _contract_ok(rid, "change", ident):
+            out.append(change_fetch(rid, ws, ch["repo"], str(ch["number"]), ch["number"]))
+    return out
 
 
-# ---------- review start / queue ----------
-
-def start_payload_fetch(ws: dict, alias: str, iid: int, folder: Path) -> dict:
-    return fetch_item("gitlab_get_merge_request", projectId=project_id(ws, alias), mergeRequestIid=iid,
-                      save_to=abs_path(folder / f"mr-{alias}-{iid}.json"), overwrite=True)
+def start_change_fetch(ws: dict, alias: str, number: int, folder: Path) -> dict:
+    """Fetch item of one change for `review start`: saved in `folder` as `<alias>-<number>.<ext>`."""
+    ext = "json"
+    try:
+        _, prof = profiles.profile_for(ws, "change")
+        ext = profiles.kind_ext(prof, "change")
+    except FactoryError:
+        pass
+    ident = f"{alias}-{number}"
+    return needs("change", ident, {"ws": ws, "repo": alias, "scm_project": project_id(ws, alias), "number": number},
+                 raw=Path(folder) / f"{contracts.safe_id(ident)}.{ext}")
 
 
 def queue_fetches(ws: dict, path: Path, repo: str | None = None) -> list[dict]:
+    """Fetch items of the open changes list(s) of `review queue`: one per matching repo (one file per repo when several)."""
     repos = [r for r in ws.get("repos", []) if not repo or repo in (r.get("alias"), r.get("name"))]
     out = []
     for r in repos or [{}]:
         dest = path if len(repos) <= 1 else path.with_name(f"{path.stem}-{r.get('alias', 'repo')}{path.suffix}")
-        out.append(fetch_item("gitlab_list_merge_requests", projectId=r.get("gitlab_project") or "<projectId>",
-                              state="opened", save_to=abs_path(dest), overwrite=True))
+        ctx = {"ws": ws, "repo": r.get("alias") or "<repo>", "scm_project": r.get("scm_project") or "<scm_project>"}
+        out.append(needs("change_list", Path(dest).stem, ctx, raw=Path(dest)))
     return out

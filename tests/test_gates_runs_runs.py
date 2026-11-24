@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from tests.integrity_support import IntegrityCase, cli, core, sh
+from tests.ticket_support import put_ticket
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,24 +56,30 @@ class StatusDegrades(IntegrityCase):
 
 
 class RetypeAndStart(IntegrityCase):
-    def issue(self, rid_ticket: str, itype: str) -> None:
-        core.write_json(core.run_dir(f"ws-{rid_ticket.lower()}") / "remote" / f"issue-{rid_ticket}.json",
-                        {"key": rid_ticket, "fields": {"issuetype": {"name": itype}}})
+    def issue(self, rid_ticket: str, itype: str, is_bug: bool) -> None:
+        put_ticket(f"ws-{rid_ticket.lower()}", rid_ticket, type=itype, is_bug=is_bug)
 
     def types(self, rid: str) -> list[str]:
         return [t["type"] for t in core.run_load(rid)["tickets"]]
 
-    def test_start_derives_bug_from_saved_issue_type(self):
-        for ticket, itype, want in (("DEV-71", "Bug", "bug"), ("DEV-72", "defeito", "bug"), ("DEV-73", "ERRO", "bug"),
-                                    ("DEV-74", "Task", "feature")):
-            self.issue(ticket, itype)
+    def test_start_derives_bug_from_ticket_contract(self):
+        for ticket, itype, is_bug, want in (("DEV-71", "Bug", True, "bug"), ("DEV-72", "Defect", True, "bug"),
+                                            ("DEV-74", "Task", False, "feature")):
+            self.issue(ticket, itype, is_bug)
             out = self.ok("run", "start", "ws", ticket)
             self.assertEqual(self.types(f"ws-{ticket.lower()}"), [want], ticket)
             if want == "bug":
-                self.assertIn("derived from the Jira issuetype", out)
+                self.assertIn("derived from the ticket contract is_bug", out)
+
+    def test_stale_contract_does_not_classify(self):
+        self.issue("DEV-76", "Bug", True)
+        raw = core.run_dir("ws-dev-76") / "raw" / "ticket" / "DEV-76.json"
+        raw.write_text('{"changed": true}', encoding="utf-8")
+        self.ok("run", "start", "ws", "DEV-76")
+        self.assertEqual(self.types("ws-dev-76"), ["feature"])
 
     def test_feature_flag_overrides_the_derivation(self):
-        self.issue("DEV-75", "Bug")
+        self.issue("DEV-75", "Bug", True)
         self.ok("run", "start", "ws", "DEV-75", "--feature")
         self.assertEqual(self.types("ws-dev-75"), ["feature"])
 

@@ -4,6 +4,7 @@ import json
 import unittest
 
 from core_support import (PY, FactoryCase, cli, commit_file, core, sh)
+from tests.ticket_support import put_ticket
 
 
 class WorkspaceTests(FactoryCase):
@@ -15,7 +16,7 @@ class WorkspaceTests(FactoryCase):
         self.assertEqual(rc, 0)
         ws = core.workspace_load("ws")
         repo = ws["repos"][0]
-        self.assertEqual((repo["alias"], repo["name"], repo["order"], repo["gitlab_project"]),
+        self.assertEqual((repo["alias"], repo["name"], repo["order"], repo["scm_project"]),
                          ("React", "webapp", 2, "g/react"))
         self.assertEqual(repo["path"], "")
         self.assertEqual(repo["quality"], {})
@@ -49,7 +50,7 @@ class RunTests(FactoryCase):
         rc, out = cli("run", "status", rid)
         self.assertEqual(rc, 0)
         self.assertIn("phase=intake", out)
-        self.assertIn("remote/issue-DEV-1.json missing", out)
+        self.assertIn("raw/ticket/DEV-1.<ext> missing", out)
         rc, out = cli("run", "list")
         self.assertIn("ws-dev-1", out)
 
@@ -61,7 +62,7 @@ class RunTests(FactoryCase):
     def test_decide_block_unblock_human_and_intake_gate(self):
         rid = self.make_run()
         self.assertEqual(cli("run", "block", rid, "question", "which env?")[0], 0)
-        core.write_json(core.run_dir(rid) / "remote" / "issue-DEV-1.json", {"key": "DEV-1"})
+        put_ticket(rid, "DEV-1")
         rc, out = cli("gate", rid, "intake")
         self.assertEqual(rc, 1)
         self.assertIn("open question blocker", out)
@@ -121,19 +122,18 @@ class PlanGateTests(FactoryCase):
                        self.ui_checks())
         rc, out = self.plan()
         self.assertEqual(rc, 1)
-        self.assertIn("3544-5710.json missing", out)
-        self.assertIn("3544-5710.png missing", out)
-        self.assertIn("figma/meta.json missing", out)
+        self.assertIn("no design_image contract", out)
+        self.assertIn("no design_frame contract", out)
 
     def test_undecodable_png(self):
         self.make_run()
         self.write_pack(self.NODE)
-        (core.run_dir(self.run_id) / "figma" / "3544-5710.png").write_bytes(b"nope")
+        (core.run_dir(self.run_id) / "raw" / "design_image" / "3544-5710.png").write_bytes(b"nope")
         self.write_style_map(self.NODE, {"fontSize": 12})
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}],
                        self.ui_checks())
         rc, out = self.plan()
-        self.assertIn("not a decodable PNG", out)
+        self.assertIn("changed since ingest", out)
 
     def test_style_value_not_in_pack(self):
         self.make_run()
@@ -143,12 +143,17 @@ class PlanGateTests(FactoryCase):
                        self.ui_checks())
         rc, out = self.plan()
         self.assertEqual(rc, 1)
-        self.assertIn("title.fontSize=99 number not in the node's fontSize", out)
-        self.assertIn("title.color='#ABCDEF' color not in the node's fills/strokes", out)
+        self.assertIn("title.fontSize=99 number not in the frame's fontSize values", out)
+        self.assertIn("title.color='#ABCDEF' color not in the frame's fills/strokes", out)
 
     def test_style_color_matches_hex_case_insensitive_and_rgba_floats(self):
         self.make_run()
-        self.write_pack(self.NODE, {"fontSize": 12, "stroke": "#aBcDeF", "fill": {"r": 1, "g": 0, "b": 0, "a": 1}})
+        self.write_pack(self.NODE, {
+            "id": self.NODE, "name": "S", "type": "frame", "box": {"x": 0, "y": 0, "w": 100, "h": 50},
+            "fills": [{"type": "solid", "color": "#ff0000", "opacity": 1}],
+            "strokes": [{"type": "solid", "color": "#abcdef", "weight": 1}],
+            "children": [{"id": "t", "name": "T", "type": "text", "box": {"x": 0, "y": 0, "w": 9, "h": 9},
+                          "text": {"characters": "x", "font_size": 12}}]})
         self.write_style_map(self.NODE, {"fontSize": 12, "color": "#ABCDEF", "backgroundColor": "#ff0000",
                                          "borderColor": "rgb(255, 0, 0)"})
         self.write_acs([{"id": "AC-1", "ticket": "DEV-1", "text": "t", "kind": "ui", "checks": ["CHK-1", "CHK-2"]}],

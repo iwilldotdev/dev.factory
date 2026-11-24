@@ -151,7 +151,7 @@ class ReviewFixOrigin(ReviewCase):
         self.ws["commit"]["header_regex"] = r"^\[[^\]]+\] - fix"
         self.save_ws()
         rid = self.start_single()
-        self.ok("run", "branch", rid, "React", "--mr", "669")
+        self.ok("run", "branch", rid, "React", "--change", "669")
         self.write_acs(rid, [{"id": "CHK-1", "type": "test", "repo": "React", "cmd": PASS}])
         self.ok("prove", rid)
         self.ok("review", "fix", rid)
@@ -161,7 +161,7 @@ class ReviewFixOrigin(ReviewCase):
         self.assertEqual(core.git_head(wt), self.sha)
         from tests.real_support import commit_file
         commit_file(wt, "src/fix.txt", "fix\n", "[DEV-9431] - fix it")
-        out = self.ok("gate", rid, "build")  # the MR's own "[DEV-9431] - drawer" commit does not match the regex
+        out = self.ok("gate", rid, "build")  # the change's own "[DEV-9431] - drawer" commit does not match the regex
         self.assertIn("PASS build", out)
         self.assertEqual(SRC, core.run_load(rid)["repos"]["React"]["branch"])
 

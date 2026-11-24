@@ -2,6 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const HOOKS = path.resolve(here, '..');
@@ -28,3 +30,10 @@ export function runHook(script, args, input, env = {}) {
 export const denied = (res) => Boolean(res && res.permissionDecision === 'deny');
 export const bash = (command, cwd) => ({ tool_name: 'Bash', tool_input: { command }, cwd });
 export const write = (file_path, cwd, tool = 'Write') => ({ tool_name: tool, tool_input: { file_path }, cwd });
+
+/** Approve a profile like `factory profile approve`: approved.json pins the sha256 of profile.json. */
+export function approveProfile(home, name) {
+  const dir = path.join(home, 'profiles', name);
+  const sha = createHash('sha256').update(fs.readFileSync(path.join(dir, 'profile.json'))).digest('hex');
+  fs.writeFileSync(path.join(dir, 'approved.json'), JSON.stringify({ file_sha256: sha }));
+}

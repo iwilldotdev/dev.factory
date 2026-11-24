@@ -1,0 +1,26 @@
+{
+  "schema": "pipeline.v1",
+  "id": "31",
+  "sha": "f00d",
+  "status": "failed",
+  "jobs": [
+    {
+      "id": "1",
+      "name": "build",
+      "status": "success",
+      "allow_failure": false
+    },
+    {
+      "id": "2",
+      "name": "lint",
+      "status": "failed",
+      "allow_failure": true
+    }
+  ],
+  "unknowns": [
+    {
+      "field": "url",
+      "reason": "not mapped"
+    }
+  ]
+}

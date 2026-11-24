@@ -58,7 +58,7 @@ class SnapshotTest(unittest.TestCase):
         self.profile = self.tmp / "profile"
         self.fh = self.tmp / "fh"
         self.profile.mkdir()
-        for patcher in (mock.patch.object(install, "REPO", self.src), mock.patch.object(install, "claude_running", lambda: False)):
+        for patcher in (mock.patch.object(install, "REPO", self.src),):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.install()

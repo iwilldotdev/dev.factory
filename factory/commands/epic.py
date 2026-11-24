@@ -33,7 +33,7 @@ def _new_run(ws: dict, run_id: str, tickets: list[dict], kind: str, risk: str, *
         "decisions": [], "blockers": [], "events": [], "sessions": [], "created": stamp, "updated": stamp,
     }
     run.update(extra)
-    for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
+    for sub in ("raw", "contracts", "design", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
     if not extra.get("parent"):  # a child never owns the parent's session
@@ -202,10 +202,10 @@ def cmd_status(args) -> int:
                           "children": rows, "ready": ready}, indent=2))
         return 0
     print(f"{parent['id']}  phase={parent['phase']}  waves={parent.get('waves')}")
-    print("child\tphase\twave\tbuild/review loops\tblockers\tMRs")
+    print("child\tphase\twave\tbuild/review loops\tblockers\tchanges")
     for r in rows:
         print(f"{r['key']}\t{r['phase']}\t{r['wave']}\t{r['loops'].get('build', 0)}/{r['loops'].get('review', 0)}"
-              f"\t{r['open_blockers']}\t{len(r['mrs'])}")
+              f"\t{r['open_blockers']}\t{len(r['changes'])}")
     print("ready: " + (", ".join(ready) if ready else "none"))
     return 0
 
@@ -247,10 +247,10 @@ def build_epic_plan(parent_id: str, allow_behind: bool = False) -> dict:
         raise GateFailed(errors)
 
     target_pos = {t: i for i, t in enumerate(dict.fromkeys(
-        [*(ship_conf.get("targets") or []), *(m["target"] for p in plans.values() for m in p["mrs"])]))}
+        [*(ship_conf.get("targets") or []), *(m["target"] for p in plans.values() for m in p["changes"])]))}
     repo_pos = {}
     for p in plans.values():
-        for m in p["mrs"]:
+        for m in p["changes"]:
             try:
                 repo_pos[m["repo"]] = repo_conf(ws, m["repo"]).get("order", 999)
             except FactoryError:
@@ -258,7 +258,7 @@ def build_epic_plan(parent_id: str, allow_behind: bool = False) -> dict:
     order = {c["id"]: i for i, c in enumerate(_children(parent))}
     entries = []
     for cid, plan in plans.items():
-        for m in plan["mrs"]:
+        for m in plan["changes"]:
             entries.append((wave_of.get(cid, 0), repo_pos[m["repo"]], m["repo"], target_pos[m["target"]], order[cid], cid, m))
     entries.sort(key=lambda e: e[:5])
 
@@ -267,46 +267,49 @@ def build_epic_plan(parent_id: str, allow_behind: bool = False) -> dict:
         by_child.setdefault(e[5], []).append(e[6])
     child_deps = {c["id"]: [child_id(ws["name"], d) for d in c["tickets"][0].get("depends_on") or []]
                   for c in _children(parent)}
-    mrs = []
+    changes = []
     for _w, _r, _a, _t, _o, cid, m in entries:
-        mr = dict(m, child=cid, depends_on=[dict(d, child=cid) for d in m["depends_on"]])
+        ch = dict(m, child=cid, depends_on=[dict(d, child=cid) for d in m["depends_on"]])
         links = []
         for dep in child_deps.get(cid, []):
             cands = [x for x in by_child.get(dep, []) if x["target"] == m["target"]]
             same = [x for x in cands if x["repo"] == m["repo"]]
             for x in (same or cands):
                 links.append({"child": dep, "repo": x["repo"], "target": x["target"]})
-        mr["depends_on"] = mr["depends_on"] + links
+        ch["depends_on"] = ch["depends_on"] + links
         if links:
-            mr["description"] = mr["description"].rstrip("\n") + "\n\n## Depends on (other tickets)\n\n" + "\n".join(
-                f"Depends on {{mr_url:{d['child']}:{d['repo']}:{d['target']}}}" for d in links) + "\n"
-        mrs.append(mr)
+            lines = [f"Depends on {{change_url:{d['child']}:{d['repo']}:{d['target']}}}" for d in links]
+            ch["body_md"] = ch["body_md"].rstrip("\n") + "\n\n## Depends on (other tickets)\n\n" + "\n".join(lines) + "\n"
+        changes.append(ch)
 
     actions = []
-    for mr in mrs:
-        for a in plans[mr["child"]]["actions"]:
-            if a["type"] in ("push", "mr", "readback") and a.get("repo") == mr["repo"] and a.get("target") == mr["target"]:
-                actions.append(dict(a, child=mr["child"]))
+    for ch in changes:
+        for a in plans[ch["child"]]["actions"]:
+            if a["type"] in ship.CHANGE_ACTIONS and a.get("repo") == ch["repo"] and a.get("target") == ch["target"]:
+                act = dict(a, child=ch["child"])
+                if act["type"] == "change_request":
+                    act["body_md"] = ch["body_md"]  # carries the cross-ticket links
+                actions.append(act)
     epic_key = parent["tickets"][0]["key"]
     epic_conf = _epic_conf(ws, parent)
-    jira = None
-    if ship_conf.get("jira_comment") == "mr-links":
-        content = [{"type": "paragraph", "content": [
-            {"type": "text", "text": f"{m['child']} {m['repo']} ({m['target']}): "},
-            {"type": "inlineCard", "attrs": {"url": f"{{mr_url:{m['child']}:{m['repo']}:{m['target']}}}"}}]} for m in mrs]
-        jira = {"issues": [epic_key], "adf": {"version": 1, "type": "doc", "content": content},
-                "epic_ship_comment": epic_conf.get("ship_comment")}
-        actions.append({"type": "jira_comment", "issues": [epic_key], "needs_user": ship._needs_user(mode, "jira_comment")})
+    if ship_conf.get("ticket_comment") == "change-links":
+        body = "\n".join(f"- {m['child']} {m['repo']} ({m['target']}): "
+                         f"{{change_url:{m['child']}:{m['repo']}:{m['target']}}}" for m in changes)
+        comment = {"type": "issue_comment", "issues": [epic_key], "body_md": body,
+                   "needs_user": ship._needs_user(mode, "issue_comment")}
+        if epic_conf.get("ship_comment"):
+            comment["epic_ship_comment"] = epic_conf["ship_comment"]
+        actions.append(comment)
     for cid, plan in plans.items():
         for a in plan["actions"]:
-            if a["type"] == "jira_transition":
+            if a["type"] == "issue_transition":
                 actions.append(dict(a, child=cid))
-    if epic_conf.get("jira_transition") and not ship_conf.get("jira_transition"):
-        actions.append({"type": "jira_transition", "issues": [epic_key], "name": epic_conf["jira_transition"],
-                        "needs_user": ship._needs_user(mode, "jira_transition")})
+    if epic_conf.get("ticket_transition") and not ship_conf.get("ticket_transition"):
+        actions.append({"type": "issue_transition", "issues": [epic_key], "to_status": epic_conf["ticket_transition"],
+                        "needs_user": ship._needs_user(mode, "issue_transition")})
 
-    plan = {"schemaVersion": 1, "epic": parent_id, "run": parent_id, "autonomy": mode, "waves": parent["waves"],
-            "children": list(plans), "mrs": mrs, "jira_comment": jira, "actions": actions,
+    plan = {"schemaVersion": ship.PLAN_SCHEMA, "epic": parent_id, "run": parent_id, "autonomy": mode,
+            "waves": parent["waves"], "children": list(plans), "changes": changes, "actions": actions,
             "visual_evidence": [dict(v, child=cid) for cid, p in plans.items() for v in p.get("visual_evidence") or []]}
     write_json(run_dir(parent_id) / "ship-plan.json", plan)
     return plan
@@ -330,7 +333,7 @@ def _cmd_ship_plan(args) -> int:
     if getattr(args, "json", False):
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         return 0
-    print(f"ship-plan.json: {len(plan['mrs'])} MR(s) across {len(plan['children'])} child run(s)")
+    print(f"ship-plan.json: {len(plan['changes'])} change(s) across {len(plan['children'])} child run(s)")
     for i, a in enumerate(plan["actions"], 1):
         who = "ASK" if a["needs_user"] else "auto"
         print(f"{i}. [{who}] {a['type']} {a.get('child', '')} {a.get('repo', '')} {a.get('target', '')}".rstrip())

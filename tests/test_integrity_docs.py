@@ -36,7 +36,7 @@ class GuidanceTests(unittest.TestCase):
         for needle in ("### 2.6 Proof integrity", "run replan", "run rewind", "expect_fail_pattern", "max_tolerance_px",
                        "quality.setup", "FACTORY_LOGIN_PASS", "no scaling"):
             self.assertIn(needle, design)
-        self.assertNotIn("scale the capture to the Figma image size", design)
+        self.assertNotIn("scale the capture to the design image size", design)
 
 
 if __name__ == "__main__":

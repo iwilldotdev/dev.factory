@@ -1,4 +1,4 @@
-"""MR description lists unresolved minor findings under `## Follow-ups`."""
+"""Change description lists unresolved minor findings under `## Follow-ups`."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import unittest
 
 from factory import core
 from tests.integrity_support import cli
-from tests.test_ship_mr_content import ShipCase
+from tests.test_ship_change_content import ShipCase
 
 
 def minor(fid: str, text: str, **extra) -> dict:
@@ -15,7 +15,7 @@ def minor(fid: str, text: str, **extra) -> dict:
 
 class FollowupTests(ShipCase):
     def description(self) -> str:
-        return self.plan()["mrs"][0]["description"]
+        return self.plan()["changes"][0]["body_md"]
 
     def test_minor_findings_from_code_and_qa_listed(self):
         self.to_prove()

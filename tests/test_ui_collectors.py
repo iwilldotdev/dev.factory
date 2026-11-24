@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from factory.collectors import browser, style, visual  # noqa: E402
 from factory.core import Ctx  # noqa: E402
+from tests.design_support import make_png, shadow_root, write_frame_files  # noqa: E402
 
 FAKE = str(Path(__file__).with_name("fake_cli.py"))
 
@@ -19,9 +20,8 @@ class UiCollectorTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.run_dir = Path(self.tmp.name) / "run"
-        (self.run_dir / "figma").mkdir(parents=True)
-        (self.run_dir / "checks").mkdir()
-        (self.run_dir / "figma" / "3544-5710.png").write_bytes(b"png")
+        (self.run_dir / "checks").mkdir(parents=True)
+        self.png = write_frame_files(self.run_dir, "3544:5710")
         (self.run_dir / "checks" / "a.spec.ts").write_text("x")
         (self.run_dir / "checks" / "map.json").write_text("{}")
         self.out = self.run_dir / "evidence" / "CHK-1"
@@ -45,6 +45,26 @@ class UiCollectorTests(unittest.TestCase):
         self.assertEqual(a[a.index("--url") + 1], "http://localhost:5173/obras/1")
         self.assertEqual(a[a.index("--viewport") + 1], "1440x900")
 
+    def test_style_exact_frame_uses_the_map_as_is(self):
+        style.collect({"id": "CHK-1", "type": "style", "node": "3544:5710", "path": "/", "map": "checks/map.json"}, self.ctx)
+        a = self.argv("style-probe")
+        self.assertEqual(Path(a[a.index("--map") + 1]), self.run_dir / "checks" / "map.json")
+
+    def test_style_approx_frame_gets_approx_tolerances_in_a_derived_map(self):
+        write_frame_files(self.run_dir, "3544:5710", fidelity="approx")
+        (self.run_dir / "checks" / "map.json").write_text(json.dumps({"node": "3544:5710", "entries": [
+            {"id": "a", "selector": "h1", "expect": {"fontSize": 20}},
+            {"id": "b", "selector": "h2", "expect": {"fontSize": 20}, "tolerance_px": 9}]}))
+        res = style.collect({"id": "CHK-1", "type": "style", "node": "3544:5710", "path": "/", "map": "checks/map.json",
+                             "fidelity": "approx"}, self.ctx)
+        self.assertEqual(res["status"], "pass")
+        a = self.argv("style-probe")
+        derived = Path(a[a.index("--map") + 1])
+        self.assertEqual(derived, self.out / "style-map-approx.json")
+        entries = json.loads(derived.read_text())["entries"]
+        self.assertEqual([(e["tolerance_px"], e["color_delta_e"], e["font_size_px"]) for e in entries], [(4, 6, 2), (9, 6, 2)])
+        self.assertEqual(json.loads((self.run_dir / "checks" / "map.json").read_text())["entries"][0].get("tolerance_px"), None)
+
     def test_style_fail_is_passed_through(self):
         os.environ["FAKE_STATUS"] = "fail"
         res = style.collect({"id": "CHK-1", "type": "style", "path": "/", "map": "checks/map.json"}, self.ctx)
@@ -59,26 +79,22 @@ class UiCollectorTests(unittest.TestCase):
         self.assertEqual(res["status"], "pass")
         cap, cmp = self.argv("capture"), self.argv("compare")
         self.assertIn("#d", cap)
-        self.assertTrue(cmp[cmp.index("--figma") + 1].endswith("3544-5710.png"))
+        self.assertTrue(Path(cmp[cmp.index("--design") + 1]).as_posix().endswith("raw/design_image/3544-5710.png"))
         self.assertEqual(cmp[cmp.index("--copies") + 1], "Pay|Now")
         self.assertEqual(cmp[cmp.index("--max-diff-ratio") + 1], "0.02")
         masks = json.loads(Path(cmp[cmp.index("--masks") + 1]).read_text())
         self.assertEqual(masks[0]["reason"], "clock")
 
-    def test_visual_compares_against_cropped_figma_when_export_has_shadow_margin(self):
-        from tests.test_pngcrop import make_png, shadow_node
-        (self.run_dir / "figma" / "3544-5710.json").write_text(json.dumps(shadow_node(w=4, h=3, radius=2, oy=1)))
-        (self.run_dir / "figma" / "3544-5710.png").write_bytes(make_png(8, 6, lambda x, y: (1, 2, 3, 255)))
-        shadow_node_id = json.loads((self.run_dir / "figma" / "3544-5710.json").read_text())
-        shadow_node_id["nodes"][0]["id"] = "3544:5710"
-        (self.run_dir / "figma" / "3544-5710.json").write_text(json.dumps(shadow_node_id))
+    def test_visual_compares_against_cropped_design_when_export_has_shadow_margin(self):
+        write_frame_files(self.run_dir, "3544:5710", shadow_root("3544:5710", w=4, h=3, radius=2, oy=1),
+                          make_png(8, 6, lambda x, y: (1, 2, 3, 255)))
         res = visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/x"}, self.ctx)
         self.assertEqual(res["status"], "pass")
         cmp = self.argv("compare")
-        self.assertTrue(cmp[cmp.index("--figma") + 1].endswith("figma-cropped.png"))
+        self.assertTrue(cmp[cmp.index("--design") + 1].endswith("design-cropped.png"))
 
-    def test_visual_missing_figma_png_errors(self):
-        (self.run_dir / "figma" / "3544-5710.png").unlink()
+    def test_visual_missing_design_image_errors(self):
+        self.png.unlink()
         res = visual.collect({"id": "CHK-1", "type": "visual", "node": "3544:5710", "path": "/"}, self.ctx)
         self.assertEqual(res["status"], "error")
 

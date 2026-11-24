@@ -12,6 +12,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
 
 from real_support import RealCase, cli, commit_file, core, sh
+from tests.ticket_support import put_ticket
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 16
 
@@ -33,7 +34,7 @@ class VisualEvidenceCase(RealCase):
         self.ok("run", "start", "ws", key, *(("--bug", key) if bug else ()))
         for alias in repos:
             self.ok("run", "branch", rid, alias, "--base", "main")
-        core.write_json(core.run_dir(rid) / "remote" / f"issue-{key}.json", {"key": key})
+        put_ticket(rid, key, is_bug=bug)
 
     def acs(self, rid: str, acs: list, checks: list) -> None:
         core.write_json(core.run_dir(rid) / "acs.json", {"schemaVersion": 1, "acs": acs, "checks": checks})

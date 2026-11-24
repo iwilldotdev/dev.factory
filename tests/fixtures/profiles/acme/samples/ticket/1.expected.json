@@ -1,0 +1,53 @@
+{
+  "schema": "ticket.v1",
+  "key": "ACME-12",
+  "url": "https://acme.example/browse/ACME-12",
+  "title": "Empty list shows a spinner forever",
+  "type": "Bug",
+  "is_bug": true,
+  "status": "In progress",
+  "description_md": "When the list is empty the spinner never stops.\n\n- Open the list page\n- Remove every item\n\nSeen on staging.",
+  "labels": [
+    "ui",
+    "list"
+  ],
+  "parent": {
+    "key": "ACME-1"
+  },
+  "attachments": [
+    {
+      "id": "f1",
+      "name": "spinner.png",
+      "mime": "image/png",
+      "url": "https://acme.example/files/f1"
+    },
+    {
+      "id": "f2",
+      "name": "trace.txt",
+      "mime": "text/plain",
+      "url": "https://acme.example/files/f2"
+    }
+  ],
+  "unknowns": [
+    {
+      "field": "acceptance_criteria",
+      "reason": "not mapped"
+    },
+    {
+      "field": "assignee",
+      "reason": "not mapped"
+    },
+    {
+      "field": "links",
+      "reason": "not mapped"
+    },
+    {
+      "field": "comments",
+      "reason": "not mapped"
+    },
+    {
+      "field": "description_md",
+      "reason": "rich-text node type 'panel' descended without config"
+    }
+  ]
+}

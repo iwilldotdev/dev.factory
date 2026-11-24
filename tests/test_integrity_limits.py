@@ -1,26 +1,29 @@
-"""Major 8: threshold ceilings and style-map property families."""
+"""Major 8: threshold ceilings and style-map property families (over a design_frame contract)."""
 
 from __future__ import annotations
 
 import json
 import unittest
 
+from factory import design
 from factory.commands import gate
+from tests.design_support import write_design
 from tests.integrity_support import IntegrityCase, core
 
-PACK = {"name": "Title", "absoluteBoundingBox": {"x": 7, "y": 9, "width": 320, "height": 48},
-        "style": {"fontSize": 16, "fontWeight": 600, "lineHeightPx": 24},
-        "fills": [{"type": "SOLID", "color": {"r": 0.2, "g": 0.2, "b": 0.2}}],
-        "strokes": [{"type": "SOLID", "color": {"r": 1, "g": 0, "b": 0}}],
-        "paddingLeft": 12, "itemSpacing": 8, "cornerRadius": 4,
-        "componentProperties": {"accent": "#00ff00", "count": 99}}
+ROOT = {"id": "1:2", "name": "Title", "type": "frame", "box": {"x": 7, "y": 9, "w": 320, "h": 48},
+        "fills": [{"type": "solid", "color": "#333333", "opacity": 1}],
+        "strokes": [{"type": "solid", "color": "#ff0000", "weight": 1}],
+        "corner_radius": 4, "layout": {"mode": "horizontal", "gap": 8, "padding": {"t": 0, "r": 0, "b": 0, "l": 12}},
+        "text": {"characters": "Title", "font_size": 16, "font_weight": 600, "line_height_px": 24}}
+DOC = {"schema": "design_frame.v1", "fidelity": "exact", "frame": {"id": "1:2", "name": "Title"}, "root": ROOT,
+       "unknowns": []}
 
 
-def errs(expect: dict, tol=None, max_tol=2) -> list[str]:
+def errs(expect: dict, tol=None, max_tol=2, approx=None, doc=DOC) -> list[str]:
     entry = {"id": "t", "selector": "h1", "expect": expect}
     if tol is not None:
         entry["tolerance_px"] = tol
-    return gate.style_map_errors({"node": "1:2", "entries": [entry]}, json.dumps(PACK), "M", max_tol)
+    return design.style_map_errors({"node": "1:2", "entries": [entry]}, design.frame_facts(doc), "M", max_tol, approx)
 
 
 class FamilyTests(unittest.TestCase):
@@ -31,18 +34,18 @@ class FamilyTests(unittest.TestCase):
 
     def test_number_from_another_family_fails(self):
         self.assertTrue(errs({"fontSize": 600}))   # a fontWeight value
-        self.assertTrue(errs({"fontSize": 99}))    # a number elsewhere in the payload
+        self.assertTrue(errs({"fontSize": 99}))    # a number the frame does not have
         self.assertTrue(errs({"width": 16}))       # a fontSize value
-        self.assertTrue(errs({"height": 7}))       # absoluteBoundingBox.x is not a size
+        self.assertTrue(errs({"height": 7}))       # box.x is not a size
         self.assertTrue(errs({"fontWeight": 24}))
 
     def test_color_must_be_a_paint_of_the_node(self):
         self.assertEqual(errs({"backgroundColor": "#333333"}), [])
-        self.assertTrue(errs({"color": "#00ff00"}))  # hex present, but not under fills/strokes
+        self.assertTrue(errs({"color": "#00ff00"}))  # not a paint of the frame
         self.assertTrue(errs({"fontSize": "#333333"}))
 
     def test_unknown_property_has_no_family(self):
-        self.assertIn("no Figma property family", errs({"zIndex": 4})[0])
+        self.assertIn("no design property", errs({"zIndex": 4})[0])
 
     def test_tolerance_ceiling(self):
         self.assertEqual(errs({"fontSize": 16}, tol=2), [])
@@ -54,10 +57,7 @@ class CeilingTests(IntegrityCase):
     NODE = "1:2"
 
     def ui(self, max_diff_ratio=None, tol=1, check_tol=None, adapter=None):
-        fig = self.rd / "figma"
-        core.write_json(fig / "1-2.json", PACK)
-        (fig / "1-2.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
-        core.write_json(fig / "meta.json", {"fileKey": "abc", "lastModified": "2026-01-01"})
+        write_design(self.rid, self.NODE, ROOT)
         core.write_json(self.rd / "checks" / "s.json", {"node": self.NODE, "entries": [
             {"id": "t", "selector": "h1", "expect": {"fontSize": 16}, "tolerance_px": tol}]})
         visual = {"id": "CHK-1", "type": "visual", "repo": "React", "node": self.NODE, "path": "/x"}

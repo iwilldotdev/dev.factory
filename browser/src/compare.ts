@@ -14,7 +14,7 @@ export type CompareResult = {
   reason?: string;
   width?: number;
   height?: number;
-  figmaSize?: [number, number];
+  designSize?: [number, number];
   appSize?: [number, number];
   mismatchedPixels?: number;
   diffRatio?: number;
@@ -24,11 +24,11 @@ export type CompareResult = {
 const MAX_MASK_RATIO = 0.02;
 
 export function comparePng(
-  figma: Buffer,
+  design: Buffer,
   app: Buffer,
   options: { maxDiffRatio?: number; masks?: Mask[]; fit?: boolean } = {},
 ): CompareResult {
-  let left: PNG = PNG.sync.read(figma);
+  let left: PNG = PNG.sync.read(design);
   let right: PNG = PNG.sync.read(app);
   if (left.width !== right.width || left.height !== right.height) {
     if (!options.fit) {
@@ -37,7 +37,7 @@ export function comparePng(
         reason: "size",
         width: right.width,
         height: right.height,
-        figmaSize: [left.width, left.height],
+        designSize: [left.width, left.height],
         appSize: [right.width, right.height],
       };
     }

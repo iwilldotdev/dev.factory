@@ -48,12 +48,12 @@ class CommitsCase(unittest.TestCase):
 class OriginHead(CommitsCase):
     def test_mr_commits_before_the_origin_head_are_not_checked(self):
         run(self.repo, "checkout", "-b", "feature/own")
-        self.commit("bad pre-existing MR commit")
-        run(self.repo, "push", "origin", "feature/own")  # the run branch IS the MR source branch
+        self.commit("bad pre-existing change commit")
+        run(self.repo, "push", "origin", "feature/own")  # the run branch IS the change source branch
         origin = run(self.repo, "rev-parse", "HEAD")
         self.commit("[X-2] - review fix")
         errors, _ = self.check()
-        self.assertEqual(len(errors), 1, "without the origin head the MR's own bad commit is checked")
+        self.assertEqual(len(errors), 1, "without the origin head the change's own bad commit is checked")
         errors, _ = self.check(origin_head=origin)
         self.assertEqual(errors, [])
 
@@ -189,7 +189,7 @@ class InheritedScope(CommitsCase):
         errors, _ = self.check(own=("feature/own-pack",))
         self.assertEqual(len(errors), 1)
 
-    def test_inherited_allow_lists_targets_stack_and_open_mr_branches(self):
+    def test_inherited_allow_lists_targets_stack_and_open_change_branches(self):
         from factory import core
         import os
         home = Path(tempfile.mkdtemp())
@@ -201,13 +201,17 @@ class InheritedScope(CommitsCase):
         runrec = {"id": "ws-a-1", "workspace": "ws", "targets": ["homolog", "pack"], "tickets": [],
                   "hotfix": {"base": "homolog", "mirror": ["pack"]},
                   "repos": {"R": {"base": "homolog", "base_branch": "feature/dep"}}}
-        remote = core.run_dir("ws-a-1") / "remote"
-        remote.mkdir(parents=True)
-        core.write_json(remote / "mr-R-5.json", {"source_branch": "feature/open", "state": "opened"})
-        core.write_json(remote / "mr-R-6.json", {"source_branch": "feature/merged", "state": "merged"})
-        core.write_json(remote / "mr-R-5-discussions.json", {"source_branch": "feature/disc"})
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from change_support import put_change
+        put_change("ws-a-1", "R", "open", number=5, source_branch="feature/open", state="open")
+        put_change("ws-a-1", "R", "merged", number=6, source_branch="feature/merged", state="merged", head_sha="c" * 40)
+        put_change("ws-a-1", "Other", "open", number=7, source_branch="feature/other-repo", state="open")
+        (core.run_dir("ws-a-1") / "raw" / "change" / "R-open.json").write_text("{}", encoding="utf-8")  # stale: ignored
+        put_change("ws-a-1", "R", "late", number=8, source_branch="feature/late", state="open")
         self.assertEqual(gate.inherited_allow(runrec, ws, "R"),
-                         {"release/h", "pack", "feature/dep", "feature/open"})
+                         {"release/h", "pack", "feature/dep", "feature/late"})
+        self.assertEqual(gate.merged_change_heads(runrec), ["c" * 40])
 
 
 if __name__ == "__main__":

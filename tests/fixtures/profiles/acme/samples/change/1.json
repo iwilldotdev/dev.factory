@@ -1,0 +1,70 @@
+{
+  "n": "42",
+  "link": "https://scm.example/team/api/changes/42",
+  "proj": "team/api",
+  "title": "Draft: Fix empty list spinner",
+  "text": null,
+  "from": "fix/list-spinner",
+  "into": "main",
+  "tip": "abc123def456",
+  "status": "OPEN",
+  "wip": false,
+  "reviewers": [
+    {
+      "login": "ana"
+    },
+    {
+      "login": "bo"
+    }
+  ],
+  "approvals": [
+    {
+      "login": "ana"
+    }
+  ],
+  "threads": [
+    {
+      "id": "t1",
+      "closed": false,
+      "can_close": true,
+      "msgs": [
+        {
+          "by": "ana",
+          "text": "Please add a test.",
+          "auto": false,
+          "file": "src/list.js",
+          "line": "10"
+        },
+        {
+          "by": "dev",
+          "text": "Done.",
+          "auto": false
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "closed": true,
+      "can_close": true,
+      "msgs": [
+        {
+          "by": "bot",
+          "text": "assigned",
+          "auto": true
+        }
+      ]
+    }
+  ],
+  "ci": [
+    {
+      "id": "p9",
+      "sha": "abc123def456",
+      "state": "ok"
+    },
+    {
+      "id": "p8",
+      "sha": "0000",
+      "state": "bad"
+    }
+  ]
+}

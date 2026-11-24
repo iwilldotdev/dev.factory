@@ -151,7 +151,7 @@ def _copy_one(source: Path, target: Path, root: Path, rel: str, main: Path) -> s
         return f"cannot copy: {err.strerror or err}"
     ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--", rel.replace("\\", "/")],
                              capture_output=True, text=True).returncode == 0
-    if not ignored:  # e.g. the review worktree of someone else's MR: a secret one `git add -A` from a commit
+    if not ignored:  # e.g. the review worktree of someone else's change: a secret one `git add -A` from a commit
         _remove_copy(target, new_dirs)
         return "not gitignored in this worktree: not copied"
     return None

@@ -27,7 +27,7 @@ BLOCKER_KIND_HELP = {
     "env": "the run's own environment (env up/login/ports/worktree) does not work",
     "access": "a credential or permission is missing (repo, pipeline, ticket, design file)",
     "question": "only the user can answer it",
-    "dependency": "another ticket, run or MR must land first",
+    "dependency": "another ticket, run or change must land first",
     "conflict": "a merge or cherry-pick conflict needs resolving",
     "decision": "a product or scope decision the user must make",
     "infra": "a service, machine or network outside the run (CI, registry, VPN, shared database) is down",
@@ -86,27 +86,43 @@ def _format_branch(run: dict, ws: dict, alias: str, target: str | None, fmt: str
 
 # ---------- start ----------
 
-ISSUE_BUG_TYPES = {"bug", "defeito", "erro"}
-
-
-def issue_is_bug(path: Path) -> bool | None:
-    """True/False from the saved Jira issue's issuetype (Bug/Defeito/Erro, any case); None when unreadable or absent."""
+def ticket_ref(ws: dict, ref: str, kind_label: str = "ticket") -> str:
+    """Ticket key of a key or a ticket URL, parsed with the tickets profile `refs` (`ticket_url`, then `ticket_key`;
+    both with the named group `key`). Without a tickets profile only plain keys are accepted (uppercased)."""
+    from .. import profiles
+    ref = str(ref).strip()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    fields = data.get("fields") if isinstance(data, dict) and isinstance(data.get("fields"), dict) else data
-    itype = fields.get("issuetype") if isinstance(fields, dict) else None
-    name = itype.get("name") if isinstance(itype, dict) else itype
-    if not isinstance(name, str) or not name.strip():
-        return None
-    return name.strip().lower() in ISSUE_BUG_TYPES
+        _, prof = profiles.profile_for(ws, "ticket")
+    except FactoryError:
+        if "://" in ref:
+            raise FactoryError(f"{kind_label} {ref!r} is a URL: set workspace providers.tickets so its refs.ticket_url can parse it")
+        return ref.upper()
+    refs = prof.get("refs") or {}
+    for field, how in (("ticket_url", re.search), ("ticket_key", re.fullmatch)):
+        pat = refs.get(field)
+        if not isinstance(pat, str):
+            continue
+        try:
+            m = how(pat, ref)
+        except re.error as err:
+            raise FactoryError(f"profile {prof.get('name')!r} refs.{field} is not a valid regex: {err}") from err
+        if m and "key" in m.groupdict() and m.group("key"):
+            return m.group("key")
+    raise FactoryError(f"{kind_label} {ref!r} is not a ticket key or URL of profile {prof.get('name')!r} "
+                       f"(refs.ticket_key {refs.get('ticket_key')!r}, refs.ticket_url {refs.get('ticket_url')!r})")
+
+
+def ticket_is_bug(run_id: str, key: str) -> bool | None:
+    """`is_bug` of the run's valid, fresh ticket contract; None when there is none (or it is invalid or stale)."""
+    from .. import contracts
+    doc, problems = contracts.load_contract(run_id, "ticket", key)
+    return bool(doc["is_bug"]) if doc is not None and not problems else None
 
 
 def cmd_start(args) -> int:
     ws = workspace_load(args.workspace)
-    tickets = [t.upper() for t in args.tickets]
-    bugs = {b.upper() for b in args.bug or []}
+    tickets = [ticket_ref(ws, t) for t in args.tickets]
+    bugs = {ticket_ref(ws, b, "--bug") for b in args.bug or []}
     hotfix = None
     targets = list((ws.get("ship") or {}).get("targets") or [])
     if getattr(args, "hotfix", False):
@@ -121,20 +137,23 @@ def cmd_start(args) -> int:
         targets = [hotfix["base"], *hotfix["mirror"]]
         if not args.feature:
             bugs |= set(tickets)
-    run_id = f"{ws['name'].lower()}-{(args.epic or tickets[0]).lower()}"
+    epic = ticket_ref(ws, args.epic, "--epic") if args.epic else None
+    run_id = f"{ws['name'].lower()}-{(epic or tickets[0]).lower()}"
     if (run_dir(run_id) / "run.json").exists():
         raise FactoryError(f"run {run_id} already exists")
     derived = []
-    if not args.feature:  # the saved Jira issuetype decides when the issue was fetched into the run dir already
+    # Only when a ticket contract is already in the run dir (ingested before start): normally none exists yet and the
+    # intake gate catches a provider-typed bug in a non-bug run instead.
+    if not args.feature:
         for t in tickets:
-            if issue_is_bug(run_dir(run_id) / "remote" / f"issue-{t}.json"):
+            if ticket_is_bug(run_id, t):
                 bugs.add(t)
                 derived.append(t)
     stamp = now()
     run = {
         "schemaVersion": SCHEMA_VERSION, "id": run_id, "workspace": ws["name"], "kind": "ticket",
         "tickets": [{"key": t, "type": "bug" if t in bugs else "feature",
-                     "parent": args.epic.upper() if args.epic else None, "depends_on": []} for t in tickets],
+                     "parent": epic, "depends_on": []} for t in tickets],
         "repos": {}, "targets": targets,
         "phase": "intake", "risk": args.risk,
         "loops": {"build": 0, "review": 0},
@@ -145,14 +164,14 @@ def cmd_start(args) -> int:
         run["hotfix"] = hotfix
     if getattr(args, "login_user", None):
         run["login_user"] = args.login_user
-    for sub in ("remote", "figma", "checks", "evidence", "reviews", "baseline"):
+    for sub in ("raw", "contracts", "design", "checks", "evidence", "reviews", "baseline"):
         (run_dir(run_id) / sub).mkdir(parents=True, exist_ok=True)
     event(run, "phase", **{"from": None, "to": "intake"})
     register_session(run)
     if derived:
-        event(run, "retype", to="bug", tickets=derived, source="jira issuetype")
+        event(run, "retype", to="bug", tickets=derived, source="ticket contract is_bug")
     run_save(run)
-    note = f" (bug derived from the Jira issuetype: {', '.join(derived)})" if derived else ""
+    note = f" (bug derived from the ticket contract is_bug: {', '.join(derived)})" if derived else ""
     _emit(args, {"run": run_id, "dir": str(run_dir(run_id)), "bug": derived}, f"started {run_id} at {run_dir(run_id)}{note}")
     return 0
 
@@ -397,11 +416,11 @@ def cmd_branch(args) -> int:
     main = Path(conf.get("path") or "")
     if not conf.get("path") or not (main / ".git").exists():
         raise FactoryError(f"repo {alias}: workspace path is missing or not a git repository: {conf.get('path')!r}")
-    if args.mr:
+    if args.change:
         from . import review
-        return review.branch_for_mr(args, run, ws, conf, main)
+        return review.branch_for_change(args, run, ws, conf, main)
     if not args.base:
-        raise FactoryError("--base is required (or --mr <iid> for a review run)")
+        raise FactoryError("--base is required (or --change <number> for a review run)")
     if args.for_target:
         if getattr(args, "env_only", False):
             raise FactoryError("--env-only does not combine with --for-target")
@@ -463,8 +482,8 @@ def cmd_env_only(args) -> int:
         if not rec:
             raise FactoryError(f"repo {alias} has no branch in run {run['id']} (factory run branch {run['id']} {alias} "
                                "--base <b> --env-only)")
-        if run.get("kind") == "review" and any(m.get("repo") == alias for m in run.get("mrs") or []):
-            raise FactoryError(f"repo {alias} holds an MR under review in run {run['id']}; it cannot be env_only")
+        if run.get("kind") == "review" and any(m.get("repo") == alias for m in run.get("changes") or []):
+            raise FactoryError(f"repo {alias} holds a change under review in run {run['id']}; it cannot be env_only")
         if on and rec.get("worktrees"):
             raise FactoryError(f"repo {alias} already has mirror worktrees ({', '.join(rec['worktrees'])}); "
                                "it carries code and cannot be env_only")
@@ -487,7 +506,7 @@ def cmd_env_only(args) -> int:
 
 
 def cmd_target_ticket(args) -> int:
-    """Hotfix with several tickets: the MR of `target` is titled with ticket KEY (default: the first ticket)."""
+    """Hotfix with several tickets: the change of `target` is titled with ticket KEY (default: the first ticket)."""
     def mutate(run: dict) -> None:
         hf = hotfix_of(run)
         if not hf:
@@ -507,7 +526,7 @@ def cmd_target_ticket(args) -> int:
 
     run = run_update(args.run, mutate)
     _emit(args, {"target": args.target, "ticket": run["hotfix"]["tickets"][args.target]},
-          f"{args.target}: MR titled with {run['hotfix']['tickets'][args.target]} in run {run['id']} (re-run `ship plan`)")
+          f"{args.target}: change titled with {run['hotfix']['tickets'][args.target]} in run {run['id']} (re-run `ship plan`)")
     return 0
 
 
@@ -637,12 +656,26 @@ def cmd_decide(args) -> int:
     if visual and args.by != "user":
         raise FactoryError("--visual records the user's answer to the visual-evidence question: needs --by user")
 
+    review = getattr(args, "design_review", None)
+    if review and args.by != "user":
+        raise FactoryError("--design-review records the user's review of an approximate design frame: needs --by user")
+    digest = None
+    if review:
+        from .. import design
+        digest = design.frame_digest(args.run, review)
+        if digest is None or review not in design.approx_frames(args.run):
+            raise FactoryError(f"--design-review {review}: no approx design frame {review!r} is referenced by a visual/style "
+                               "check of this run (see `factory design check`)")
+
     def mutate(run: dict) -> None:
         rec = {"at": now(), "phase": run["phase"], "text": args.text, "by": args.by}
         if said:
             rec["user_said"] = said
         if visual:
             rec["visual"] = visual
+        if review:
+            rec["design_review"] = review
+            rec["design_sha"] = digest
         run["decisions"].append(rec)
 
     run = run_update(args.run, mutate)
@@ -710,7 +743,7 @@ def _plan_loops(loops: dict) -> int:
 
 
 def cmd_replan(args) -> int:
-    """The one legit way to change acs.json/checks/figma/diagnosis after the plan gate: back to plan, lock cleared."""
+    """The one legit way to change acs.json/checks/design/diagnosis after the plan gate: back to plan, lock cleared."""
     run = run_load(args.run)
     if run.get("kind") not in ("ticket", "review", None):
         raise FactoryError(f"run replan is for ticket and review runs, not {run.get('kind')}")
@@ -992,7 +1025,7 @@ def event_summary(e: dict) -> str:
     if kind == "env_only":
         return f"{d.get('repo')}: env_only {'on' if d.get('on') else 'off'} (phase {d.get('phase')})"
     if kind == "target_ticket":
-        return f"{d.get('target')}: MR ticket {d.get('ticket')} (phase {d.get('phase')})"
+        return f"{d.get('target')}: change ticket {d.get('ticket')} (phase {d.get('phase')})"
     if kind == "retype":
         return f"retyped to {d.get('to')} (phase {d.get('phase')})"
     if kind == "claim":
@@ -1097,7 +1130,7 @@ def register(sub) -> None:
     rs = parser.add_subparsers(dest="run_cmd", required=True)
     p = rs.add_parser("start")
     p.add_argument("workspace")
-    p.add_argument("tickets", nargs="+")
+    p.add_argument("tickets", nargs="+", metavar="ref", help="ticket key or ticket URL (parsed by the tickets profile refs)")
     p.add_argument("--epic")
     p.add_argument("--risk", choices=["normal", "high"], default="normal")
     p.add_argument("--bug", action="append", help="ticket key that is a bug (repeatable)")
@@ -1134,7 +1167,7 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("repo")
     p.add_argument("--base")
-    p.add_argument("--mr", type=int, help="review run: detached worktree at the saved head of this MR iid")
+    p.add_argument("--change", type=int, metavar="NUMBER", help="review run: detached worktree at the saved head of this change number")
     p.add_argument("--name")
     p.add_argument("--from-run", help="child run id whose branch (same repo) this branch stacks on")
     p.add_argument("--for-target", help="record a per-target source branch (branches[target]) instead of the main branch")
@@ -1146,7 +1179,7 @@ def register(sub) -> None:
     p.add_argument("repo")
     p.add_argument("--off", action="store_true", help="make the repo a code repo again")
     p.set_defaults(func=cmd_env_only)
-    p = rs.add_parser("target-ticket", help="hotfix: title the MR of a target with this ticket (default: the first)")
+    p = rs.add_parser("target-ticket", help="hotfix: title the change of a target with this ticket (default: the first)")
     p.add_argument("run")
     p.add_argument("target")
     p.add_argument("key")
@@ -1170,6 +1203,8 @@ def register(sub) -> None:
     p.add_argument("--user-said", help="gist of the user's chat message behind a --by user decision")
     p.add_argument("--visual", choices=["yes", "no"],
                    help="the user's answer to the visual-evidence question (screenshot checks; DESIGN section 12)")
+    p.add_argument("--design-review", dest="design_review", metavar="FRAME",
+                   help="the user's review of an approximate design frame (needs --by user); the review gate requires one per approx frame")
     p.set_defaults(func=cmd_decide)
     p = rs.add_parser("block")
     p.add_argument("run")
@@ -1211,7 +1246,7 @@ def register(sub) -> None:
     p.add_argument("--tail", type=int, help="only the last N events")
     p.add_argument("--since", help="ISO date/time (naive = local)")
     p.set_defaults(func=cmd_log)
-    p = rs.add_parser("replan", help="back to plan to change acs.json/checks/figma/diagnosis (clears the plan lock)")
+    p = rs.add_parser("replan", help="back to plan to change acs.json/checks/design/diagnosis (clears the plan lock)")
     p.add_argument("run")
     p.add_argument("reason")
     p.add_argument("--decision", type=int, help="user decision # (run decide --by user, this phase); else counts "

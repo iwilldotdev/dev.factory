@@ -1,0 +1,77 @@
+{
+  "schema": "change.v1",
+  "repo": "api",
+  "number": 42,
+  "url": "https://scm.example/team/api/changes/42",
+  "project": "team/api",
+  "title": "Fix empty list spinner",
+  "description_md": "",
+  "source_branch": "fix/list-spinner",
+  "target_branch": "main",
+  "head_sha": "abc123def456",
+  "state": "open",
+  "draft": true,
+  "reviewers": [
+    "ana",
+    "bo"
+  ],
+  "approvals": {
+    "known": true,
+    "by": [
+      "ana"
+    ]
+  },
+  "threads": [
+    {
+      "id": "t1",
+      "resolved": false,
+      "resolvable": true,
+      "system": false,
+      "notes": [
+        {
+          "author": "ana",
+          "body_md": "Please add a test.",
+          "system": false,
+          "path": "src/list.js",
+          "line": 10
+        },
+        {
+          "author": "dev",
+          "body_md": "Done.",
+          "system": false
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "resolved": true,
+      "resolvable": true,
+      "system": false,
+      "notes": [
+        {
+          "author": "bot",
+          "body_md": "assigned",
+          "system": true
+        }
+      ]
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "p9",
+      "sha": "abc123def456",
+      "status": "success"
+    },
+    {
+      "id": "p8",
+      "sha": "0000",
+      "status": "failed"
+    }
+  ],
+  "unknowns": [
+    {
+      "field": "author",
+      "reason": "not mapped"
+    }
+  ]
+}

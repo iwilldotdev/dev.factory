@@ -11,6 +11,7 @@ from unittest import mock
 from factory import core
 from factory.commands import env as env_mod
 from tests.real_support import RealCase, cli, commit_file
+from tests.ticket_support import put_ticket
 
 FAKE_CLI = Path(__file__).resolve().parent / "fake_cli.py"
 
@@ -48,17 +49,14 @@ class TestIntegrationFlow(RealCase):
         rd = core.run_dir(rid)
 
         self.ok("run", "start", "ws", "DEV-1")
-        core.write_json(rd / "remote" / "issue-DEV-1.json", {"key": "DEV-1", "fields": {"summary": "Thing"}})
+        put_ticket(rid, "DEV-1", title="Thing")
         self.ok("gate", rid, "intake")
         self.ok("run", "branch", rid, "React", "--base", "main")
         wt = Path(core.run_load(rid)["repos"]["React"]["worktree"])
 
         # acs: a test check and a style check with a real pack
-        pack = rd / "figma"
-        pack.mkdir(exist_ok=True)
-        core.write_json(pack / "1-2.json", {"style": {"fontSize": 12}})
-        (pack / "1-2.png").write_bytes(tiny_png())
-        core.write_json(pack / "meta.json", {"fileKey": "abc", "lastModified": "2026-01-01"})
+        from tests.design_support import write_design
+        write_design(rid, "1:2")
         core.write_json(rd / "checks" / "style.json", {
             "node": "1:2", "entries": [{"id": "t", "selector": "h1", "expect": {"fontSize": 12}}]})
         py = f'"{sys.executable}" -c "pass"'
@@ -95,11 +93,9 @@ class TestIntegrationFlow(RealCase):
         self.ok("gate", rid, "review")
 
         plan = json.loads(self.ok("--json", "ship", "plan", rid))
-        self.assertEqual(plan["mrs"][0]["source_branch"], core.run_load(rid)["repos"]["React"]["branch"])
-        for mr in plan["mrs"]:
-            core.write_json(rd / mr["readback"], {
-                "source_branch": mr["source_branch"], "target_branch": mr["target_branch"],
-                "title": mr["title"], "draft": True, "web_url": "http://x/mr/1", "iid": 1, "sha": mr["head_sha"]})
+        self.assertEqual(plan["changes"][0]["source_branch"], core.run_load(rid)["repos"]["React"]["branch"])
+        from tests.change_support import put_for_plan
+        put_for_plan(rid, plan)
         self.ok("ship", "verify", rid)
         self.ok("gate", rid, "ship")
         self.assertEqual(core.run_load(rid)["phase"], "feedback")
@@ -139,6 +135,6 @@ class TestIntegrationFlow(RealCase):
             "checks": [{"id": "C1", "type": "test", "repo": "React", "cmd": f'"{sys.executable}" -c "pass"'}]})
         self.lock_and_prove(rid)
         plan = json.loads(self.ok("--json", "ship", "plan", rid))
-        by_target = {m["target"]: m["source_branch"] for m in plan["mrs"]}
+        by_target = {m["target"]: m["source_branch"] for m in plan["changes"]}
         self.assertEqual(by_target["homolog"], "feature/DEV-3-h")
         self.assertEqual(by_target["main"], core.run_load(rid)["repos"]["React"]["branch"])

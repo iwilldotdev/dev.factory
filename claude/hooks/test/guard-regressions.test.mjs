@@ -306,7 +306,7 @@ function writesFile(input) {
 
 /** The class of a command (sorted segment kinds) or null when one segment fits no kind or redirects outside a safe root. */
 function classOf(cmd, c) {
-  const heredoc = cmd.match(/^((?:cat|git commit -F -|gh [\w ]+--body-file -))\s*<<'(\w+)'\n[\s\S]*\n\2\s*$/);
+  const heredoc = cmd.match(/^((?:cat|git commit -F -))\s*<<'(\w+)'\n[\s\S]*\n\2\s*$/);
   if (heredoc) return 'heredoc-data';
   const segs = splitTop(cmd);
   if (!segs) return null;

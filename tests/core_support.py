@@ -27,10 +27,10 @@ PY = f'"{sys.executable}"'
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 SAMPLE_PROFILE = {
     "schemaVersion": 1,
-    "repos": [{"alias": "React", "name": "webapp", "gitlab_project": "g/react", "order": 2}],
+    "repos": [{"alias": "React", "name": "webapp", "scm_project": "g/react", "order": 2}],
     "ship": {"targets": ["pack", "homolog"], "draft_default": True},
     "commit": {"header_regex": "^\\[[^\\]]+\\] - .+", "forbidden_trailers": ["Co-authored-by:"]},
-    "epics": [{"key": "DEV-1", "roadmap": "r.md", "ship_comment": "s.md", "jira_transition": None}],
+    "epics": [{"key": "DEV-1", "roadmap": "r.md", "ship_comment": "s.md", "ticket_transition": None}],
 }
 
 
@@ -90,9 +90,8 @@ class FactoryCase(unittest.TestCase):
                                                   "FACTORY_TRANSCRIPT_ROOTS": str(self.tmp / "no-transcripts")})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.ext_errors = {"check_pack": [], "capability": [], "verify": []}
+        self.ext_errors = {"capability": [], "verify": []}
         mods = {
-            "factory.commands.figma": fake_module("factory.commands.figma", check_pack=lambda rid: list(self.ext_errors["check_pack"])),
             "factory.commands.env": fake_module("factory.commands.env", capability=lambda ws, alias: list(self.ext_errors["capability"]),
                                                 binding_error=lambda ws, alias, wt, head: None),
             "factory.commands.ship": fake_module("factory.commands.ship", verify=lambda rid: list(self.ext_errors["verify"])),
@@ -145,15 +144,12 @@ class FactoryCase(unittest.TestCase):
     def write_acs(self, acs: list, checks: list) -> None:
         core.write_json(core.run_dir(self.run_id) / "acs.json", {"schemaVersion": 1, "acs": acs, "checks": checks})
 
-    def write_pack(self, node: str, payload: dict | None = None, png: bool = True, meta: bool = True) -> None:
-        fig = core.run_dir(self.run_id) / "figma"
-        stem = core.node_file(node)
-        core.write_json(fig / f"{stem}.json", payload if payload is not None else
-                        {"style": {"fontSize": 12, "fontWeight": 600}, "fills": [{"color": {"r": 0.2, "g": 0.2, "b": 0.2}}]})
-        if png:
-            (fig / f"{stem}.png").write_bytes(PNG)
-        if meta:
-            core.write_json(fig / "meta.json", {"fileKey": "abc", "lastModified": "2026-01-01", "version": "1"})
+    def write_pack(self, node: str, root: dict | None = None, png: bool = True, fidelity: str = "exact",
+                   version: str | None = "rev-1") -> None:
+        """Design contracts for `node`: a frame (default: a filled root with one 12px/600 text child) and its image."""
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from design_support import write_design
+        write_design(self.run_id, node, root, fidelity=fidelity, version=version, with_image=png)
 
     def write_style_map(self, node: str, expect: dict, name: str = "checks/style/s.json") -> None:
         core.write_json(core.run_dir(self.run_id) / name, {

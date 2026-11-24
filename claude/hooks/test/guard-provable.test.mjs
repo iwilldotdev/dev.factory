@@ -265,7 +265,7 @@ test('heredoc: the body is data only for a data consumer, as the whole command, 
   const keep = (cmd) => assert.equal(lib.stripDataHeredoc(cmd), cmd, `body must be kept: ${JSON.stringify(cmd)}`);
   const body = `rm -rf ${R}/evidence`;
   assert.equal(lib.stripDataHeredoc(`git commit -F - <<'EOF'\n${body}\nEOF`), 'git commit -F - ');
-  assert.equal(lib.stripDataHeredoc(`gh pr create --title t --body-file - <<"EOF"\n${body}\nEOF\n`), 'gh pr create --title t --body-file - ');
+  keep(`acme-cli change create --title t --body-file - <<"EOF"\n${body}\nEOF\n`); // an unknown CLI is not a proven data consumer
   keep(`cat <<'EOF' > ${S}/n.md\n${body}\nEOF`); // a file write target: the body is judged with it
   keep(`tee ${S}/n.md <<'EOF'\n${body}\nEOF`);
   assert.equal(lib.stripDataHeredoc(`cat <<EOF\nplain text\nEOF`), 'cat ');

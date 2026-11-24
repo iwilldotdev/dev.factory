@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runHook, denied, bash, write, FH, FH_POSIX, RUN, WIN } from './helpers.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { runHook, denied, bash, write, FH, FH_POSIX, RUN, WIN, approveProfile } from './helpers.mjs';
 
 const protect = (input, env) => runHook('protect.js', [], input, env);
 const gitBashRun = WIN ? RUN.replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`) : RUN;
@@ -37,7 +40,7 @@ test('normalises case, separators, Git Bash and relative paths', () => {
 
 test('allows author-owned and other files', () => {
   for (const rel of ['acs.json', 'checks/browser/ac-1.spec.ts', 'checks/style/drawer.json',
-    'figma/3544-5710.json', 'figma/meta.json', 'remote/issue-DEV-1.json', 'notes/scout.md']) {
+    'design/frame-1.json', 'raw/ticket/ACME-1.json', 'raw/design_image/f-1.png', 'notes/scout.md']) {
     assert.ok(!denied(protect(write(`${RUN}/${rel}`))), rel);
   }
   assert.ok(!denied(protect(write(`${FH_POSIX}/workspaces/acme/workspace.json`))));
@@ -119,24 +122,63 @@ test('denies review-report files for file tools and shell', () => {
 });
 
 test('denies MCP tools whose save_to targets protected run files', () => {
-  const mcp = (save_to, tool = 'mcp__dev_mcp__figma_get_design_context') => ({ tool_name: tool, tool_input: { fileKey: 'k', save_to } });
+  const mcp = (save_to, tool = 'mcp__acme__get_node') => ({ tool_name: tool, tool_input: { ref: 'k', save_to } });
   for (const rel of ['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md',
-    'evidence/CHK-1.json', 'reviews/qa-1.json', 'baseline/React.json']) {
+    'evidence/CHK-1.json', 'reviews/qa-1.json', 'baseline/React.json', 'contracts/ticket/ACME-1.json',
+    'contracts/design_frame/f-1.json']) {
     assert.ok(denied(protect(mcp(`${RUN}/${rel}`))), rel);
   }
-  assert.ok(denied(protect(mcp(`${RUN}/evidence/`, 'mcp__dev-mcp__figma_fetch_screenshot'))));
+  assert.ok(denied(protect(mcp(`${RUN}/evidence/`, 'mcp__acme-tickets__fetch_node'))));
   assert.ok(denied(protect(mcp(`${RUN}/EVIDENCE/a.json`))));
   assert.ok(denied(protect(mcp('$FACTORY_HOME/runs/r/run.json'))));
 });
 
-test('allows MCP save_to into agent-owned run folders and calls without save_to', () => {
-  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__jira_get_issue', tool_input: save_to ? { save_to } : {} });
-  for (const rel of ['figma/3544-5710.json', 'figma/meta.json', 'figma/3544-5710.png', 'remote/issue-DEV-1.json',
-    'remote/mr-app-main.json']) {
-    assert.ok(!denied(protect(mcp(`${RUN}/${rel}`))), rel);
+test('MCP destination args: every default name is checked, raw/ is the free area', () => {
+  const mcp = (args) => ({ tool_name: 'mcp__acme__get_ticket', tool_input: args });
+  for (const arg of ['save_to', 'output_path', 'output_file', 'out', 'dest']) {
+    assert.ok(denied(protect(mcp({ [arg]: `${RUN}/contracts/ticket/ACME-1.json` }))), `${arg} contracts`);
+    assert.ok(denied(protect(mcp({ [arg]: `${RUN}/run.json` }))), `${arg} run.json`);
+    assert.ok(denied(protect(mcp({ [arg]: `${RUN}/design/f-1.json` }))), `${arg} design`);
+    assert.ok(denied(protect(mcp({ [arg]: `${RUN}/raw/../contracts/x.json` }))), `${arg} traversal`);
+    assert.ok(!denied(protect(mcp({ [arg]: `${RUN}/raw/ticket/ACME-1.json` }))), `${arg} raw`);
+    assert.ok(!denied(protect(mcp({ [arg]: `${RUN}/raw/design_image/f-1.png` }))), `${arg} raw image`);
   }
-  assert.ok(!denied(protect(mcp())));
-  assert.ok(!denied(protect({ tool_name: 'mcp__x__y', tool_input: { save_to: 'C:/tmp/dev.mcp/a.json' } })));
+  assert.ok(!denied(protect(mcp({}))));
+  assert.ok(!denied(protect({ tool_name: 'mcp__x__y', tool_input: { save_to: 'C:/tmp/scratch/a.json' } })));
+  // an argument name that is not a destination is not judged
+  assert.ok(!denied(protect(mcp({ target: `${RUN}/run.json` }))));
+});
+
+test('raw/ is free for shell redirects and file tools; contracts/ is CLI-only', () => {
+  assert.ok(!denied(protect(write(`${RUN}/raw/ticket/ACME-1.json`))));
+  assert.ok(!denied(protect(bash(`acme-cli ticket get ACME-1 > ${RUN}/raw/ticket/ACME-1.json`, '/work'))));
+  assert.ok(!denied(protect(bash(`curl -sS https://api.example/t/ACME-1 > ${RUN}/raw/ticket/ACME-1.json`, '/work'))));
+  assert.ok(denied(protect(write(`${RUN}/contracts/ticket/ACME-1.json`))));
+  assert.ok(denied(protect(write(`${RUN}/contracts/ticket/ACME-1.json`, undefined, 'Edit'))));
+  assert.ok(denied(protect(bash(`echo '{}' > ${RUN}/contracts/ticket/ACME-1.json`, '/work'))));
+  assert.ok(denied(protect(bash(`cp /tmp/c.json ${RUN}/contracts/change/api-1.json`, '/work'))));
+  assert.ok(denied(protect(bash(`rm -rf ${RUN}/contracts`, '/work'))));
+  assert.ok(denied(protect(bash(`echo x > ${RUN}/design/f-1.json`, '/work'))));
+  assert.ok(!denied(protect(bash(`factory ingest acme-dev-1 ticket ${RUN}/raw/ticket/ACME-1.json`, '/work'))));
+});
+
+test('profile save_args extend the destination names (read from FACTORY_HOME/profiles)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fh-save-'));
+  try {
+    fs.mkdirSync(path.join(home, 'workspaces', 'w1'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'workspaces', 'w1', 'workspace.json'), JSON.stringify({ providers: { tickets: 'acme' } }));
+    fs.mkdirSync(path.join(home, 'profiles', 'acme'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'profiles', 'acme', 'profile.json'), JSON.stringify({ save_args: ['target_file'] }));
+    approveProfile(home, 'acme');
+    const run = `${home.replace(/\\/g, '/')}/runs/w1-1`;
+    const call = { tool_name: 'mcp__acme__get_ticket', tool_input: { target_file: `${run}/run.json` } };
+    assert.ok(denied(protect(call, { FACTORY_HOME: home })));
+    assert.ok(!denied(protect({ ...call, tool_input: { target_file: `${run}/raw/t.json` } }, { FACTORY_HOME: home })));
+    // without the profile the argument name is unknown
+    assert.ok(!denied(protect(call, { FACTORY_HOME: path.join(home, 'nowhere') })));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 const ps = (command) => ({ tool_name: 'PowerShell', tool_input: { command }, cwd: '/work' });
@@ -179,14 +221,14 @@ test('protect does not block the auditor FACTORY_ROLE command (hooks also run in
   assert.ok(!denied(protect(bash('echo hello', '/work'))));
 });
 
-test('author-owned run files: file tools allowed, MCP save_to only into figma/', () => {
-  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__figma_get_design_context', tool_input: { save_to } });
-  for (const rel of ['acs.json', 'diagnosis.md', 'checks/browser/a.ts']) {
+test('author-owned run files: file tools allowed, MCP saves only into raw/', () => {
+  const mcp = (save_to) => ({ tool_name: 'mcp__acme__get_node', tool_input: { save_to } });
+  for (const rel of ['acs.json', 'diagnosis.md', 'checks/browser/a.ts', 'design/1-2.json']) {
     assert.ok(!denied(protect(write(`${RUN}/${rel}`))), rel);
     assert.ok(denied(protect(mcp(`${RUN}/${rel}`))), rel);
   }
-  assert.ok(!denied(protect(mcp(`${RUN}/figma/1-2.json`))));
-  assert.ok(denied(protect(mcp(`${RUN}/figma/../run.json`))));
+  assert.ok(!denied(protect(mcp(`${RUN}/raw/design_frame/1-2.json`))));
+  assert.ok(denied(protect(mcp(`${RUN}/raw/../run.json`))));
 });
 
 test('env pid and storage records are CLI-owned (file tools, shell, MCP save_to)', () => {
@@ -196,7 +238,7 @@ test('env pid and storage records are CLI-owned (file tools, shell, MCP save_to)
     assert.ok(denied(protect(write(f))), f);
     assert.ok(denied(protect(bash(`echo 1 > ${f}`, '/work'))), f);
     assert.ok(denied(protect(bash(`Set-Content ${f} x`, '/work'))), f);
-    assert.ok(denied(protect({ tool_name: 'mcp__dev_mcp__x', tool_input: { save_to: f } })), f);
+    assert.ok(denied(protect({ tool_name: 'mcp__acme__fetch_x', tool_input: { save_to: f } })), f);
   }
   assert.ok(!denied(protect(write(`${FH_POSIX}/env/acme/notes.txt`))));
   assert.ok(!denied(protect(bash(`cat ${pid}`, '/work'))));

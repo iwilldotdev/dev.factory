@@ -1,16 +1,15 @@
 <#
 .SYNOPSIS
   Finishes a local dev.factory setup: installs the Claude Code layer into one or more
-  profiles (including the dev.mcp env in each profile's .claude.json), puts the
-  `factory` shim on the user PATH, and checks the result.
+  profiles, puts the `factory` shim on the user PATH, and checks the result.
 
 .DESCRIPTION
-  Run it with Claude Code / the Claude app CLOSED: the app rewrites .claude.json on exit
-  and would drop the dev.mcp env keys this script adds.
+  Run it with Claude Code / the Claude app CLOSED: install.py renders the agents' tool lists
+  from the MCP servers configured for each profile, and a running app can change that config.
+  The MCP config is only READ (server names); this script and install.py never edit it.
 
   Windows PowerShell 5.1 compatible. Changes only:
     - each <profile> (skills/factory, agents/factory-*, hooks, settings.json, CLAUDE.md block, bin/)
-    - each profile's .claude.json (dev.mcp env: DEV_MCP_SAVE_ROOTS, DEV_MCP_SAVE_ALLOW_DOT, DEV_MCP_SPILL_KB)
     - the USER Path variable (appends <first profile>\bin once)
   Backups are written by install.py to <profile>\backups\factory-<timestamp>\.
 
@@ -27,8 +26,6 @@ param(
   [string] $Workspace = "",
   [switch] $RemoveHarness,
   [switch] $SkipPath,
-  [switch] $BuildDevMcp,
-  [string] $DevMcpPath = "",
   [switch] $Force
 )
 
@@ -36,7 +33,6 @@ $ErrorActionPreference = "Stop"
 # $PSScriptRoot is not available in param defaults on Windows PowerShell 5.1: resolve paths here.
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $repo = Split-Path $scriptDir -Parent
-if (-not $DevMcpPath) { $DevMcpPath = Join-Path (Split-Path $repo -Parent) "dev.mcp" }
 # `-File` passes "a,b" as one string: split on ',' / ';' and trim stray quotes or spaces.
 $Profiles = @($Profiles | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim().Trim('"').Trim("'") } | Where-Object { $_ })
 
@@ -54,17 +50,6 @@ foreach ($tool in @("python", "node", "git")) {
   if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) { Fail "$tool not found on PATH" }
 }
 Ok "python, node and git found; Claude is not running"
-
-if ($BuildDevMcp) {
-  Step "Build dev.mcp ($DevMcpPath)"
-  if (-not (Test-Path (Join-Path $DevMcpPath "package.json"))) { Fail "dev.mcp not found at $DevMcpPath" }
-  Push-Location $DevMcpPath
-  try {
-    npm run build
-    if ($LASTEXITCODE -ne 0) { Fail "dev.mcp build failed" }
-  } finally { Pop-Location }
-  Ok "dev.mcp built"
-}
 
 Step "Install dev.factory into profiles"
 Push-Location $repo
@@ -107,14 +92,12 @@ Ok "factory CLI runs"
 foreach ($p in $Profiles) {
   $full = [Environment]::ExpandEnvironmentVariables($p)
   if (-not (Test-Path $full)) { continue }
-  $cfg = if ($full -eq "$HOME\.claude") { Join-Path $HOME ".claude.json" } else { Join-Path $full ".claude.json" }
-  if (Test-Path $cfg) {
-    $hasEnv = Select-String -Path $cfg -Pattern "DEV_MCP_SAVE_ROOTS" -Quiet
-    if ($hasEnv) { Ok "dev.mcp save_to env present in $cfg" } else { Warn "dev.mcp env not found in $cfg (is the MCP server named dev.mcp there?)" }
-  } else {
-    Warn "no $cfg (this profile may use the main .claude.json)"
+  $agent = Join-Path $full "agents\factory-scout.md"
+  if (Test-Path $agent) {
+    $tools = (Select-String -Path $agent -Pattern '^tools:' | Select-Object -First 1).Line
+    Ok "scout $tools"
   }
-  $dev = @(Get-ChildItem (Join-Path $full "skills") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "dev-*" }).Count
+  $dev =@(Get-ChildItem (Join-Path $full "skills") -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "dev-*" }).Count
   if ($dev -gt 0) { Warn "$dev dev-* skills still in $full\skills (run with -RemoveHarness)" } else { Ok "no dev-* skills in $full" }
 }
 
@@ -123,4 +106,4 @@ if ($Workspace) {
   if ($LASTEXITCODE -ne 0) { Warn "workspace $Workspace has gaps (see above)" } else { Ok "workspace $Workspace valid" }
 }
 
-Write-Host "`nDone. Open Claude again and start a NEW session so it loads the factory skill, agents and the rebuilt dev.mcp." -ForegroundColor Cyan
+Write-Host "`nDone. Open Claude again and start a NEW session so it loads the factory skill, agents and hooks." -ForegroundColor Cyan

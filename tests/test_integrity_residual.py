@@ -265,11 +265,13 @@ class PipelineWaiverTests(IntegrityCase):
     def setUp(self) -> None:
         super().setUp()
         plan = self.shipped()
-        mr = plan["mrs"][0]
-        self.tag = f"{mr['repo']}-{mr['target']}"
-        core.write_json(self.rd / "remote" / f"mr-{self.tag}-discussions.json", {"discussions": []})
-        core.write_json(self.rd / "remote" / f"pipeline-{self.tag}.json",
-                        {"id": 42, "status": "failed", "sha": mr["head_sha"]})
+        change = plan["changes"][0]
+        self.tag = f"{change['repo']}-{change['target']}"
+        from tests.change_support import put_change, put_pipeline
+        put_change(self.rid, change["repo"], change["target"], source_branch=change["source_branch"],
+                   target_branch=change["target_branch"], title=change["title"], draft=change["draft"], head_sha=change["head_sha"],
+                   threads=[], pipelines=[{"id": "42", "status": "failed", "sha": change["head_sha"]}])
+        put_pipeline(self.rid, change["repo"], change["target"], id="42", status="failed", sha=change["head_sha"])
 
     def test_by_user_needs_user_said(self):
         rc, out = cli("run", "decide", self.rid, "pipeline #42: skip it", "--by", "user")

@@ -11,6 +11,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
 
 from real_support import RealCase, cli, commit_file, core, sh
+from tests.ticket_support import put_ticket
 
 PY = f'"{sys.executable}"'
 DIAGNOSIS = "## Root cause\nx\n\n## Evidence\ny\n\n## Ruled out\nz\n"
@@ -28,9 +29,9 @@ class HotfixCase(RealCase):
         for t in ("homolog", "pack"):
             sh("git", "branch", t, cwd=repo)
             sh("git", "update-ref", f"refs/remotes/origin/{t}", t, cwd=repo)
-        self.ws["ship"] = {"targets": ["pack", "homolog"], "draft_default": True, "jira_comment": "mr-links",
+        self.ws["ship"] = {"targets": ["pack", "homolog"], "draft_default": True, "ticket_comment": "change-links",
                            "hotfix": {"base": "homolog", "mirror": ["pack"]}, "package": "REL_9",
-                           "mr_title_format": "[{area} | {target_upper}] - {summary}"}
+                           "title_format": "[{key} | {target}] - {summary}"}
         self.ws["branch_format"] = {"feature": "feature/{key}-{slug}", "bug": "bugfix/{key}",
                                     "hotfix": "hotfix/{package}/{key}-{target_upper}"}
         self.save_ws()
@@ -39,7 +40,7 @@ class HotfixCase(RealCase):
     def start(self):
         self.ok("run", "start", "ws", "BUG-1", "--hotfix")
         self.ok("run", "branch", self.rid, "React", "--base", "homolog")
-        core.write_json(core.run_dir(self.rid) / "remote" / "issue-BUG-1.json", {"key": "BUG-1"})
+        put_ticket(self.rid, "BUG-1", type="Bug", is_bug=True)
         self.wt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
 
     def fix(self, content="v = 2\n"):
@@ -183,17 +184,18 @@ class ShipPlan(HotfixCase):
         self.assertEqual(plan_rc, 0, out)
         import json
         plan = json.loads(out)
-        self.assertEqual([(m["repo"], m["target"]) for m in plan["mrs"]], [("React", "homolog"), ("React", "pack")])
-        base, mirror = plan["mrs"]
+        self.assertEqual([(m["repo"], m["target"]) for m in plan["changes"]], [("React", "homolog"), ("React", "pack")])
+        base, mirror = plan["changes"]
         self.assertEqual(base["source_branch"], "hotfix/REL_9/BUG-1-HOMOLOG")
         self.assertEqual(mirror["source_branch"], "hotfix/REL_9/BUG-1-PACK")
-        self.assertIn("Mirrored to {mr_url:React:pack}", base["description"])
-        self.assertIn("Mirror of {mr_url:React:homolog}", mirror["description"])
+        self.assertIn("Mirrored to {change_url:React:pack}", base["body_md"])
+        self.assertIn("Mirror of {change_url:React:homolog}", mirror["body_md"])
         self.assertEqual(base["depends_on"], [])
-        self.assertIn("CHK-1", mirror["description"])  # checks table; no local artifact links (F-28)
-        self.assertNotIn("](evidence/", mirror["description"])
-        self.assertEqual(sum(1 for a in plan["actions"] if a["type"] == "jira_comment"), 1)
-        self.assertEqual(len(plan["jira_comment"]["adf"]["content"]), 2)
+        self.assertIn("CHK-1", mirror["body_md"])  # checks table; no local artifact links (F-28)
+        self.assertNotIn("](evidence/", mirror["body_md"])
+        comments = [a for a in plan["actions"] if a["type"] == "issue_comment"]
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0]["body_md"].count("{change_url:"), 2)
 
 
 API_CHECK = "import os, sys\nif not os.path.exists('api.txt'):\n    print('ASSERT api.txt')\n    sys.exit(1)\n"
@@ -268,7 +270,7 @@ class TargetBranches(TargetBranchesBase):
         self.ok("prove", self.rid)
         rc, out = cli("--json", "ship", "plan", self.rid)
         self.assertEqual(rc, 0, out)
-        got = {(m["repo"], m["target"]): m["target_branch"] for m in json.loads(out)["mrs"]}
+        got = {(m["repo"], m["target"]): m["target_branch"] for m in json.loads(out)["changes"]}
         self.assertEqual(got, {("API", "homolog"): "homolog", ("API", "pack"): "dev",
                                ("React", "homolog"): "homolog", ("React", "pack"): "pack"})
 
@@ -278,14 +280,12 @@ class TargetBranches(TargetBranchesBase):
         self.ok("prove", self.rid)
         self.ok("ship", "plan", self.rid)
         plan = json.loads((core.run_dir(self.rid) / "ship-plan.json").read_text(encoding="utf-8"))
-        mr = next(m for m in plan["mrs"] if (m["repo"], m["target"]) == ("API", "pack"))
-        rb = {"source_branch": mr["source_branch"], "target_branch": "pack", "title": mr["title"], "draft": True,
-              "sha": mr["head_sha"], "web_url": "u", "iid": 1}
+        change = next(m for m in plan["changes"] if (m["repo"], m["target"]) == ("API", "pack"))
+        from change_support import put_change, put_for_plan
         from factory.commands import ship
-        for m in plan["mrs"]:
-            core.write_json(core.run_dir(self.rid) / m["readback"], dict(rb, source_branch=m["source_branch"], title=m["title"],
-                                                                        sha=m["head_sha"], target_branch=m["target_branch"]))
-        core.write_json(core.run_dir(self.rid) / mr["readback"], dict(rb, source_branch=mr["source_branch"]))
+        put_for_plan(self.rid, plan)
+        put_change(self.rid, "API", "pack", source_branch=change["source_branch"], target_branch="pack", title=change["title"],
+                   draft=change["draft"], head_sha=change["head_sha"])
         errs = ship.verify(self.rid)
         self.assertTrue(any("target_branch 'pack' != planned 'dev'" in e for e in errs), errs)
 

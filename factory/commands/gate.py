@@ -8,10 +8,10 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .. import integrity, media, mirrordiff, shots
+from .. import contracts, design, integrity, media, mirrordiff, shots
 from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, _dep_run_ids, code_repos, ensure_owner, event, evidence_id, git, git_dirty,
-                    git_head, hotfix_of, load_evidence, node_file, now,
+                    git_head, hotfix_of, load_evidence, now,
                     read_json, repo_conf, repo_path_for_run, run_dir, run_load,
                     run_base_branch, run_resync, run_save, run_targets, target_branch, target_worktree, workspace_load)
 
@@ -25,8 +25,7 @@ RUNTIME_TYPES = {"browser", "visual", "style", "api"}
 CHECK_TYPES = RUNTIME_TYPES | {"test", "red-green", "human", shots.SHOT_TYPE}
 AC_KINDS = {"ui", "api", "logic", "data", "bug"}
 LOCAL_REPRO_TYPES = {"test"}  # reproducible in a temp worktree; the only types required on mirror targets
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-DEFAULT_LIMITS = {"max_diff_ratio": 0.03, "max_tolerance_px": 2}
+DEFAULT_LIMITS = {"max_diff_ratio": 0.03, "max_tolerance_px": 2, "approx": dict(design.APPROX_DEFAULTS)}
 FINAL_PHASES = ("done", "report")  # the metrics report is recomputed on entering one of these (and on `run close`)
 
 
@@ -142,71 +141,7 @@ def _call_external(module: str, func: str, *args) -> list[str]:
         return [f"{module}.{func}: {err}"]
 
 
-# ---------- style map ----------
-
-NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
-HEX_RE = re.compile(r"#[0-9a-fA-F]{3,8}\b")
-
-# expected key (style map, CSS names) -> payload keys (Figma names) whose values may back it
-SIZE_KEYS = frozenset({"width", "height", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "padding",
-                       "itemSpacing", "counterAxisSpacing", "cornerRadius", "rectangleCornerRadii", "gap",
-                       "minWidth", "maxWidth", "minHeight", "maxHeight"})
-FAMILIES = {
-    "fontSize": frozenset({"fontSize"}),
-    "lineHeight": frozenset({"lineHeightPx", "lineHeight"}),
-    "fontWeight": frozenset({"fontWeight"}),
-    "letterSpacing": frozenset({"letterSpacing"}),
-    "opacity": frozenset({"opacity"}),
-    "borderWidth": frozenset({"strokeWeight", "borderWidth"}),
-    "fontFamily": frozenset({"fontFamily"}),
-    "text": frozenset({"characters", "text"}),
-}
-for _k in ("width", "height", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "gap",
-           "borderRadius", "minWidth", "maxWidth", "minHeight", "maxHeight"):
-    FAMILIES[_k] = SIZE_KEYS
-COLOR_KEYS = frozenset({"color", "backgroundColor", "borderColor"})
-PAINT_KEYS = frozenset({"fills", "strokes", "background", "backgrounds", "backgroundColor", "color", "fill", "stroke"})
-
-
-def _meta_files(fdir: Path) -> list[Path]:
-    """figma/meta.json and figma/meta-<fileKey>.json."""
-    if not fdir.is_dir():
-        return []
-    return sorted(p for p in fdir.iterdir() if p.is_file() and re.fullmatch(r"meta(?:-.+)?\.json", p.name))
-
-
-def _norm_hex(value: str) -> str | None:
-    h = value.strip().lstrip("#").lower()
-    if len(h) in (3, 4):
-        h = "".join(c * 2 for c in h)
-    if len(h) not in (6, 8) or not re.fullmatch(r"[0-9a-f]+", h):
-        return None
-    return "#" + h[:6]
-
-
-def _rgb_hex(r: float, g: float, b: float) -> str:
-    return "#%02x%02x%02x" % tuple(max(0, min(255, round(c * 255))) for c in (r, g, b))
-
-
-def _walk_colors(node, out: set) -> None:
-    if isinstance(node, dict):
-        vals = [node.get(k) for k in ("r", "g", "b")]
-        if all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in vals):
-            out.add(_rgb_hex(*vals))
-        for v in node.values():
-            _walk_colors(v, out)
-    elif isinstance(node, list):
-        for v in node:
-            _walk_colors(v, out)
-    elif isinstance(node, str):
-        for h in HEX_RE.findall(node):
-            c = _norm_hex(h)
-            if c:
-                out.add(c)
-        c = _expected_color(node)
-        if c:
-            out.add(c)
-
+# ---------- plan helpers ----------
 
 def _run_relative(value) -> bool:
     if not isinstance(value, str) or not value.strip():
@@ -230,146 +165,7 @@ def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def payload_facts(payload) -> tuple[dict[str, set], set[str]]:
-    """({payload key: {numbers and strings found under that key}}, {paint colors under fills/strokes/...})."""
-    by_key: dict[str, set] = {}
-    colors: set[str] = set()
-
-    def walk(node) -> None:
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if k in PAINT_KEYS:
-                    _walk_colors(v, colors)
-                if _is_num(v):
-                    by_key.setdefault(k, set()).add(float(v))
-                elif isinstance(v, str):
-                    by_key.setdefault(k, set()).add(v)
-                    m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)(?:px)?\s*", v)
-                    if m:
-                        by_key[k].add(float(m.group(1)))
-                elif isinstance(v, list) and v and all(_is_num(x) for x in v):
-                    by_key.setdefault(k, set()).update(float(x) for x in v)
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk(payload)
-    return by_key, colors
-
-
-def pack_facts(text: str) -> tuple[list[float], set[str]]:
-    """Every number and color in a pack text (diagnostics; the style-map check uses payload_facts)."""
-    numbers = [float(n) for n in NUM_RE.findall(text)]
-    colors = {c for c in (_norm_hex(h) for h in HEX_RE.findall(text)) if c}
-    try:
-        _walk_colors(json.loads(text), colors)
-    except json.JSONDecodeError:
-        pass
-    return numbers, colors
-
-
-def _expected_color(value) -> str | None:
-    if not isinstance(value, str):
-        return None
-    v = value.strip()
-    if v.startswith("#"):
-        return _norm_hex(v)
-    m = re.fullmatch(r"rgba?\(\s*(\d+)\s*[, ]\s*(\d+)\s*[, ]\s*(\d+)\s*(?:[,/]\s*[\d.]+%?\s*)?\)", v, re.I)
-    if m:
-        return _rgb_hex(*(int(x) / 255 for x in m.groups()))
-    return None
-
-
-def _flatten(prefix: str, value):
-    if isinstance(value, dict):
-        for k, v in value.items():
-            yield from _flatten(f"{prefix}.{k}", v)
-    elif isinstance(value, list):
-        for i, v in enumerate(value):
-            yield from _flatten(f"{prefix}[{i}]", v)
-    else:
-        yield prefix, value
-
-
-def style_map_errors(map_data: dict, pack_text: str, label: str, max_tolerance_px: float | None = None) -> list[str]:
-    """Every expected value must match a value of the SAME property family in the node payload."""
-    errors = []
-    try:
-        payload = json.loads(pack_text)
-    except json.JSONDecodeError:
-        return [f"{label}: Figma pack JSON is not valid"]
-    by_key, colors = payload_facts(payload)
-    entries = map_data.get("entries")
-    if not isinstance(entries, list) or not entries:
-        return [f"{label}: style map has no entries"]
-    for entry in entries:
-        eid = entry.get("id", "?")
-        if not entry.get("selector"):
-            errors.append(f"{label}: entry {eid} has no selector")
-        tol = entry.get("tolerance_px")
-        if tol is not None and (not _is_num(tol) or tol < 0):
-            errors.append(f"{label}: entry {eid} tolerance_px must be a number >= 0")
-        elif max_tolerance_px is not None and tol is not None and tol > max_tolerance_px:
-            errors.append(f"{label}: entry {eid} tolerance_px {tol} exceeds limits.max_tolerance_px {max_tolerance_px}")
-        expect = entry.get("expect")
-        if not isinstance(expect, dict) or not expect:
-            errors.append(f"{label}: entry {eid} has no expect")
-            continue
-        for path, value in _flatten("expect", expect):
-            prop = path[len("expect."):]
-            key = re.split(r"[.\[]", prop, 1)[0]
-            name = f"{label}: {eid}.{prop}={value!r}"
-            if isinstance(value, bool) or value is None:
-                continue
-            color = _expected_color(value)
-            if key in COLOR_KEYS or color is not None:
-                if color is None:
-                    errors.append(f"{name} is not a color")
-                elif key not in COLOR_KEYS:
-                    errors.append(f"{name}: a color for a non-color property")
-                elif color not in colors:
-                    errors.append(f"{name} color not in the node's fills/strokes")
-                continue
-            family = FAMILIES.get(key)
-            if family is None:
-                errors.append(f"{name}: no Figma property family for {key!r} (cannot be backed by the pack)")
-                continue
-            found = set().union(*(by_key.get(k, set()) for k in family))
-            if isinstance(value, str):
-                m = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)(?:px)?\s*", value)
-                if m:
-                    value = float(m.group(1))
-                elif value.strip().lower() not in {str(f).strip().lower() for f in found if isinstance(f, str)}:
-                    errors.append(f"{name} not in the node's {'/'.join(sorted(family))}")
-                    continue
-                else:
-                    continue
-            if _is_num(value) and not any(_is_num(n) and abs(n - value) < 1e-6 for n in found):
-                errors.append(f"{name} number not in the node's {'/'.join(sorted(family))}")
-    return errors
-
-
 # ---------- plan: acs.json ----------
-
-def pack_errors(run_id: str, node: str) -> list[str]:
-    base = run_dir(run_id) / "figma"
-    stem = node_file(node)
-    errors = []
-    jpath, ppath = base / f"{stem}.json", base / f"{stem}.png"
-    if not jpath.is_file():
-        errors.append(f"figma pack: {jpath.name} missing for node {node}")
-    else:
-        try:
-            json.loads(jpath.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            errors.append(f"figma pack: {jpath.name} is not valid JSON")
-    if not ppath.is_file():
-        errors.append(f"figma pack: {ppath.name} missing for node {node}")
-    elif ppath.read_bytes()[:8] != PNG_MAGIC:
-        errors.append(f"figma pack: {ppath.name} is not a decodable PNG")
-    return errors
-
 
 def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
     path = run_dir(run_id) / "acs.json"
@@ -432,8 +228,27 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             errors.append(f"{cid}: path is required")
         if ctype == "browser" and not chk.get("spec"):
             errors.append(f"{cid}: spec is required")
-        if ctype in ("visual", "style") and not chk.get("node"):
-            errors.append(f"{cid}: node is required")
+        ui = ctype in design.UI_TYPES
+        if ui and not design.check_node(chk):
+            errors.append(f"{cid}: node is required (the design frame id; `frame` is accepted as an alias)")
+        if ui:
+            for k in chk:
+                if design.LEGACY_FILE_KEY.match(k) and k != "source_file":
+                    errors.append(f"{cid}: key {k!r} was renamed `source_file`: `factory migrate apply <run> <map.json>` with "
+                                  f'{{"op":"replace_text","file":"acs.json","from":"{k}","to":"source_file"}}')
+            if chk.get("source_file") is not None and not isinstance(chk["source_file"], str):
+                errors.append(f"{cid}: source_file must be a string (the design file reference)")
+            if chk.get("fidelity") is not None and chk["fidelity"] not in contracts.FIDELITIES:
+                errors.append(f"{cid}: fidelity must be one of {list(contracts.FIDELITIES)}")
+        # approx ceilings follow the FRAME CONTRACT's fidelity, never the check's own claim: a check that says approx on
+        # an exact (or not yet ingested) frame keeps the exact ceilings, and on an exact frame it is a plan error
+        frame_fid = design.frame_fidelity(run_dir(run_id), design.check_node(chk)) if ui and design.check_node(chk) else None
+        approx_chk = ui and design.check_fidelity(chk) == "approx" and frame_fid == "approx"
+        if ui and design.check_fidelity(chk) == "approx" and frame_fid == "exact":
+            errors.append(f"{cid}: fidelity \"approx\" on a check whose frame {design.check_node(chk)} is an exact contract: "
+                          "approx ceilings apply only to approx frames; remove `fidelity` from the check")
+        max_ratio = max(limits["max_diff_ratio"], limits["approx"]["max_diff_ratio"]) if approx_chk else limits["max_diff_ratio"]
+        max_tol = max(limits["max_tolerance_px"], limits["approx"]["px"]) if approx_chk else limits["max_tolerance_px"]
         if ctype == "style" and not chk.get("map"):
             errors.append(f"{cid}: map is required")
         if chk.get("adapter") is not None:
@@ -458,12 +273,13 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
             ratio = chk["max_diff_ratio"]
             if not _is_num(ratio) or ratio < 0:
                 errors.append(f"{cid}: max_diff_ratio must be a number >= 0")
-            elif ratio > limits["max_diff_ratio"]:
-                errors.append(f"{cid}: max_diff_ratio {ratio} exceeds limits.max_diff_ratio {limits['max_diff_ratio']}")
+            elif ratio > max_ratio:
+                errors.append(f"{cid}: max_diff_ratio {ratio} exceeds limits.max_diff_ratio {max_ratio}"
+                              + (" (limits.approx.max_diff_ratio for an approx frame)" if approx_chk else ""))
         if chk.get("tolerance_px") is not None:
             tol = chk["tolerance_px"]
-            if not _is_num(tol) or tol < 0 or tol > limits["max_tolerance_px"]:
-                errors.append(f"{cid}: tolerance_px {tol!r} must be a number in [0, limits.max_tolerance_px {limits['max_tolerance_px']}]")
+            if not _is_num(tol) or tol < 0 or tol > max_tol:
+                errors.append(f"{cid}: tolerance_px {tol!r} must be a number in [0, limits.max_tolerance_px {max_tol}]")
         if chk.get("expect_fail_pattern") is not None:
             try:
                 re.compile(str(chk["expect_fail_pattern"]))
@@ -512,26 +328,16 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
     for cid in check_ids:
         if cid not in referenced:
             errors.append(f"{cid}: not referenced by any AC")
-    # figma pack + style maps
-    nodes = sorted({c["node"] for c in checks if c.get("type") in ("visual", "style") and c.get("node")})
-    for node in nodes:
-        errors.extend(pack_errors(run_id, node))
-    if nodes:
-        mfiles = _meta_files(run_dir(run_id) / "figma")
-        if not mfiles:
-            errors.append("figma/meta.json missing (file revision)")
-        else:
-            for meta in mfiles:
-                try:
-                    m = read_json(meta)
-                    files = m.values() if m and all(isinstance(v, dict) for v in m.values()) else [m]
-                    if not all(f.get("lastModified") or f.get("version") for f in files):
-                        errors.append(f"figma/{meta.name} names no lastModified/version")
-                except (FactoryError, AttributeError):
-                    errors.append(f"figma/{meta.name} unreadable")
+    # design frames (contracts) + style maps
+    ui = design.ui_checks(checks)
+    by_node: dict[str, list[dict]] = {}
+    for c in ui:
+        by_node.setdefault(design.check_node(c), []).append(c)
+    errors.extend(design.frame_problems(run_id, by_node, workspace))
     for chk in checks:
-        if chk.get("type") != "style" or not chk.get("map") or not chk.get("node"):
+        if chk.get("type") != "style" or not chk.get("map") or not design.check_node(chk):
             continue
+        node = design.check_node(chk)
         mpath = run_dir(run_id) / chk["map"]
         if not mpath.is_file():
             errors.append(f"{chk['id']}: style map {chk['map']} missing")
@@ -541,33 +347,91 @@ def validate_acs(run_id: str, run: dict, workspace: dict) -> list[str]:
         except FactoryError as err:
             errors.append(str(err))
             continue
-        if mdata.get("node") != chk["node"]:
-            errors.append(f"{chk['id']}: style map node {mdata.get('node')!r} != check node {chk['node']!r}")
-        jpath = run_dir(run_id) / "figma" / f"{node_file(chk['node'])}.json"
-        if jpath.is_file():
-            errors.extend(style_map_errors(mdata, jpath.read_text(encoding="utf-8"), f"{chk['id']} ({chk['map']})",
-                                           limits["max_tolerance_px"]))
+        if (mdata.get("node") or mdata.get("frame")) != node:
+            errors.append(f"{chk['id']}: style map node {mdata.get('node')!r} != check node {node!r}")
+        doc, problems = contracts.load_contract(run_id, "design_frame", node)
+        if doc is None or problems:
+            continue  # reported above
+        approx = limits["approx"] if doc.get("fidelity") == "approx" else None
+        cap = max(limits["max_tolerance_px"], approx["px"]) if approx else limits["max_tolerance_px"]
+        errors.extend(design.style_map_errors(mdata, design.frame_facts(doc), f"{chk['id']} ({chk['map']})", cap, approx))
     return errors
 
 
 def workspace_limits(workspace: dict) -> dict:
     """Ceilings for check thresholds (workspace `limits`); a plan cannot loosen a check past them."""
-    out = dict(DEFAULT_LIMITS)
+    out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in DEFAULT_LIMITS.items()}
     for k, v in ((workspace or {}).get("limits") or {}).items():
-        if k in out and _is_num(v):
+        if k in out and k != "approx" and _is_num(v):
             out[k] = v
+    out["approx"] = design.approx_limits(workspace)
     return out
 
 
 # ---------- phase evaluators ----------
 
+def _ticket_contract_errors(run_id: str, run: dict) -> list[str]:
+    """Every ticket needs a valid, fresh `contracts/ticket/<KEY>.json` (gates read contracts, never raw payloads)."""
+    from .. import fetches
+    out: list[str] = []
+    for t in run.get("tickets", []):
+        key, safe = t["key"], contracts.safe_id(t["key"])
+        raw = fetches.ticket_raw(run_id, key)
+        raw_rel = raw.relative_to(run_dir(run_id)).as_posix() if raw else f"raw/ticket/{safe}.<ext>"
+        if not contracts.contract_path(run_dir(run_id), "ticket", safe).is_file():
+            if raw:
+                out.append(f"contracts/ticket/{safe}.json missing: run `factory ingest {run_id} ticket {raw_rel}`")
+            else:
+                out.append(f"raw/ticket/{safe}.<ext> missing: save the ticket payload there (FETCH below), then "
+                           f"`factory ingest {run_id} ticket raw/ticket/<file>`")
+            continue
+        doc, problems = contracts.load_contract(run_id, "ticket", key)
+        if problems:
+            out += [f"{p}" for p in problems]
+            out.append(f"{key}: re-run `factory ingest {run_id} ticket {raw_rel}` (a contract is valid only while its raw is unchanged)")
+        elif doc and doc.get("key") != key:
+            out.append(f"contracts/ticket/{safe}.json is for ticket {doc.get('key')!r}, not {key!r}")
+    return out
+
+
+def ticket_unknowns(run_id: str, run: dict) -> list[str]:
+    """`KEY field: reason` for each ticket field the profile could not fill (input of the intake gap round)."""
+    out: list[str] = []
+    for t in run.get("tickets", []):
+        doc, problems = contracts.load_contract(run_id, "ticket", t["key"])
+        if doc and not problems:
+            out += [f"{t['key']} {u['field']}: {u['reason']}" for u in doc.get("unknowns") or []]
+    return out
+
+
+def _bug_typing_errors(run_id: str, run: dict) -> list[str]:
+    """A ticket whose contract says `is_bug: true` in a run that is not a bug run fails intake: a bug never skips
+    reproduction and RED/GREEN. The user can record that it is not a bug (`run decide "<KEY>: not a bug - <why>"`)."""
+    if run.get("kind") in ("review", "review-batch"):
+        return []
+    out: list[str] = []
+    for t in run.get("tickets", []):
+        if t.get("type") == "bug":
+            continue
+        doc, problems = contracts.load_contract(run_id, "ticket", t["key"])
+        if doc is None or problems or doc.get("is_bug") is not True:
+            continue
+        key = t["key"]
+        waived = any(d.get("by") == "user" and re.search(rf"(?<![\w-]){re.escape(key)}\W+not a bug", str(d.get("text", "")), re.I)
+                     for d in run.get("decisions") or [])
+        if not waived:
+            out.append(f"{key}: the ticket contract says is_bug but this run is not a bug run: restart as bug "
+                       f"(`factory run retype {run_id} --bug`), or record `factory run decide {run_id} "
+                       f"\"{key}: not a bug - <reason>\" --by user --user-said \"<gist>\"`")
+    return out
+
+
 def _intake(run_id, run, ws) -> list[str]:
     errors = []
     if not run.get("tickets"):
         errors.append("no tickets in run")
-    for t in run.get("tickets", []):
-        if not (run_dir(run_id) / "remote" / f"issue-{t['key']}.json").is_file():
-            errors.append(f"remote/issue-{t['key']}.json missing (save the dev.mcp issue response)")
+    errors.extend(_ticket_contract_errors(run_id, run))
+    errors.extend(_bug_typing_errors(run_id, run))
     for i, b in enumerate(run.get("blockers", [])):
         if b.get("kind") == "question" and not b.get("resolved"):
             errors.append(f"open question blocker #{i}: {b.get('text')}")
@@ -597,8 +461,6 @@ def _plan(run_id, run, ws) -> list[str]:
         checks = read_json(path).get("checks") or []
     except FactoryError:
         return errors
-    if any(c.get("type") in ("visual", "style") for c in checks):
-        errors.extend(_call_external("factory.commands.figma", "check_pack", run_id))
     for alias in sorted({c["repo"] for c in checks if c.get("repo")} | set(run.get("repos", {}))):
         rec = run.get("repos", {}).get(alias)
         if not rec:
@@ -677,7 +539,7 @@ def load_evidence_file(run_id: str, name: str) -> dict | None:
 
 def _remote_branch_refs(path: Path, own: set[str], allow: set[str] | None) -> list[str]:
     """refs/remotes/<remote>/<name> whose <name> is not one of the run's own branches and, when `allow` is
-    given, is one of the allowed branch names (targets, stacked bases, dependency and open-MR source branches)."""
+    given, is one of the allowed branch names (targets, stacked bases, dependency and open-change source branches)."""
     refs = []
     for ref in git(path, "for-each-ref", "--format=%(refname)", "refs/remotes", check=False).splitlines():
         _remote, _, name = ref[len("refs/remotes/"):].partition("/")
@@ -691,7 +553,7 @@ def _remote_branch_refs(path: Path, own: set[str], allow: set[str] | None) -> li
 
 def inherited_allow(run: dict, ws: dict, alias: str) -> set[str]:
     """Remote branch names a commit may legitimately be inherited from: the run's target branches, the branch it
-    is stacked on, dependency runs' branches and the source branches of open MRs read back into remote/."""
+    is stacked on, dependency runs' branches and the source branches of open changes read back into contracts/change."""
     rec = (run.get("repos") or {}).get(alias) or {}
     names: set[str] = set()
     for t in [*run_targets(run), rec.get("base")]:
@@ -708,38 +570,18 @@ def inherited_allow(run: dict, ws: dict, alias: str) -> set[str]:
         for b in [dep.get("branch"), *(dep.get("branches") or {}).values()]:
             if b:
                 names.add(b)
-    remote = run_dir(run["id"]) / "remote"
-    for p in sorted(remote.glob("mr-*.json")) if remote.is_dir() else []:
-        if p.name.endswith("-discussions.json"):
-            continue
-        try:
-            data = read_json(p)
-        except FactoryError:
-            continue
-        if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
-            data = data["merge_request"]
-        if isinstance(data, dict) and data.get("source_branch") and data.get("state") in (None, "opened"):
-            names.add(data["source_branch"])
+    changes, _bad = contracts.load_all(run["id"], "change")
+    for doc in changes:
+        if doc.get("repo") in (None, alias) and doc.get("state") == "open" and doc.get("source_branch"):
+            names.add(doc["source_branch"])
     return names
 
 
-def merged_mr_heads(run: dict) -> list[str]:
-    """Head shas of MRs read back into remote/ as merged: their commits stay inherited after the source branch is
-    deleted (squash merges leave the original commits only in the stacked branch)."""
-    shas: list[str] = []
-    remote = run_dir(run["id"]) / "remote"
-    for p in sorted(remote.glob("mr-*.json")) if remote.is_dir() else []:
-        if p.name.endswith("-discussions.json"):
-            continue
-        try:
-            data = read_json(p)
-        except FactoryError:
-            continue
-        if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
-            data = data["merge_request"]
-        if isinstance(data, dict) and data.get("state") == "merged" and isinstance(data.get("sha"), str):
-            shas.append(data["sha"])
-    return shas
+def merged_change_heads(run: dict) -> list[str]:
+    """Head shas of changes read back into contracts/change as merged: their commits stay inherited after the source
+    branch is deleted (squash merges leave the original commits only in the stacked branch)."""
+    changes, _bad = contracts.load_all(run["id"], "change")
+    return [doc["head_sha"] for doc in changes if doc.get("state") == "merged"]
 
 
 def _integrates_base(path: Path, parents: list[str], base_ref: str) -> bool:
@@ -760,8 +602,8 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
     started (a stacked or reused branch) are not the run's. Merge commits that only bring the base in skip the header
     check; their forbidden trailers still count.
 
-    `origin_head` (a review-fix run: the MR head recorded at conversion) limits the span to
-    `<origin_head>..HEAD` without merges: the MR's own earlier commits are not this run's. Otherwise
+    `origin_head` (a review-fix run: the change head recorded at conversion) limits the span to
+    `<origin_head>..HEAD` without merges: the change's own earlier commits are not this run's. Otherwise
     `<base>..HEAD`, skipping commits already reachable from another remote branch: every remote branch when
     `allow` is None, else only the `allow` names; the run's own branches (`branch`, `own`) never excuse a commit."""
     commit = ws.get("commit") or {}
@@ -783,7 +625,7 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
         if proc.returncode == 0:
             span = ["--no-merges", f"{origin_head}..HEAD"]
         else:
-            print(f"{alias}: MR head {origin_head[:8]} is not an ancestor of HEAD (history rewritten); "
+            print(f"{alias}: change head {origin_head[:8]} is not an ancestor of HEAD (history rewritten); "
                   f"checking {base_ref}..HEAD")
             origin_head = None
     else:
@@ -836,7 +678,7 @@ def _build(run_id, run, ws) -> list[str]:
             own = tuple(v for v in (rec.get("branches") or {}).values() if v)
             errors.extend(commits_errors(path, base, ws, alias, rec.get("branch"), own=own, origin_head=origin,
                                          allow=inherited_allow(run, ws, alias),
-                                         merged_heads=tuple(merged_mr_heads(run)),
+                                         merged_heads=tuple(merged_change_heads(run)),
                                          branch_point=rec.get("branch_point")))
     errors.extend(mirrordiff.errors(run, ws))  # hotfix with mirror branches: same changes as the base fix
     return errors
@@ -1064,7 +906,7 @@ def proof_errors(run_id, run, ws) -> list[str]:
 
 def _review(run_id, run, ws) -> list[str]:
     plain, changes = review_status(run_id, run, ws)
-    return proof_errors(run_id, run, ws) + plain + changes
+    return proof_errors(run_id, run, ws) + plain + changes + design.review_errors(run_id, run)
 
 
 def _ship(run_id, run, ws) -> list[str]:
@@ -1073,118 +915,111 @@ def _ship(run_id, run, ws) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+def _unresolved_threads(threads: list[dict]) -> list[dict]:
+    """Threads a person still has to resolve: resolvable, open, with at least one non-system note."""
+    return [t for t in threads if t.get("resolvable") and not t.get("resolved") and not t.get("system")
+            and any(not n.get("system") for n in t.get("notes") or [])]
+
+
+def _latest_pipeline(pipes: list[dict]) -> dict | None:
+    """Newest pipeline of a change contract: the highest numeric id (ids that are not numbers rank last)."""
+    return max(pipes, key=lambda x: int(x["id"]) if str(x["id"]).isdigit() else -1) if pipes else None
+
+
 def _feedback(run_id, run, ws) -> list[str]:
-    """Every shipped MR: latest pipeline `success` for its head sha (or a user decision naming the pipeline)
-    and zero unresolved human threads; no open blockers."""
-    from . import feedback
+    """Every delivered change: latest pipeline `success` (pipeline.v1) for its head sha (or a user decision naming
+    the pipeline) and zero unresolved human threads (change.v1); no open blockers."""
     errors = [f"open blocker #{i}: {b.get('text')}" for i, b in enumerate(run.get("blockers", [])) if not b.get("resolved")]
-    rd = run_dir(run_id)
-    plan_path = rd / "ship-plan.json"
+    plan_path = run_dir(run_id) / "ship-plan.json"
     if not plan_path.is_file():
         return errors + ["ship-plan.json missing: nothing shipped to take feedback from"]
     try:
         plan = read_json(plan_path)
     except FactoryError as err:
         return errors + [str(err)]
+    if plan.get("schemaVersion") != 2:
+        return errors + ["ship-plan.json is not schema 2: re-run ship plan"]
     waivers = [str(d.get("text", "")) for d in run.get("decisions") or []
                if d.get("by") == "user" and d.get("phase") == "feedback" and "pipeline" in str(d.get("text", "")).lower()]
-    for mr in plan.get("mrs") or []:
-        tag = f"{mr['repo']}-{mr['target']}"
-        label = f"{mr['repo']}/{mr['target']}"
-        head = mr.get("head_sha")
-        rb = rd / mr.get("readback", f"remote/mr-{tag}.json")
-        if rb.is_file():
-            try:
-                data = read_json(rb)
-                data = data.get("merge_request", data) if isinstance(data, dict) else {}
-                head = data.get("sha") or (data.get("diff_refs") or {}).get("head_sha") or head
-            except FactoryError:
-                pass
-        disc = rd / "remote" / f"mr-{tag}-discussions.json"
-        pipes: list = []
-        if not disc.is_file():
-            errors.append(f"{label}: remote/mr-{tag}-discussions.json missing (factory feedback ingest prints the fetch)")
+    for c in plan.get("changes") or []:
+        ident = f"{c['repo']}-{c['target']}"
+        label = f"{c['repo']}/{c['target']}"
+        doc, problems = contracts.load_contract(run_id, "change", ident)
+        if doc is None or problems:
+            errors.extend(f"{label}: {p} (the gate output prints the fetch)" for p in problems)
+            continue
+        head = doc["head_sha"]
+        if doc.get("threads") is None:
+            errors.append(f"{label}: change contract carries no thread data (unknown, not none); re-fetch with threads and re-ingest")
         else:
-            try:
-                ddata = read_json(disc)
-            except FactoryError as err:
-                errors.append(str(err))
-                ddata = {}
-            open_threads = feedback.discussion_findings(ddata, mr["repo"])
+            open_threads = _unresolved_threads(doc["threads"])
             if open_threads:
-                errors.append(f"{label}: {len(open_threads)} unresolved review thread(s); feedback ingest, fix, ship again")
-            if isinstance(ddata, dict) and isinstance(ddata.get("pipelines"), list):
-                pipes = [x for x in ddata["pipelines"] if isinstance(x, dict) and x.get("id") is not None]
-        ppath = rd / "remote" / f"pipeline-{tag}.json"
-        pipe: dict = {}
-        if ppath.is_file():
-            try:
-                pdata = read_json(ppath)
-                pipe = pdata.get("pipeline", pdata) if isinstance(pdata, dict) else {}
-            except FactoryError as err:
-                errors.append(str(err))
-                continue
-        # A waiver names the pipeline it waives: the latest one GitLab lists, else the fetched one.
-        current = (max(pipes, key=lambda x: x["id"] if isinstance(x["id"], int) else -1)["id"] if pipes
-                   else pipe.get("id"))
+                errors.append(f"{label}: {len(open_threads)} unresolved review thread(s); ingest the feedback, fix, ship again")
+        pipes = [x for x in doc.get("pipelines") or [] if x.get("id") is not None]
+        pipe, pproblems = contracts.load_contract(run_id, "pipeline", ident)
+        # A waiver names the pipeline it waives: the latest one the change lists, else the fetched one.
+        latest = _latest_pipeline(pipes)
+        current = latest["id"] if latest else (pipe or {}).get("id")
         if current is not None and any(re.search(rf"(?<!\w){re.escape(str(current))}(?!\w)", w) for w in waivers):
             continue  # the user waived this pipeline, naming its id
-        if not ppath.is_file():
-            errors.append(f"{label}: remote/pipeline-{tag}.json missing (fetch it; a user waiver `factory run decide "
+        if pipe is None or pproblems:
+            errors.extend(f"{label}: {p}" for p in pproblems)
+            errors.append(f"{label}: no usable pipeline contract (fetch and ingest it; a user waiver `factory run decide "
                           f"{run_id} \"pipeline #<id>: <why>\" --by user --user-said \"<gist>\"` must name the pipeline id)")
             continue
-        if pipes:
-            latest = max(pipes, key=lambda x: x["id"] if isinstance(x["id"], int) else -1)
-            if pipe.get("id") != latest.get("id"):
-                errors.append(f"{label}: pipeline file is #{pipe.get('id')}, latest pipeline is #{latest.get('id')}")
-                continue
-        if pipe.get("status") != "success":
-            errors.append(f"{label}: pipeline #{pipe.get('id')} status {pipe.get('status')!r}, not success")
-        elif head and pipe.get("sha") != head:
-            errors.append(f"{label}: pipeline #{pipe.get('id')} ran on {str(pipe.get('sha'))[:8]}, MR head is {head[:8]}")
-        elif not head:
-            errors.append(f"{label}: MR head sha unknown (readback missing)")
+        if latest and str(pipe["id"]) != str(latest["id"]):
+            errors.append(f"{label}: pipeline contract is #{pipe['id']}, latest pipeline is #{latest['id']}")
+            continue
+        if pipe["status"] != "success":
+            errors.append(f"{label}: pipeline #{pipe['id']} status {pipe['status']!r}, not success")
+        elif pipe["sha"] != head:
+            errors.append(f"{label}: pipeline #{pipe['id']} ran on {str(pipe['sha'])[:8]}, change head is {head[:8]}")
     return errors
 
 
 # ---------- review runs (DESIGN §7) ----------
 
-def _mr_worktree_errors(run: dict, ws: dict, need_head: bool) -> list[str]:
+def _change_worktree_errors(run: dict, ws: dict, need_head: bool) -> list[str]:
     errors = []
-    for mr in run.get("mrs", []):
-        alias, rec = mr["repo"], run.get("repos", {}).get(mr["repo"])
+    for ch in run.get("changes", []):
+        alias, rec = ch["repo"], run.get("repos", {}).get(ch["repo"])
         if not rec:
-            errors.append(f"{alias}: no worktree for MR !{mr['iid']} (factory run branch {run['id']} {alias} --mr {mr['iid']})")
+            errors.append(f"{alias}: no worktree for change {alias}#{ch['number']} "
+                          f"(factory run branch {run['id']} {alias} --change {ch['number']})")
             continue
         path = Path(rec.get("worktree", ""))
         if not path.is_dir():
-            errors.append(f"{alias}: MR worktree missing on disk: {path}")
-        elif need_head and git_head(path) != mr["head_sha"]:
-            errors.append(f"{alias}: worktree HEAD is not the MR head {mr['head_sha'][:8]}; evidence must bind to the MR head sha")
+            errors.append(f"{alias}: change worktree missing on disk: {path}")
+        elif need_head and git_head(path) != ch["head_sha"]:
+            errors.append(f"{alias}: worktree HEAD is not the change head {ch['head_sha'][:8]}; "
+                          "evidence must bind to the change head sha")
     return errors
 
 
 def _review_intake(run_id, run, ws) -> list[str]:
     errors = _intake(run_id, run, ws)
-    if not run.get("mrs"):
-        errors.append("no MRs in run (factory review start)")
-    for mr in run.get("mrs", []):
-        if not (run_dir(run_id) / "remote" / f"mr-{mr['repo']}-{mr['iid']}.json").is_file():
-            errors.append(f"remote/mr-{mr['repo']}-{mr['iid']}.json missing")
+    if not run.get("changes"):
+        errors.append("no changes in run (factory review start)")
+    for ch in run.get("changes", []):
+        doc, problems = contracts.load_contract(run_id, "change", f"{ch['repo']}-{ch['number']}")
+        errors.extend(problems)
+        if doc is not None and not problems and doc.get("head_sha") != ch.get("head_sha"):
+            errors.append(f"change {ch['repo']}#{ch['number']}: contract head {str(doc.get('head_sha'))[:8]} != run head "
+                          f"{str(ch.get('head_sha'))[:8]}; re-fetch the change and start the review again")
     return errors
 
 
 def _review_plan(run_id, run, ws) -> list[str]:
-    return list(dict.fromkeys(_plan(run_id, run, ws) + _mr_worktree_errors(run, ws, True)))
+    return list(dict.fromkeys(_plan(run_id, run, ws) + _change_worktree_errors(run, ws, True)))
 
 
 def _review_prove(run_id, run, ws) -> list[str]:
-    return _mr_worktree_errors(run, ws, True) + _prove(run_id, run, ws)
+    return _change_worktree_errors(run, ws, True) + _prove(run_id, run, ws)
 
 
 def _review_review(run_id, run, ws) -> list[str]:
-    """Both reviews recorded and bound to the MR head. A CHANGES verdict is a result for the report, not a gate failure."""
-    return proof_errors(run_id, run, ws) + review_status(run_id, run, ws)[0]
+    """Both reviews recorded and bound to the change head. A CHANGES verdict is a result for the report, not a gate failure."""
+    return proof_errors(run_id, run, ws) + review_status(run_id, run, ws)[0] + design.review_errors(run_id, run)
 
 
 def _report(run_id, run, ws) -> list[str]:
@@ -1243,14 +1078,14 @@ def _epic_errors(run: dict, ws: dict, phase: str) -> list[str]:
 
 
 def fetches_for(phase: str, run: dict, ws: dict) -> list[dict]:
-    """dev.mcp calls that would supply the remote files a failing gate is missing."""
+    """Fetch lines (`{kind, id, raw_path, hint}`) for the raw files a failing gate is missing."""
     from .. import fetches
     out: list[dict] = []
     if phase == "intake":
-        out += fetches.review_intake_fetches(run, ws) if run.get("kind") == "review" else fetches.intake_fetches(run)
+        out += fetches.review_intake_fetches(run, ws) if run.get("kind") == "review" else fetches.intake_fetches(run, ws)
         out += media.fetches(run["id"], run)
     if phase == "plan":
-        out += fetches.figma_fetches(run["id"])
+        out += fetches.design_fetches(run["id"], ws)
     if phase == "feedback":
         out += fetches.feedback_fetches(run["id"], ws)
     return fetches_dedupe(out)
@@ -1344,11 +1179,31 @@ def cmd_gate(args) -> int:
     if new in FINAL_PHASES:
         from .metrics import refresh
         refresh(run["id"])
+    notes = ticket_unknowns(run["id"], run) if phase == "intake" else []
+    warns = profile_warnings(run["id"])
     if getattr(args, "json", False):
-        print(json.dumps({"run": run["id"], "passed": phase, "phase": new}))
+        print(json.dumps({"run": run["id"], "passed": phase, "phase": new, **({"unknowns": notes} if notes else {}),
+                          **({"warnings": warns} if warns else {})}))
     else:
         print(f"PASS {phase} -> {new}")
+        if notes:
+            print("ticket unknowns (ask the user, or note them as assumptions):")
+            for n in notes:
+                print(f"- {n}")
+        for w in warns:
+            print(f"WARN {w}")
     return 0
+
+
+def profile_warnings(run_id: str) -> list[str]:
+    """Contracts ingested with a profile version other than the current approved one (advisory: the contract is still
+    valid while its raw is unchanged; re-ingest it to get the current mapping)."""
+    from . import ingest
+    try:
+        rep = ingest.check_run(run_id)
+    except FactoryError:
+        return []
+    return [f"{c['contract']}: {c['reasons'][0]} ({c['profile']}); re-ingest it with the current profile" for c in rep["profile_changed"]]
 
 
 def proved_heads(run: dict, ws: dict) -> dict:

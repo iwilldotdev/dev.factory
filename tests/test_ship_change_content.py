@@ -1,4 +1,4 @@
-"""F-28: MR title/description content, reviewers, Jira modes, update-description, baseline and hotfix quality lines."""
+"""F-28: change title/body content, reviewers, ticket modes, update-description, baseline and hotfix quality lines."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import unittest
 from factory import core
 from factory.commands import ship
 from tests.integrity_support import IntegrityCase, cli, PASS
+from tests.ticket_support import put_ticket
 
 SUMMARY = "Ação de pagamento não funciona"
 
@@ -17,14 +18,16 @@ class ShipCase(IntegrityCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.ws["ship"].update({"jira_comment": "mr-links", "jira_transition": "Done"})
+        self.ws["ship"].update({"ticket_comment": "change-links", "ticket_transition": "Done"})
         self.ws["ship"].update(self.ship_extra)
         self.save_ws()
 
     def ready(self, summary: str | None = SUMMARY, checks=None) -> None:
         self.to_prove(checks)
         if summary:
-            core.write_json(self.rd / "remote" / "issue-DEV-1.json", {"key": "DEV-1", "fields": {"summary": summary}})
+            put_ticket(self.rid, "DEV-1", title=summary)
+        else:  # no ticket title known: drop the contract the fixture start wrote
+            (self.rd / "contracts" / "ticket" / "DEV-1.json").unlink()
         self.ok("prove", self.rid)
         self.ok("gate", self.rid, "prove")
         self.assertEqual(self.record("code")[0], 0)
@@ -38,14 +41,14 @@ class ShipCase(IntegrityCase):
 class TitleTests(ShipCase):
     def test_default_title_uses_ticket_summary_with_accents(self):
         self.ready()
-        mr = self.plan()["mrs"][0]
-        self.assertEqual(mr["title"], f"Draft: [DEV-1] - {SUMMARY}")
+        change = self.plan()["changes"][0]
+        self.assertEqual(change["title"], f"[DEV-1] - {SUMMARY}")
         saved = (self.rd / "ship-plan.json").read_text(encoding="utf-8")
         self.assertIn(SUMMARY, saved)  # UTF-8 kept, not \u escapes
 
     def test_missing_summary_has_no_dangling_separator(self):
         self.ready(summary=None)
-        self.assertEqual(self.plan()["mrs"][0]["title"], "Draft: [DEV-1]")
+        self.assertEqual(self.plan()["changes"][0]["title"], "[DEV-1]")
 
 
 class TitleFormatTests(ShipCase):
@@ -53,7 +56,7 @@ class TitleFormatTests(ShipCase):
 
     def test_custom_title_format(self):
         self.ready()
-        self.assertEqual(self.plan()["mrs"][0]["title"], f"Draft: React/main: DEV-1 {SUMMARY}")
+        self.assertEqual(self.plan()["changes"][0]["title"], f"React/main: DEV-1 {SUMMARY}")
 
 
 class BadTitleFormatTests(ShipCase):
@@ -68,54 +71,54 @@ class BadTitleFormatTests(ShipCase):
 
 
 class ReviewerTests(ShipCase):
-    ship_extra = {"reviewers": [{"jira": "ana@x.com", "gitlab_username": "ana"}, {"jira": "bob@x.com"}]}
+    ship_extra = {"reviewers": [{"ticket_user": "ana@x.com", "scm_user": "ana"}, {"ticket_user": "bob@x.com"}]}
 
-    def test_identity_without_gitlab_username_fails(self):
+    def test_identity_without_scm_user_fails(self):
         self.ready()
         rc, out = cli("ship", "plan", self.rid)
         self.assertNotEqual(rc, 0)
-        self.assertIn("gitlab_username", out)
+        self.assertIn("scm_user", out)
         self.assertIn("bob@x.com", out)
 
 
 class ReviewerOkTests(ShipCase):
-    ship_extra = {"reviewers": [{"jira": "ana@x.com", "gitlab_username": "ana"}, "carl"]}
+    ship_extra = {"reviewers": [{"ticket_user": "ana@x.com", "scm_user": "ana"}, "carl"]}
 
     def test_reviewers_are_planned(self):
         self.ready()
         plan = self.plan()
-        self.assertEqual(plan["mrs"][0]["reviewers"], ["ana", "carl"])
-        mr_action = next(a for a in plan["actions"] if a["type"] == "mr")
-        self.assertEqual(mr_action["reviewers"], ["ana", "carl"])
+        self.assertEqual(plan["changes"][0]["reviewers"], ["ana", "carl"])
+        action = next(a for a in plan["actions"] if a["type"] == "change_request")
+        self.assertEqual(action["reviewers"], ["ana", "carl"])
 
 
-class JiraModeTests(ShipCase):
+class TicketModeTests(ShipCase):
     def types(self, plan):
-        return [a["type"] for a in plan["actions"] if a["type"].startswith("jira")]
+        return [a["type"] for a in plan["actions"] if a["type"].startswith("issue_")]
 
     def test_modes(self):
         self.ready()
-        self.assertEqual(self.types(self.plan()), ["jira_comment", "jira_transition"])
-        self.assertEqual(self.types(self.plan("--jira", "none")), [])
-        self.assertEqual(self.types(self.plan("--jira", "comment")), ["jira_comment"])
-        self.assertEqual(self.types(self.plan("--jira", "transition")), ["jira_transition"])
+        self.assertEqual(self.types(self.plan()), ["issue_comment", "issue_transition"])
+        self.assertEqual(self.types(self.plan("--ticket", "none")), [])
+        self.assertEqual(self.types(self.plan("--ticket", "comment")), ["issue_comment"])
+        self.assertEqual(self.types(self.plan("--ticket", "transition")), ["issue_transition"])
 
 
-class JiraWorkspaceModeTests(ShipCase):
-    ship_extra = {"jira": "comment"}
+class TicketWorkspaceModeTests(ShipCase):
+    ship_extra = {"ticket_mode": "comment"}
 
     def test_workspace_default_and_flag_override(self):
         self.ready()
-        self.assertEqual([a["type"] for a in self.plan()["actions"] if a["type"].startswith("jira")], ["jira_comment"])
-        self.assertEqual([a["type"] for a in self.plan("--jira", "transition")["actions"] if a["type"].startswith("jira")],
-                         ["jira_transition"])
+        self.assertEqual([a["type"] for a in self.plan()["actions"] if a["type"].startswith("issue_")], ["issue_comment"])
+        self.assertEqual([a["type"] for a in self.plan("--ticket", "transition")["actions"] if a["type"].startswith("issue_")],
+                         ["issue_transition"])
 
 
 class DescriptionTests(ShipCase):
     def test_table_details_and_no_local_links(self):
         self.ready(checks=[{"id": "CHK-1", "type": "test", "repo": "React", "cmd": f'{PASS}'},
                            {"id": "CHK-H", "type": "human", "repo": "React", "text": "olhar a tela", "reason": "visual"}])
-        desc = self.plan()["mrs"][0]["description"]
+        desc = self.plan()["changes"][0]["body_md"]
         self.assertNotIn("Artifacts", desc)
         self.assertIn("| AC | Check | Status |", desc)
         self.assertIn("| AC-1: works | CHK-1 | PASS |", desc)
@@ -136,22 +139,24 @@ class DescriptionTests(ShipCase):
     def test_verify_rejects_local_links_in_plan_and_readback(self):
         self.ready()
         plan = self.plan()
-        mr = plan["mrs"][0]
+        change = plan["changes"][0]
         self.readbacks(plan)
         self.ok("ship", "verify", self.rid)  # clean description passes
-        rb = self.rd / mr["readback"]
+        rb = self.rd / change["readback"]
         data = core.read_json(rb)
-        data["description"] = "see [log](evidence/CHK-1/out.txt)"
+        data["description_md"] = "see [log](evidence/CHK-1/out.txt)"
         core.write_json(rb, data)
         rc, out = cli("ship", "verify", self.rid)
         self.assertNotEqual(rc, 0)
         self.assertIn("local file", out)
         self.assertIn("readback", out)
-        data["description"] = "ok"
+        data["description_md"] = "ok"
         core.write_json(rb, data)
         plan_file = self.rd / "ship-plan.json"
         saved = core.read_json(plan_file)
-        saved["mrs"][0]["description"] += "\n[x](file:///tmp/a)"
+        for a in saved["actions"]:
+            if a["type"] == "change_request":
+                a["body_md"] += "\n[x](file:///tmp/a)"
         core.write_json(plan_file, saved)
         rc, out = cli("ship", "verify", self.rid)
         self.assertNotEqual(rc, 0)
@@ -163,7 +168,7 @@ class BaselineTests(ShipCase):
         self.ready()
         core.write_json(self.rd / "baseline" / "React.json", {"commands": {
             "test": {"cmd": "t", "exit": 1, "failures": ["test_old_one", "test_old_two"]}}})
-        desc = self.plan()["mrs"][0]["description"]
+        desc = self.plan()["changes"][0]["body_md"]
         self.assertIn("## Quality", desc)
         self.assertIn("test: 2", desc)
         self.assertIn("test_old_one; test_old_two", desc)
@@ -180,24 +185,25 @@ class HotfixQualityTests(ShipCase):
 
 
 class UpdateDescriptionTests(ShipCase):
-    def test_rebuilds_from_readback_iid(self):
+    def test_rebuilds_from_readback_number(self):
         self.ready()
         plan = self.plan()
         self.readbacks(plan)
         core.write_json(self.rd / "baseline" / "React.json", {"commands": {"test": {"failures": ["test_late"]}}})
         out = json.loads(self.ok("--json", "ship", "update-description", self.rid, "--repo", "React", "--target", "main"))
-        upd = next(a for a in out["actions"] if a["type"] == "mr_update_description")
-        self.assertEqual(upd["iid"], 1)
-        self.assertIn("test_late", upd["description"])
-        self.assertIn("test_late", core.read_json(self.rd / "ship-plan.json")["mrs"][0]["description"])
+        upd = next(a for a in out["actions"] if a["type"] == "change_request")
+        self.assertEqual((upd["op"], upd["number"]), ("update", 1))
+        self.assertIn("test_late", upd["body_md"])
+        self.assertIn("test_late", core.read_json(self.rd / "ship-plan.json")["changes"][0]["body_md"])
 
     def test_missing_readback_prints_fetch(self):
         self.ready()
         self.plan()
         rc, out = cli("ship", "update-description", self.rid)
         self.assertNotEqual(rc, 0)
-        self.assertIn("FETCH gitlab_get_merge_request", out)
-        self.assertIn("mr-React-main.json", out)
+        self.assertIn("FETCH change React-main", out)
+        self.assertIn("raw/change/React-main.json", out)
+        self.assertIn("factory ingest", out)
 
 
 if __name__ == "__main__":

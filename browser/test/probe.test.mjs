@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareStyles, normalizeColor, parsePx, pxWithin } from "../dist/probe.js";
+import { compareStyles, deltaE76, normalizeColor, parsePx, pxWithin } from "../dist/probe.js";
 import { summariseReport } from "../dist/spec.js";
 
 test("color normalisation", () => {
@@ -64,4 +64,15 @@ test("compareStyles: no false PASS for empty expected text or a missing border",
   // the tolerance still applies to a present border, and an expected 0 still matches 0
   assert.ok(compareStyles({ borderWidth: 1 }, { borderWidth: "1.5px" })[0].ok);
   assert.ok(compareStyles({ borderWidth: 0 }, { borderWidth: "0px" })[0].ok);
+});
+
+test("approx options: CIE76 color distance and font size tolerance", () => {
+  assert.ok(deltaE76("#202020", "#262626") < 6);
+  assert.ok(deltaE76("#202020", "#505050") > 6);
+  assert.ok(Math.abs(deltaE76("#000000", "#FFFFFF") - 100) < 0.5);
+  const near = compareStyles({ color: "#202020", fontSize: 20 }, { color: "rgb(38, 38, 38)", fontSize: "22px" }, 1, { colorDeltaE: 6, fontSizePx: 2 });
+  assert.ok(near.every((p) => p.ok), JSON.stringify(near));
+  const far = compareStyles({ color: "#202020", fontSize: 20 }, { color: "rgb(80, 80, 80)", fontSize: "23px" }, 4, { colorDeltaE: 6, fontSizePx: 2 });
+  assert.deepEqual(far.map((p) => p.ok), [false, false]);
+  assert.equal(compareStyles({ color: "#202020" }, { color: "rgb(38, 38, 38)" })[0].ok, false);
 });

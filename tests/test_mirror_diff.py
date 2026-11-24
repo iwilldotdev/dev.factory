@@ -348,11 +348,11 @@ class Exception_(MirrorDiffCase):
         rc, out = cli("--json", "ship", "plan", self.rid, "--allow-mirror-divergence", str(n))
         self.assertEqual(rc, 0, out)
         plan = json.loads(out)
-        base, mirror = plan["mrs"]
-        self.assertNotIn("Mirror divergence", base["description"])
-        self.assertIn("## Mirror divergence (approved by the user)", mirror["description"])
-        self.assertIn("the changelog exists only on pack", mirror["description"])
-        self.assertIn("- CHANGELOG.md", mirror["description"])
+        base, mirror = plan["changes"]
+        self.assertNotIn("Mirror divergence", base["body_md"])
+        self.assertIn("## Mirror divergence (approved by the user)", mirror["body_md"])
+        self.assertIn("the changelog exists only on pack", mirror["body_md"])
+        self.assertIn("- CHANGELOG.md", mirror["body_md"])
         rc, out = cli("--json", "ship", "plan", self.rid)  # stored once on the run: later plans honour it
         self.assertEqual(rc, 0, out)
 

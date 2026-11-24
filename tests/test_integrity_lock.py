@@ -9,7 +9,7 @@ from tests.integrity_support import IntegrityCase, cli, core
 
 
 class PlanLockTests(IntegrityCase):
-    def test_plan_gate_records_lock_of_acs_checks_figma(self):
+    def test_plan_gate_records_lock_of_acs_checks_design(self):
         self.to_prove()
         lock = core.run_load(self.rid)["plan_lock"]
         self.assertIn("acs.json", lock["files"])
@@ -21,13 +21,13 @@ class PlanLockTests(IntegrityCase):
         self.to_prove()
         self.ok("prove", self.rid)
         (self.rd / "checks" / "note.txt").write_text("loosened\n", encoding="utf-8")
-        (self.rd / "figma").mkdir(exist_ok=True)
-        (self.rd / "figma" / "extra.json").write_text("{}", encoding="utf-8")
+        (self.rd / "design").mkdir(exist_ok=True)
+        (self.rd / "design" / "extra.json").write_text("{}", encoding="utf-8")
         rc, out = self.gate("prove")
         self.assertEqual(rc, 1)
         self.assertIn("plan files changed after the plan gate", out)
         self.assertIn("checks/note.txt", out)
-        self.assertIn("figma/extra.json", out)
+        self.assertIn("design/extra.json", out)
         self.assertIn("run replan", out)
 
     def test_changed_acs_fails_review_ship_plan_verify_and_ship_gate(self):
@@ -44,7 +44,7 @@ class PlanLockTests(IntegrityCase):
         rc, out = self.gate("ship")
         self.assertEqual(rc, 1)
         self.assertIn("acs.json", out)
-        self.assertTrue(plan["mrs"])
+        self.assertTrue(plan["changes"])
 
     def shipped_until_ship(self) -> dict:
         self.reviewed()

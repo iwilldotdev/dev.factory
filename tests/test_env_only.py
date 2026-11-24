@@ -119,9 +119,9 @@ class EnvOnlyShipTests(OpsCase):
             "checks": [{"id": "C1", "type": "test", "repo": "React", "cmd": "x"}]})
         self.write("runs/ws-dev-1/evidence/C1.json", {"check_id": "C1", "status": "pass"})
         plan = ship.build_plan("ws-dev-1")
-        self.assertEqual([m["repo"] for m in plan["mrs"]], ["React"])
+        self.assertEqual([m["repo"] for m in plan["changes"]], ["React"])
         self.assertFalse([a for a in plan["actions"] if a.get("repo") == "API"])
-        self.assertNotIn("API", str([a for a in plan["actions"] if a["type"] in ("push", "mr", "readback")]))
+        self.assertNotIn("API", str([a for a in plan["actions"] if a["type"] in ("push", "change_request", "readback")]))
 
 
 if __name__ == "__main__":

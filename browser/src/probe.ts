@@ -54,15 +54,39 @@ export function pxWithin(expected: number, actual: number, tol: number): boolean
   return Math.abs(expected - actual) <= tol + 1e-9;
 }
 
-/** Compare one expected map against actual computed values. */
-export function compareStyles(expect: Expect, actual: Record<string, unknown>, tolerancePx = 1): PropResult[] {
+export type ApproxOptions = { colorDeltaE?: number; fontSizePx?: number };
+
+/** CIE L*a*b* (D65) of a normalized #RRGGBB[AA] color. */
+export function lab(color: string): [number, number, number] {
+  const lin = [1, 3, 5].map((i) => {
+    const c = parseInt(color.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  const x = (0.4124564 * lin[0] + 0.3575761 * lin[1] + 0.1804375 * lin[2]) / 0.95047;
+  const y = 0.2126729 * lin[0] + 0.7151522 * lin[1] + 0.072175 * lin[2];
+  const z = (0.0193339 * lin[0] + 0.119192 * lin[1] + 0.9503041 * lin[2]) / 1.08883;
+  const f = (t: number): number => (t > 216 / 24389 ? Math.cbrt(t) : ((24389 / 27) * t + 16) / 116);
+  const [fx, fy, fz] = [f(x), f(y), f(z)];
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+/** CIE76 distance between two normalized colors (alpha ignored). */
+export function deltaE76(a: string, b: string): number {
+  const [l1, a1, b1] = lab(a);
+  const [l2, a2, b2] = lab(b);
+  return Math.sqrt((l1 - l2) ** 2 + (a1 - a2) ** 2 + (b1 - b2) ** 2);
+}
+
+/** Compare one expected map against actual computed values. `approx` loosens colors (CIE76) and font size for approximate design frames. */
+export function compareStyles(expect: Expect, actual: Record<string, unknown>, tolerancePx = 1, approx: ApproxOptions = {}): PropResult[] {
   const out: PropResult[] = [];
   for (const [prop, exp] of Object.entries(expect)) {
     const act = actual[prop];
     if ((COLOR_PROPS as readonly string[]).includes(prop)) {
       const e = normalizeColor(exp);
       const a = normalizeColor(act);
-      out.push({ property: prop, expected: e ?? exp, actual: a ?? act, ok: e !== null && a !== null && e === a, ...(e === null ? { note: "expected color unparseable" } : {}) });
+      const near = e !== null && a !== null && approx.colorDeltaE !== undefined && e.length === a.length && deltaE76(e, a) <= approx.colorDeltaE;
+      out.push({ property: prop, expected: e ?? exp, actual: a ?? act, ok: e !== null && a !== null && (e === a || near), ...(e === null ? { note: "expected color unparseable" } : {}) });
     } else if ((NUM_PROPS as readonly string[]).includes(prop)) {
       const e = Number(exp);
       const a = Number(act);
@@ -81,7 +105,8 @@ export function compareStyles(expect: Expect, actual: Record<string, unknown>, t
         // The px tolerance must not turn a missing border (0px / style none) into a pass.
         out.push({ property: prop, expected: e, actual: a ?? act, ok: false, note: "border missing (0px or style none)" });
       } else {
-        out.push({ property: prop, expected: e, actual: a, ok: e !== null && a !== null && pxWithin(e, a, tolerancePx) });
+        const tol = prop === "fontSize" && approx.fontSizePx !== undefined ? approx.fontSizePx : tolerancePx;
+        out.push({ property: prop, expected: e, actual: a, ok: e !== null && a !== null && pxWithin(e, a, tol) });
       }
     } else if (prop === "fontFamily") {
       const e = primaryFamily(exp);

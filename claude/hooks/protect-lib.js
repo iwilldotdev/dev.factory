@@ -17,11 +17,11 @@ const os = require('os');
 const path = require('path');
 
 const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md']);
-const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
-// Written by the author worker during intake/plan (and the Figma pack by MCP save_to);
+const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline', 'contracts']);
+// Written by the author worker during intake/plan (raw payloads under raw/ are free for MCP saves);
 // denied to builder/auditor/scout and to shell writes. The CLI's plan-lock hashes catch later edits.
 const OWNED_FILES = new Set(['acs.json', 'diagnosis.md']);
-const OWNED_DIRS = new Set(['checks', 'figma']);
+const OWNED_DIRS = new Set(['checks', 'design']);
 // runs/_inbox/<session>/...: scratch for scouts that have no run yet (not a run; nothing CLI-owned in it).
 const INBOX = '_inbox';
 const CONFIG = { homeRaw: '' };
@@ -85,7 +85,7 @@ function relToRuns(p, home) {
   return p.startsWith(prefix) ? p.slice(prefix.length) : null;
 }
 
-/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, figma/** (author-written). */
+/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, design/** (author-written). */
 function isAuthorOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
@@ -165,7 +165,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|contracts|checks|design)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -174,8 +174,22 @@ function wordProtected(word, ctx, ancestor = false) {
   // The default home (~/.factory) stays protected even when FACTORY_HOME points elsewhere: a command can name either.
   const homes = [ctx.home, normPath('~/.factory')];
   if (homes.some((h) => (ancestor ? isProtectedOrAncestor(p, h) : isProtected(p, h)))) return true;
+  if (ctx.mainOwned && homes.some((h) => isMainOwned(p, h) || (ancestor && MAIN_DIRS.some((d) => p === `${h}/${d}`)))) return true;
   const expanded = expandVars(word);
-  return UNRESOLVED_VAR.test(expanded) && SUSPICIOUS_TAIL.test(expanded.replace(/['"]/g, ''));
+  const tail = expanded.replace(/['"]/g, '');
+  return UNRESOLVED_VAR.test(expanded) && (SUSPICIOUS_TAIL.test(tail) || (ctx.mainOwned && MAIN_TAIL.test(tail)));
+}
+
+const MAIN_DIRS = ['profiles', 'workspaces', 'migrations'];
+const MAIN_TAIL = /(?:^|[\\/])(?:profiles|workspaces|migrations)(?:[\\/]|$)/i;
+
+/**
+ * profiles/** and workspaces/** under FACTORY_HOME: written by the main session (and the CLI) only. Workers write profile
+ * DRAFTS under profile-drafts/<name>/**. Judged only when ctx.mainOwned is set (worker-guard), never by protect.js,
+ * which also runs for the main session.
+ */
+function isMainOwned(p, home) {
+  return MAIN_DIRS.some((d) => under(p, `${home}/${d}`));
 }
 
 /** Rough POSIX/PowerShell tokenizer: words, operators, redirections. */
@@ -280,7 +294,7 @@ function isFactory(words) {
   if (!words.length) return false;
   if (/^factory(?:\.cmd)?$/i.test(words[0])) return true;
   const cmd = baseName(words[0]);
-  return INTERPRETERS.has(cmd) && words[1] === '-m' && words[2] === 'factory';
+  return INTERPRETERS.has(cmd) && words[1] === '-m' && /^factory(?:\.\w+)*$/.test(words[2] || '');
 }
 
 /** A factory CLI segment the coarse nets may skip: no command substitution or backticks in its arguments. */
@@ -328,7 +342,7 @@ const WRITE_VERBS = new RegExp(
 // `.factory` only as a path segment (e.g. ~/.factory, C:\Users\x\.factory), never inside a name like `dev.factory`.
 const INTERP_REFS = /factory_home|(?:^|[^\w.-])\.factory(?=[\\/\s'"]|$)|process\.env|os\.environ|getenv|\$env:|%factory/i;
 const SCRIPT_FILE = /\.(?:py|pyw|js|mjs|cjs|ts|rb|pl|ps1|php|lua)$/i;
-const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|acs\.json|checks|figma|diagnosis\.md)/;
+const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|contracts|acs\.json|checks|design|diagnosis\.md)/;
 
 function runsMention(text, home) {
   const t = expandVars(text).replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
@@ -372,9 +386,21 @@ function inlineInterpreter(words) {
 const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\((?:[^()\n]|\([^()\n]*\))*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|\.open\(\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|\bos\.open\(|\bO_(?:WRONLY|RDWR|TRUNC|CREAT|APPEND|EXCL)\b|\bfdopen\(|\bopenSync\(|\bsys\.std(?:out|err)\s*=(?!=)|\bprocess\.std(?:out|err)\s*=(?!=)|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>|\bos\.(?:system|popen|exec\w*|spawn\w*)\(|\bsubprocess\.\w+\(|\bchild_process\b|\b(?:exec|execSync|execFileSync|spawnSync)\(|\bFile\.(?:delete|write|binwrite|rename|chmod|truncate|unlink)\b|\bFileUtils\b|\bDeno\.(?:writeTextFile|writeFile|remove|rename|truncate)\b|\bBun\.write\b/i;
 // Writing to the process's own stdout/stderr is output, not a file write (unless the stream was reassigned: SCRIPT_WRITE flags that).
 const STD_STREAM_WRITE = /\b(?:sys|process)\.std(?:out|err)(?:\.buffer)?\.write\w*\(/gi;
-const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
+const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|contracts|checks|design)\b/i;
 // The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
 const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
+// profiles/, workspaces/ and migrations/ of ANY factory home (absolute, ~, $FACTORY_HOME, a custom home): a literal path
+// segment, or the folder name as a quoted piece of a path built in code.
+const MAIN_NAME = /[\\/](?:profiles|workspaces|migrations)(?:[\\/]|\b)|['"](?:profiles|workspaces|migrations)['"]/i;
+
+/** ctx.mainOwned only (workers): any write call in the code together with a profiles/workspaces/migrations path. */
+function scriptWritesMain(code, ctx) {
+  if (!ctx || !ctx.mainOwned) return false;
+  const text = String(code);
+  const reassigned = /\b(?:sys|process)\.std(?:out|err)\s*=(?!=)/i.test(text);
+  const scan = reassigned ? text : text.replace(STD_STREAM_WRITE, '(');
+  return SCRIPT_WRITE.test(scan) && MAIN_NAME.test(text);
+}
 
 /**
  * True when the whole code blob has ANY write call AND names a protected file/folder or the factory home
@@ -479,9 +505,11 @@ function interpreterReason(command, ctx) {
     const files = args.filter((a) => !a.startsWith('-') && SCRIPT_FILE.test(a));
     if (!(stdin || inline || files.length)) continue;
     if (refs && scriptWritesRun(command)) return `${cmd} script/inline code writing run files`;
+    if (scriptWritesMain(command, ctx)) return `${cmd} script/inline code writing profiles/, workspaces/ or migrations/`;
     for (const f of files) {
       const body = readScript(f, ctx);
       if (body !== null && scriptWritesRun(body)) return `${cmd} script ${f} writes run files`;
+      if (body !== null && scriptWritesMain(body, ctx)) return `${cmd} script ${f} writes profiles/, workspaces/ or migrations/`;
       // A temp script that does not exist yet is written by this same command (`cat > f.py <<EOF … ; python f.py`):
       // its body is in the command text, already judged above by scriptWritesRun(command).
       if (body === null && refs && !(inTemp(normPath(f, ctx.cwd)) && writtenInline(command, f))) {
@@ -493,7 +521,41 @@ function interpreterReason(command, ctx) {
   // Inline interpreter code nested in another shell (`bash -c "python -c \"...\""`) that the tokenizer cannot split.
   const nested = /\b(?:python3?|py|node|deno|bun|ruby|perl)(?:\.exe)?\s+(?:-[A-Za-z]+\s+)*(?:-c|-e|--eval|-pe?|--print)\b/i.test(command);
   if (nested && INTERP_REFS.test(command) && scriptWritesRun(command)) return 'interpreter inline code writing run files';
+  if (nested && scriptWritesMain(command, ctx)) return 'interpreter inline code writing profiles/, workspaces/ or migrations/';
   return '';
+}
+
+/**
+ * Code a command hands to an interpreter, for callers that judge WHAT the code does (worker-guard: the factory package):
+ * `-c` / `-e` bodies, the whole command when code arrives on stdin (heredoc, here-string, pipe) or is nested in another
+ * shell's quotes, `bash -c` bodies, and the content of script files inside the temp dir. Bounded, heuristic.
+ */
+function interpreterCodeBlobs(command, ctx, depth = 0) {
+  const text = String(command);
+  if (depth > 3) return [text];
+  const out = [];
+  const piped = /<<|\|\s*(?:python3?|py|node|deno|bun|ruby|perl)\b/i.test(text);
+  for (const seg of segments(tokenize(ungroup(text)))) {
+    const words = stripPrefix(seg.words);
+    if (!words.length) continue;
+    const cmd = baseName(words[0]);
+    const args = words.slice(1);
+    if (SHELLS.has(cmd)) {
+      const i = args.findIndex((a) => /^(?:-[a-z]*c|\/c|\/k|-command)$/i.test(a));
+      if (i >= 0) out.push(...interpreterCodeBlobs(args.slice(i + 1).join(' '), ctx, depth + 1));
+      continue;
+    }
+    if (!INTERPRETERS.has(cmd) || args[0] === '-m') continue;
+    const i = args.findIndex((a) => /^(?:-c|-e|--eval|-p|-pe|--print)$/.test(a));
+    if (i >= 0) out.push(args.slice(i + 1).join(' '));
+    if (args.length === 0 || args.includes('-') || piped) out.push(text);
+    for (const f of args.filter((a) => !a.startsWith('-') && SCRIPT_FILE.test(a))) {
+      const body = readScript(f, ctx);
+      if (body !== null) out.push(body);
+    }
+  }
+  if (/\b(?:python3?|py|node|deno|bun|ruby|perl)(?:\.exe)?\s+(?:-[A-Za-z]+\s+)*(?:-c|-e|--eval|-pe?|--print)\b/i.test(text)) out.push(text);
+  return out;
 }
 
 /** A command that assigns FACTORY_ROLE (shell, PowerShell, cmd, interpreter env syntaxes). */
@@ -655,6 +717,7 @@ function extraReason(command, ctxIn, depth) {
       if (i >= 0) {
         const code = args.slice(i + 1).join(' ');
         if (scriptWritesRun(code)) return `${cmd} inline code writing run files`;
+        if (scriptWritesMain(code, ctx)) return `${cmd} inline code writing profiles/, workspaces/ or migrations/`;
       }
       continue;
     }
@@ -983,7 +1046,7 @@ function safeIn(command, ctx, mode) {
 
 /**
  * `<first line> <<DELIM` + body + `DELIM` as the WHOLE command, where the heredoc feeds a data consumer that writes no
- * file: `cat` with no operand, `git commit|tag ... -F -`, `gh ... --body-file -`, the factory CLI. The body is dropped
+ * file: `cat` with no operand, `git commit|tag ... -F -`, the factory CLI. The body is dropped
  * and the first line is judged in full. A first line with a write target (`> file`, `tee file`) keeps the body: no file
  * write target is ever proven safe. An unquoted DELIM keeps any body with `$`, a backtick or `\` (the shell
  * expands those). Anything else is returned unchanged.
@@ -1007,8 +1070,7 @@ function stripDataHeredoc(command) {
   const name = w[0].toLowerCase();
   const dash = (flag) => w.some((x, i) => (x === flag && w[i + 1] === '-') || x === `${flag}=-`);
   const consumer = (name === 'cat' && w.length === 1) || isFactory(w)
-    || (name === 'git' && (w.includes('commit') || w.includes('tag')) && (dash('-F') || dash('--file')))
-    || (name === 'gh' && (dash('--body-file') || dash('-F')));
+    || (name === 'git' && (w.includes('commit') || w.includes('tag')) && (dash('-F') || dash('--file')));
   return consumer ? m[1] : command;
 }
 
@@ -1049,11 +1111,11 @@ const BASELINE = (function frozenBaseline() {
 const os = require('os');
 
 const PROTECTED_FILES = new Set(['run.json', 'metrics.json', 'ship-plan.json', 'review-report.json', 'review-report.md']);
-const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline']);
-// Written by the author worker during intake/plan (and the Figma pack by MCP save_to);
+const PROTECTED_DIRS = new Set(['evidence', 'reviews', 'baseline', 'contracts']);
+// Written by the author worker during intake/plan (raw payloads under raw/ are free for MCP saves);
 // denied to builder/auditor/scout and to shell writes. The CLI's plan-lock hashes catch later edits.
 const OWNED_FILES = new Set(['acs.json', 'diagnosis.md']);
-const OWNED_DIRS = new Set(['checks', 'figma']);
+const OWNED_DIRS = new Set(['checks', 'design']);
 // runs/_inbox/<session>/...: scratch for scouts that have no run yet (not a run; nothing CLI-owned in it).
 const INBOX = '_inbox';
 const CONFIG = { homeRaw: '' };
@@ -1114,7 +1176,7 @@ function relToRuns(p, home) {
   return p.startsWith(prefix) ? p.slice(prefix.length) : null;
 }
 
-/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, figma/** (author-written). */
+/** Intake/plan artefacts: acs.json, diagnosis.md, checks/**, design/** (author-written). */
 function isAuthorOwned(p, home) {
   const rel = relToRuns(p, home);
   if (rel === null) return false;
@@ -1194,7 +1256,7 @@ function inTemp(p) {
 // ---------- shell ----------
 
 const UNRESOLVED_VAR = /\$\{?\w+\}?|%\w+%|\$env:\w+/i;
-const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|checks|figma)(?:[\\/]|$)/i;
+const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|acs\.json|diagnosis\.md|review-report\.(?:json|md)|[^\/]+\.pid|[^\/]+\.storage\.json)$|(?:^|[\\/])(?:evidence|reviews|baseline|contracts|checks|design)(?:[\\/]|$)/i;
 
 /** Word that names a protected path. Unresolvable variables + suspicious tail count. */
 function wordProtected(word, ctx, ancestor = false) {
@@ -1336,7 +1398,7 @@ const WRITE_VERBS = new RegExp(
 // `.factory` only as a path segment (e.g. ~/.factory, C:\Users\x\.factory), never inside a name like `dev.factory`.
 const INTERP_REFS = /factory_home|(?:^|[^\w.-])\.factory(?=[\\/\s'"]|$)|process\.env|os\.environ|getenv|\$env:|%factory/i;
 const SCRIPT_FILE = /\.(?:py|pyw|js|mjs|cjs|ts|rb|pl|ps1|php|lua)$/i;
-const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|acs\.json|checks|figma|diagnosis\.md)/;
+const RUN_FILE_TAIL = /\/runs\/[\w.-]+\/(?:run\.json|metrics\.json|ship-plan\.json|review-report|evidence|reviews|baseline|contracts|acs\.json|checks|design|diagnosis\.md)/;
 
 function runsMention(text, home) {
   const t = expandVars(text).replace(/\\/g, '/').replace(/\/{2,}/g, '/').toLowerCase();
@@ -1378,7 +1440,7 @@ function inlineInterpreter(words) {
 
 // Any write call in a code blob: the "writes files" signature (combined with a protected name below).
 const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
-const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
+const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|contracts|checks|design)\b/i;
 // The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
 const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
 
@@ -1621,6 +1683,6 @@ module.exports = {
 }());
 
 module.exports = {
-  inInbox, scriptWritesRun, readOnlySegment, factoryHome, normPath, wordProtected, isProtected, isCliOwned, isAuthorOwned, setsFactoryRole, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
+  inInbox, scriptWritesRun, scriptWritesMain, interpreterCodeBlobs, readOnlySegment, factoryHome, normPath, wordProtected, isProtected, isCliOwned, isMainOwned, isAuthorOwned, setsFactoryRole, isProtectedOrAncestor, inRunSub, inRunDir, inTemp, under,
   tokenize, segments, waitCmdBodies, bashWriteReason, isFactory, stripPrefix, baseName, provablySafe, stripDataHeredoc, lexStrict,
 };

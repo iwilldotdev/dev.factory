@@ -16,13 +16,14 @@ def children_of(parent: dict) -> list[dict]:
     return [run_load(c) for c in parent.get("children", [])]
 
 
-def mr_readbacks(run_id: str) -> list[str]:
-    d = run_dir(run_id) / "remote"
-    return sorted(p.name for p in d.glob("mr-*.json") if not p.name.endswith("-discussions.json")) if d.is_dir() else []
+def change_contracts(run_id: str) -> list[str]:
+    """File names of the change contracts (readbacks) a run holds."""
+    d = run_dir(run_id) / "contracts" / "change"
+    return sorted(p.name for p in d.glob("*.json")) if d.is_dir() else []
 
 
 def base_rows(parent: dict) -> list[dict]:
-    """Generic per-child facts (id, key, phase, wave, loops, blockers, deps, MR readbacks, ready)."""
+    """Generic per-child facts (id, key, phase, wave, loops, blockers, deps, change contracts, ready)."""
     children = children_of(parent)
     phase_of = {c["tickets"][0]["key"]: c["phase"] for c in children}
     rows = []
@@ -34,7 +35,7 @@ def base_rows(parent: dict) -> list[dict]:
         ready = deps_done and c["phase"] not in FINISHED and c["phase"] != "blocked"
         rows.append({"id": c["id"], "key": tk["key"], "phase": c["phase"], "wave": c.get("wave"),
                      "loops": dict(c.get("loops", {})), "open_blockers": len(open_blockers),
-                     "depends_on": deps, "mrs": mr_readbacks(c["id"]), "ready": ready})
+                     "depends_on": deps, "changes": change_contracts(c["id"]), "ready": ready})
     return rows
 
 
@@ -110,9 +111,9 @@ def rows(parent: dict) -> list[dict]:
             missing = gate.evaluate(c["id"], c["phase"]) if c["phase"] in gate.EVALUATORS else []
         except FactoryError as err:
             action, missing = f"cannot evaluate: {err}", []
-        mrs = [f"{m.get('repo')}!{m.get('iid')}" for m in c.get("mrs") or [] if isinstance(m, dict)]
+        changes = [f"{m.get('repo')}#{m.get('number')}" for m in c.get("changes") or [] if isinstance(m, dict)]
         owner = current_owner(c)
-        row.update({"kind": c.get("kind"), "review_mrs": mrs, "next": action, "missing": len(missing),
+        row.update({"kind": c.get("kind"), "review_changes": changes, "next": action, "missing": len(missing),
                     "open_human_checks": open_human_checks(c["id"]),
                     "owner": session_short(owner["session"]) if owner else None,
                     "lease": lease_holder(c["workspace"]), "slots": slots_of(c), "prove": last_prove(c)})
@@ -146,9 +147,9 @@ def cmd_status(args) -> int:
                           "children": data}, indent=2, ensure_ascii=False))
         return 0
     print(f"{parent['id']}  kind={parent['kind']}  phase={parent['phase']}")
-    print("child\tticket\tMR\tphase\tblockers\thuman\towner\tlease\tslots\tprove\tnext")
+    print("child\tticket\tchange\tphase\tblockers\thuman\towner\tlease\tslots\tprove\tnext")
     for r in data:
-        print("\t".join([r["id"], r["key"], ",".join(r["review_mrs"]) or "-", r["phase"], str(r["open_blockers"]),
+        print("\t".join([r["id"], r["key"], ",".join(r["review_changes"]) or "-", r["phase"], str(r["open_blockers"]),
                          str(r["open_human_checks"]), r["owner"] or "-", r["lease"] or "-", r["slots"], r["prove"], r["next"]]))
     if not data:
         print("no children")

@@ -65,10 +65,6 @@ class InstallTest(unittest.TestCase):
         self.profile = self.tmp / "profile"
         self.fh = self.tmp / "fhome"
         self.profile.mkdir()
-        self.running = False
-        patcher = mock.patch.object(install, "claude_running", lambda: self.running)
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         # Remove links first so cleanup never follows them into targets.
@@ -110,6 +106,7 @@ class InstallTest(unittest.TestCase):
         for role in ("scout", "author", "builder", "auditor"):
             text = (p / "agents" / f"factory-{role}.md").read_text(encoding="utf-8")
             self.assertNotIn("{{", text)
+            self.assertNotIn("disallowedTools", text)
             self.assertIn(f'node "{install.fwd(p / "hooks")}/worker-guard.js" {role}', text)
             self.assertIn(install.fwd(self.fh), text)
             if role != "scout":
@@ -237,73 +234,100 @@ class InstallTest(unittest.TestCase):
             run_install(*self.base())
         self.assertEqual((self.profile / "settings.json").read_text(encoding="utf-8"), "{not json")
 
-    def mcp_file(self, servers, name=".claude.json"):
+    def mcp_file(self, servers, name=".claude.json", extra=None):
         path = self.tmp / name
-        path.write_text(json.dumps({"numStartups": 3, "mcpServers": servers}, indent=2), encoding="utf-8")
+        path.write_text(json.dumps({"numStartups": 3, "mcpServers": servers, **(extra or {})}, indent=2), encoding="utf-8")
         return path
 
-    def test_mcp_config_merges_env_without_overwriting(self):
+    def tools_line(self, role="builder"):
+        text = (self.profile / "agents" / f"factory-{role}.md").read_text(encoding="utf-8")
+        (line,) = [ln for ln in text.splitlines() if ln.startswith("tools:")]
+        return line
+
+    def test_agent_tools_list_has_one_entry_per_configured_server(self):
         path = self.mcp_file({
-            "dev.mcp": {"command": "node", "env": {"JIRA_TOKEN": "secret", "DEV_MCP_SPILL_KB": "128"}},
-            "other": {"command": "x"},
+            "acme": {"command": "node", "env": {"ACME_TOKEN": "tok-9f3a"}},
+            "my-other_srv": {"url": "https://x.example"},
         })
-        code, out = run_install(*self.base("--mcp-config", str(path)))
-        self.assertEqual(code, 0, out)
-        data = json.loads(path.read_text(encoding="utf-8"))
-        env = data["mcpServers"]["dev.mcp"]["env"]
-        self.assertEqual(env["JIRA_TOKEN"], "secret")
-        self.assertEqual(env["DEV_MCP_SPILL_KB"], "128")
-        self.assertEqual(env["DEV_MCP_SAVE_ALLOW_DOT"], ".factory")
-        roots = env["DEV_MCP_SAVE_ROOTS"].split(os.pathsep)
-        self.assertEqual(roots[0], install.fwd(self.fh / "runs"))
-        self.assertTrue(roots[1].endswith("/dev.mcp"))
-        self.assertNotIn("env", data["mcpServers"]["other"])
-        self.assertEqual(data["numStartups"], 3)
-        self.assertEqual(len(list((self.profile / "backups").glob("factory-*/.claude.json"))), 1)
-        code, out = run_install(*self.base("--mcp-config", str(path)))
-        self.assertIn("already has the save_to settings", out)
-
-    def test_mcp_config_dry_run_prints_diff_and_keeps_file(self):
-        path = self.mcp_file({"dev_mcp": {"command": "node"}})
-        before = path.read_text(encoding="utf-8")
-        code, out = run_install(*self.base("--mcp-config", str(path), "--dry-run"))
-        self.assertEqual(code, 0, out)
-        self.assertEqual(path.read_text(encoding="utf-8"), before)
-        self.assertIn("+        \"DEV_MCP_SPILL_KB\": \"64\"", out)
-        self.assertFalse((self.profile / "backups").exists())
-
-    def test_mcp_config_without_entry_or_file(self):
-        path = self.mcp_file({"other": {"command": "x"}})
         before = path.read_text(encoding="utf-8")
         code, out = run_install(*self.base("--mcp-config", str(path)))
         self.assertEqual(code, 0, out)
-        self.assertIn("no dev.mcp entry", out)
+        for role, base in (("scout", "Read, Grep, Glob, Bash, Write"), ("author", "Read, Grep, Glob, Write, Edit, Bash"),
+                           ("builder", "Read, Grep, Glob, Write, Edit, Bash"), ("auditor", "Read, Grep, Glob, Write, Bash")):
+            self.assertEqual(self.tools_line(role), f"tools: {base}, mcp__acme__*, mcp__my-other_srv__*", role)
+        self.assertIn("agent tools use servers: acme, my-other_srv", out)
+        self.assertNotIn("tok-9f3a", out)
+        # the MCP config is only read: no edit, no backup of it, no env keys added
         self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(list((self.profile / "backups").glob("factory-*/.claude.json")), [])
+
+    def test_agent_tools_list_reads_project_scoped_servers_once(self):
+        path = self.mcp_file({"acme": {}}, extra={"projects": {"/p1": {"mcpServers": {"acme": {}, "beta": {}}},
+                                                               "/p2": {"mcpServers": {"gamma.x": {}}}, "/p3": {}}})
+        code, out = run_install(*self.base("--mcp-config", str(path)))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.tools_line().endswith("Bash, mcp__acme__*, mcp__beta__*, mcp__gamma_x__*"), self.tools_line())
+
+    def test_agent_tools_list_without_servers_has_no_mcp_entries(self):
+        for servers in ({}, ):
+            path = self.mcp_file(servers)
+            code, out = run_install(*self.base("--mcp-config", str(path)))
+            self.assertEqual(code, 0, out)
+            self.assertEqual(self.tools_line("builder"), "tools: Read, Grep, Glob, Write, Edit, Bash")
+            self.assertEqual(self.tools_line("scout"), "tools: Read, Grep, Glob, Bash, Write")
+            self.assertIn("no MCP servers", out)
+        # no config file at all (default location absent): note, exit 0, same result
         code, out = run_install(*self.base())
         self.assertEqual(code, 0, out)
         self.assertIn("default MCP config", out)
-        code, out = run_install(*self.base("--mcp-config", str(self.tmp / "nope.json")))
-        self.assertEqual(code, 1)
+        self.assertEqual(self.tools_line("auditor"), "tools: Read, Grep, Glob, Write, Bash")
+        for role in ("scout", "author", "builder", "auditor"):
+            text = (self.profile / "agents" / f"factory-{role}.md").read_text(encoding="utf-8")
+            self.assertNotIn("mcp__", text.split("hooks:")[0])
+            self.assertNotIn("MCP_TOOLS", text)
+
+    def test_mcp_servers_flag_overrides_the_config(self):
+        path = self.mcp_file({"acme": {}})
+        code, out = run_install(*self.base("--mcp-config", str(path), "--mcp-servers", "one, two-x ,,three"))
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.tools_line().endswith("Bash, mcp__one__*, mcp__two-x__*, mcp__three__*"), self.tools_line())
+        self.assertNotIn("mcp__acme__", self.tools_line())
+        self.assertIn("one, two-x, three", out)
+        code, out = run_install(*self.base("--mcp-config", str(path), "--mcp-servers", ""))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.tools_line(), "tools: Read, Grep, Glob, Write, Edit, Bash")
 
     def test_mcp_config_defaults_to_profile_file(self):
-        (self.profile / ".claude.json").write_text(json.dumps({"mcpServers": {"dev.mcp": {}}}), encoding="utf-8")
+        (self.profile / ".claude.json").write_text(json.dumps({"mcpServers": {"acme": {}}}), encoding="utf-8")
         code, out = run_install(*self.base())
         self.assertEqual(code, 0, out)
-        env = json.loads((self.profile / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]["dev.mcp"]["env"]
-        self.assertEqual(env["DEV_MCP_SPILL_KB"], "64")
+        self.assertTrue(self.tools_line().endswith("mcp__acme__*"), self.tools_line())
 
-    def test_mcp_diff_masks_secrets(self):
-        path = self.tmp / "c.json"
-        path.write_text(json.dumps({"mcpServers": {"dev.mcp": {"env": {
-            "JIRA_API_TOKEN": "tok-123", "Gitlab_Password": "pw-456", "AUTH_HEADER": "Bearer zzz"}}}}, indent=2),
-            encoding="utf-8")
-        for extra in ("--dry-run", None):
-            args = ("--mcp-config", str(path)) + ((extra,) if extra else ())
-            code, out = run_install(*self.base(*args))
-            for secret in ("tok-123", "pw-456", "Bearer zzz"):
-                self.assertNotIn(secret, out)
-            self.assertIn("***", out)
-        self.assertEqual(install.mask_secrets("MY_SECRET=abc\nPATH=x"), "MY_SECRET=***\nPATH=x")
+    def test_missing_or_broken_mcp_config_is_a_skip_not_a_crash(self):
+        code, out = run_install(*self.base("--mcp-config", str(self.tmp / "nope.json")))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.tools_line(), "tools: Read, Grep, Glob, Write, Edit, Bash")
+        bad = self.tmp / "bad.json"
+        bad.write_text("{not json", encoding="utf-8")
+        code, out = run_install(*self.base("--mcp-config", str(bad)))
+        self.assertEqual(code, 1, out)
+        self.assertEqual(self.tools_line(), "tools: Read, Grep, Glob, Write, Edit, Bash")
+
+    def test_dry_run_prints_the_servers_and_writes_nothing(self):
+        path = self.mcp_file({"acme": {}})
+        code, out = run_install(*self.base("--mcp-config", str(path), "--dry-run"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("agent tools use servers: acme", out)
+        self.assertFalse((self.profile / "agents").exists())
+
+    def test_render_helpers(self):
+        self.assertEqual(install.mcp_tool_server("my.server name"), "my_server_name")
+        self.assertEqual(install.mcp_server_names([1]), [])
+        self.assertEqual(install.mcp_server_names({"mcpServers": {"a": {}}, "projects": {"x": {"mcpServers": {"b": {}, "a": {}}}}}),
+                         ["a", "b"])
+        text = "tools: Read, Bash, {{MCP_TOOLS}}\nnext"
+        self.assertEqual(install.render_mcp_tools(text, ["a", "b"]), "tools: Read, Bash, mcp__a__*, mcp__b__*\nnext")
+        self.assertEqual(install.render_mcp_tools(text, []), "tools: Read, Bash\nnext")
 
     def test_install_backs_up_what_it_overwrites(self):
         (self.profile / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
@@ -323,20 +347,7 @@ class InstallTest(unittest.TestCase):
         self.assertEqual((b / "hooks" / "protect.js").read_text(encoding="utf-8"), "old hook")
         self.assertEqual((b / "skills" / "factory" / "SKILL.md").read_text(encoding="utf-8"), "old skill")
 
-    def test_running_claude_blocks_mcp_edit_without_yes(self):
-        path = self.mcp_file({"dev.mcp": {}})
-        before = path.read_text(encoding="utf-8")
-        self.running = True
-        code, out = run_install(*self.base("--mcp-config", str(path)))
-        self.assertEqual(code, 1, out)
-        self.assertIn("running Claude", out)
-        self.assertEqual(path.read_text(encoding="utf-8"), before)
-        code, out = run_install(*self.base("--mcp-config", str(path), "--yes"))
-        self.assertEqual(code, 0, out)
-        self.assertIn("DEV_MCP_SPILL_KB", path.read_text(encoding="utf-8"))
-
-    def test_running_claude_does_not_block_dry_run_or_unrelated_install(self):
-        self.running = True
+    def test_installing_while_claude_runs_is_not_special(self):
         code, out = run_install(*self.base())
         self.assertEqual(code, 0, out)
 
@@ -355,7 +366,7 @@ class InstallTest(unittest.TestCase):
         run_install(*self.base())
         settings = json.loads((self.profile / "settings.json").read_text(encoding="utf-8"))
         matcher = settings["hooks"]["PreToolUse"][0]["matcher"]
-        self.assertTrue(re.fullmatch(matcher, "mcp__dev_mcp__figma_get_design_context"))
+        self.assertTrue(re.fullmatch(matcher, "mcp__acme__get_node"))
         self.assertTrue(re.fullmatch(matcher, "Write"))
 
     def test_strip_harness_sections_without_sections(self):

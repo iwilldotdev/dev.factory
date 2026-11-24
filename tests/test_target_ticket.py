@@ -1,4 +1,4 @@
-"""`factory run target-ticket`: the MR of a hotfix target is titled with the ticket chosen for it."""
+"""`factory run target-ticket`: the change of a hotfix target is titled with the ticket chosen for it."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ class TargetTicketTests(HotfixCase):
     def titles(self):
         rc, out = cli("--json", "ship", "plan", self.rid)
         self.assertEqual(rc, 0, out)
-        return {m["target"]: m["title"] for m in json.loads(out)["mrs"]}
+        return {m["target"]: m["title"] for m in json.loads(out)["changes"]}
 
     def test_each_target_mr_is_titled_with_its_ticket(self):
         self.through_build()

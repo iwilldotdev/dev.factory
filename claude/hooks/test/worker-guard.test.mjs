@@ -40,7 +40,7 @@ test('fails closed on unknown role and unreadable input', () => {
 test('forbidden git and remote CLIs for every writing role', () => {
   const cmds = ['git push', 'git push origin HEAD', 'git -C x push', 'git reset --hard HEAD~1', 'git stash',
     'git checkout -- src/a.ts', 'git checkout -f main', 'git restore src/a.ts', 'git clean -fd',
-    'gh pr create', 'npm test && glab mr create'];
+    'curl -X POST https://api.example/x -d {}', 'npm test && curl --request DELETE https://api.example/x'];
   for (const role of ['builder', 'author', 'auditor']) {
     for (const cmd of cmds) assert.ok(denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
   }
@@ -70,7 +70,7 @@ test('factory subcommands reserved for the main session', () => {
     for (const cmd of reserved) assert.ok(denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
   }
   assert.ok(!denied(guard('builder', bash('factory prove r --check CHK-1'))));
-  assert.ok(!denied(guard('author', bash('factory figma expect r 3544:5710 --selector "[data-testid=d]"'))));
+  assert.ok(!denied(guard('author', bash('factory design expect r frame-1 --selector "[data-testid=d]"'))));
   assert.ok(denied(guard('builder', bash('factory env up acme React --run r'))), 'env up is the main session');
   assert.ok(!denied(guard('builder', bash('factory env check acme React --run r'))));
   assert.ok(!denied(guard('auditor', bash('factory run status r'))));
@@ -113,8 +113,8 @@ test('no role writes protected run files', () => {
 });
 
 test('author write scope', () => {
-  for (const rel of ['acs.json', 'checks/browser/ac-1.spec.ts', 'checks/style/drawer.json', 'figma/1-2.json',
-    'remote/issue-DEV-1.json', 'notes/diagnosis.md', 'diagnosis.md']) {
+  for (const rel of ['acs.json', 'checks/browser/ac-1.spec.ts', 'checks/style/drawer.json', 'design/1-2.json',
+    'raw/ticket/ACME-1.json', 'notes/diagnosis.md', 'diagnosis.md']) {
     assert.ok(!denied(guard('author', write(`${RUN}/${rel}`))), rel);
   }
   assert.ok(!denied(guard('author', write(path.join(TMP, 'scratch', 'plan.json')))));
@@ -129,8 +129,10 @@ test('builder write scope', () => {
   assert.ok(denied(guard('builder', write(`${RUN}/checks/browser/ac-1.spec.ts`))));
   assert.ok(denied(guard('builder', write(`${RUN}/acs.json`))));
   assert.ok(denied(guard('builder', write(`${RUN}/diagnosis.md`))));
-  assert.ok(denied(guard('builder', write(`${RUN}/figma/1-2.json`))));
+  assert.ok(denied(guard('builder', write(`${RUN}/design/1-2.json`))));
+  assert.ok(denied(guard('builder', write(`${RUN}/contracts/ticket/ACME-1.json`))));
   assert.ok(!denied(guard('builder', write(`${RUN}/notes/b.md`))));
+  assert.ok(!denied(guard('builder', write(`${RUN}/raw/ticket/ACME-1.json`))));
   assert.ok(denied(guard('builder', write(`${FH_POSIX}/secrets/acme.env`))));
 });
 
@@ -142,14 +144,18 @@ test('auditor write scope', () => {
   assert.ok(denied(guard('auditor', write('/repo/src/app.ts', '/repo'))));
 });
 
-test('roles other than author cannot save into author-owned run paths via MCP', () => {
-  const mcp = (save_to) => ({ tool_name: 'mcp__dev_mcp__figma_get_design_context', tool_input: { save_to } });
-  for (const role of ['scout', 'builder', 'auditor']) {
-    assert.ok(denied(guard(role, mcp(`${RUN}/figma/1-2.json`))), role);
-    assert.ok(denied(guard(role, mcp(`${RUN}/acs.json`))), role);
-    assert.ok(!denied(guard(role, mcp(`${RUN}/notes/a.json`))), role);
+test('no role can save into protected run paths via an MCP destination arg; raw/ and notes/ are free', () => {
+  const mcp = (args) => ({ tool_name: 'mcp__acme__get_ticket', tool_input: args });
+  for (const role of ['scout', 'builder', 'auditor', 'author']) {
+    for (const arg of ['save_to', 'output_path', 'output_file', 'out', 'dest']) {
+      assert.ok(denied(guard(role, mcp({ [arg]: `${RUN}/design/1-2.json` }))), `${role} ${arg} design`);
+      assert.ok(denied(guard(role, mcp({ [arg]: `${RUN}/acs.json` }))), `${role} ${arg} acs`);
+      assert.ok(denied(guard(role, mcp({ [arg]: `${RUN}/contracts/ticket/ACME-1.json` }))), `${role} ${arg} contracts`);
+      assert.ok(denied(guard(role, mcp({ [arg]: `${RUN}/evidence/CHK-1.json` }))), `${role} ${arg} evidence`);
+      assert.ok(!denied(guard(role, mcp({ [arg]: `${RUN}/raw/ticket/ACME-1.json` }))), `${role} ${arg} raw`);
+    }
+    assert.ok(!denied(guard(role, mcp({ save_to: `${RUN}/notes/a.json` }))), role);
   }
-  assert.ok(!denied(guard('author', mcp(`${RUN}/figma/1-2.json`))));
 });
 
 test('FACTORY_ROLE=auditor only for the auditor; encoded PowerShell denied', () => {

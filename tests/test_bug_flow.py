@@ -11,6 +11,7 @@ from pathlib import Path as _Path
 _sys.path.insert(0, str(_Path(__file__).resolve().parent))  # a single-module run finds real_support
 
 from real_support import RealCase, cli, commit_file, core, sh
+from tests.ticket_support import put_ticket
 
 PY = f'"{sys.executable}"'
 CHECK = "import sys, mod\nif mod.v != 2:\n    print('ASSERT v == 2')\n    sys.exit(1)\n"
@@ -31,7 +32,7 @@ class BugCase(RealCase):
         self.ok("run", "start", "ws", "BUG-1", "--bug", "BUG-1")
         self.ok("run", "branch", self.rid, "React", "--base", "main")
         self.wt = core.Path(core.run_load(self.rid)["repos"]["React"]["worktree"])
-        core.write_json(core.run_dir(self.rid) / "remote" / "issue-BUG-1.json", {"key": "BUG-1"})
+        put_ticket(self.rid, "BUG-1", type="Bug", is_bug=True)
         self.write_acs()
 
     def write_acs(self, checks=None, acs=None):

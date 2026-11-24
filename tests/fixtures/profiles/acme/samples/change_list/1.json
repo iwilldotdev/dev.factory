@@ -1,0 +1,31 @@
+{
+  "results": [
+    {
+      "n": 7,
+      "link": "https://scm.example/team/api/changes/7",
+      "title": "Bump deps",
+      "text": "Routine.",
+      "from": "chore/deps",
+      "into": "main",
+      "tip": "t1t1",
+      "status": "OPEN",
+      "wip": false,
+      "approvals": [
+        {
+          "login": "ana"
+        }
+      ]
+    },
+    {
+      "n": 8,
+      "link": "https://scm.example/team/api/changes/8",
+      "title": "WIP: split module",
+      "text": null,
+      "from": "wip/split",
+      "into": "main",
+      "tip": "t2t2",
+      "status": "DONE",
+      "wip": true
+    }
+  ]
+}

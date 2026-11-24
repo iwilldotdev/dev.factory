@@ -1,17 +1,17 @@
 """Ticket media (image/video attachments): the intake gate refuses a pack whose media nobody looked at.
 
-The CLI never downloads. The saved Jira issue (`remote/issue-<KEY>.json`) lists `fields.attachment[]`; the author
-downloads each image through dev.mcp (`save_to` under `remote/media/`) and records it in
-`remote/media/manifest.json`:
+The CLI never downloads. The ticket contract (`contracts/ticket/<KEY>.json`, `attachments[]` with id, name, mime,
+url) lists the attachments; the author downloads each image (any tool; saved under `raw/attachment/`) and records it in
+`raw/attachment/manifest.json`:
 
-    {"items": [{"name": "<attachment filename>", "id": "<attachment id>", "type": "image/png", "source": "<url or id>",
-                "seen": true, "file": "remote/media/<file>"},
+    {"items": [{"name": "<attachment name>", "id": "<attachment id>", "type": "image/png", "source": "<url or id>",
+                "seen": true, "file": "raw/attachment/<file>"},
                {"name": "<video filename>", "type": "video/mp4", "source": "...", "seen": false,
                 "note": "asked the user for the file or a description"}]}
 
 `seen: true` needs the downloaded file; `seen: false` needs a `question` blocker (answered or open) that references the attachment as `attachment:<id>`
-(its name when it has no id). Packs
-without an attachment list (older runs, a filtered `fields`) have nothing to check.
+(its name when it has no id). A contract
+without `attachments` has nothing to check.
 """
 
 from __future__ import annotations
@@ -20,9 +20,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .core import FactoryError, abs_path, fetch_item, read_json, run_dir
+from . import contracts
+from .core import FactoryError, abs_path, read_json, run_dir
 
-MEDIA_DIR = "remote/media"
+MEDIA_DIR = "raw/attachment"
 MANIFEST = f"{MEDIA_DIR}/manifest.json"
 EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif", "image/webp": ".webp", "image/svg+xml": ".svg"}
 
@@ -40,9 +41,9 @@ BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gi
 
 def _mime(a: dict) -> str:
     """Lowercased mime; a missing or generic one (`application/octet-stream`) falls back to the file extension."""
-    mime = str(a.get("mimeType") or "").strip().lower()
+    mime = str(a.get("mime") or "").strip().lower()
     if mime in ("", "application/octet-stream"):
-        mime = BY_EXT.get(Path(str(a.get("filename") or "")).suffix.lower(), mime)
+        mime = BY_EXT.get(Path(str(a.get("name") or "")).suffix.lower(), mime)
     return mime
 
 
@@ -53,24 +54,20 @@ def _save_name(a: dict, name: str, mime: str) -> str:
 
 
 def attachments(run_id: str, run: dict) -> list[dict]:
-    """image/* and video/* attachments listed in the saved issue of each ticket."""
+    """image/* and video/* attachments listed in the ticket contract of each ticket (a missing, invalid or stale
+    contract lists nothing: the intake gate reports it)."""
     out: list[dict] = []
     for t in run.get("tickets") or []:
-        path = run_dir(run_id) / "remote" / f"issue-{t['key']}.json"
-        try:
-            data = read_json(path)
-        except (FactoryError, OSError, ValueError):
+        doc, problems = contracts.load_contract(run_id, "ticket", t["key"])
+        if doc is None or problems:
             continue
-        fields = data.get("fields") if isinstance(data, dict) else None
-        for a in (fields.get("attachment") if isinstance(fields, dict) else None) or []:
-            if not isinstance(a, dict):
-                continue
+        for a in doc.get("attachments") or []:
             mime = _mime(a)
             if not mime.startswith(("image/", "video/")):
                 continue
-            name = str(a.get("filename") or a.get("id") or "")
+            name = str(a.get("name") or a.get("id") or "")
             out.append({"ticket": t["key"], "name": name, "id": str(a.get("id") or ""), "type": mime,
-                        "source": str(a.get("content") or ""), "file": f"{MEDIA_DIR}/{_save_name(a, name, mime)}"})
+                        "source": str(a.get("url") or ""), "file": f"{MEDIA_DIR}/{_save_name(a, name, mime)}"})
     return out
 
 
@@ -158,13 +155,14 @@ def errors(run_id: str, run: dict) -> list[str]:
 
 
 def fetches(run_id: str, run: dict) -> list[dict]:
-    """dev.mcp downloads for the images not yet in the manifest as seen."""
+    """Download lines (`{kind, id, raw_path, hint}`) for the images not yet in the manifest as seen."""
     items, _ = _manifest(run_id)
     out = []
     atts = attachments(run_id, run)
     for a in atts:
         e = _entry(items, a, atts)
         if a["type"].startswith("image/") and a["id"] and not (e and e.get("seen") is True and _file_ok(run_id, e.get("file"))):
-            out.append(fetch_item("jira_download_issue_attachment", attachmentId=a["id"],
-                                  save_to=abs_path(run_dir(run_id) / a["file"]), overwrite=True))
+            hint = (f"download attachment {a['name']!r} of ticket {a['ticket']} from {a['source']} to this path "
+                    "(the url may need the ticket provider's authentication)") if a["source"] else                    f"download attachment {a['name']!r} (id {a['id']}) of ticket {a['ticket']} to this path"
+            out.append({"kind": "attachment", "id": a["id"], "raw_path": abs_path(run_dir(run_id) / a["file"]), "hint": hint})
     return out

@@ -150,15 +150,32 @@ class TestEpicShip(EpicBase):
     def test_aggregated_order_and_depends_on(self):
         self.prepare()
         plan = json.loads(self.ok("--json", "epic", "ship", "plan", EPIC))
-        self.assertEqual([(m["child"], m["repo"]) for m in plan["mrs"]],
+        self.assertEqual([(m["child"], m["repo"]) for m in plan["changes"]],
                          [("ws-dev-1", "API"), ("ws-dev-3", "API"), ("ws-dev-2", "React")])
-        by_child = {m["child"]: m for m in plan["mrs"]}
+        by_child = {m["child"]: m for m in plan["changes"]}
         self.assertEqual([d["child"] for d in by_child["ws-dev-3"]["depends_on"]], ["ws-dev-1"])
-        self.assertIn("Depends on {mr_url:ws-dev-1:API:main}", by_child["ws-dev-3"]["description"])
-        self.assertIn("{mr_url:ws-dev-1:API:main}", by_child["ws-dev-2"]["description"])
-        self.assertEqual([a["type"] for a in plan["actions"]].count("jira_comment"), 1)
+        self.assertIn("Depends on {change_url:ws-dev-1:API:main}", by_child["ws-dev-3"]["body_md"])
+        self.assertIn("{change_url:ws-dev-1:API:main}", by_child["ws-dev-2"]["body_md"])
+        self.assertEqual([a["type"] for a in plan["actions"]].count("issue_comment"), 1)
         self.assertEqual([a["child"] for a in plan["actions"] if a["type"] == "push"],
                          ["ws-dev-1", "ws-dev-3", "ws-dev-2"])
+
+    def test_epic_plan_is_schema_2_markdown_intents_without_a_rich_text_tree(self):
+        self.prepare()
+        plan = json.loads(self.ok("--json", "epic", "ship", "plan", EPIC))
+        self.assertEqual(plan["schemaVersion"], 2)
+        text = json.dumps(plan)
+        for banned in ('"mrs"', '"type": "doc"', '"version": 1'):  # no rich-text tree, no legacy run-state key
+            self.assertNotIn(banned, text)
+        known = {"push", "change_request", "set_draft", "readback", "pipeline_watch", "issue_comment", "issue_transition"}
+        self.assertLessEqual({a["type"] for a in plan["actions"]}, known)
+        comment = next(a for a in plan["actions"] if a["type"] == "issue_comment")
+        self.assertIsInstance(comment["body_md"], str)
+        self.assertEqual(comment["body_md"].count("{change_url:"), 3)
+        self.assertIn("- ws-dev-1 API (main): {change_url:ws-dev-1:API:main}", comment["body_md"])
+        cr = [a for a in plan["actions"] if a["type"] == "change_request"]
+        deps = next(a for a in cr if a["child"] == "ws-dev-3")
+        self.assertIn("Depends on {change_url:ws-dev-1:API:main}", deps["body_md"])  # the intent carries the cross-ticket links
 
     def test_plan_refused_until_children_reviewed(self):
         self.prepare()
@@ -172,10 +189,10 @@ class TestEpicShip(EpicBase):
         plan = json.loads(self.ok("--json", "epic", "ship", "plan", EPIC))
         rc, _out = cli("epic", "ship", "verify", EPIC)
         self.assertEqual(rc, 1)
-        for m in plan["mrs"]:
-            core.write_json(core.run_dir(m["child"]) / m["readback"], {
-                "source_branch": m["source_branch"], "target_branch": m["target_branch"],
-                "title": m["title"], "draft": True, "web_url": "u", "iid": 1, "sha": m["head_sha"]})
+        from tests.change_support import put_change
+        for m in plan["changes"]:
+            put_change(m["child"], m["repo"], m["target"], source_branch=m["source_branch"],
+                       target_branch=m["target_branch"], title=m["title"], draft=m["draft"], head_sha=m["head_sha"])
         self.ok("epic", "ship", "verify", EPIC)
 
 

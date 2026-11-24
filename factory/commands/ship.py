@@ -1,4 +1,5 @@
-"""`factory ship plan|verify`: MR/Jira ship plan from evidence, and readback verification."""
+"""`factory ship plan|verify|update-description`: delivery plan (schemaVersion 2 intents) from evidence, and readback
+verification against `change.v1` / `pipeline.v1` contracts."""
 
 from __future__ import annotations
 
@@ -7,10 +8,12 @@ import re
 import string
 from pathlib import Path
 
-from .. import fetches, mirrordiff, shots
+from .. import contracts, design, fetches, mirrordiff, shots
+from .workspace import TICKET_MODES
 from ..core import (
     FactoryError,
     GateFailed,
+    abs_path,
     code_repos,
     event,
     load_evidence,
@@ -27,7 +30,8 @@ from ..core import (
     write_json,
 )
 
-DRAFT_PREFIX = "Draft: "
+PLAN_SCHEMA = 2
+CHANGE_ACTIONS = ("push", "change_request", "set_draft", "readback", "pipeline_watch")
 
 
 def _ordered_targets(run: dict, workspace: dict) -> list[str]:
@@ -42,7 +46,7 @@ def _ordered_targets(run: dict, workspace: dict) -> list[str]:
 
 def _ordered_repos(run: dict, workspace: dict) -> list[str]:
     aliases = []
-    for key in code_repos(run):  # env_only repos only serve the env: no push, no MR
+    for key in code_repos(run):  # env_only repos only serve the env: no push, no change
         try:
             aliases.append(repo_conf(workspace, key))
         except FactoryError:
@@ -62,34 +66,24 @@ def source_branch(run: dict, alias: str, target: str, targets: list[str]) -> str
 
 
 TITLE_FIELDS = ("key", "summary", "repo", "target")
-LEGACY_TITLE_FIELDS = TITLE_FIELDS + ("target_upper", "area")
 DEFAULT_TITLE = "[{key}] - {summary}"
-JIRA_MODES = ("none", "comment", "transition", "comment+transition")
 LOCAL_LINK_MARKERS = ("](evidence/", "](C:", "](./", "file://")
 
 
 def _ticket_summary(run: dict, ticket: dict) -> str:
-    """Summary from run.json, else from the Jira readback remote/issue-<KEY>.json."""
+    """Summary from run.json, else the title of the ticket contract; empty when neither is available."""
     if ticket.get("summary"):
         return str(ticket["summary"])
-    p = run_dir(run["id"]) / "remote" / f"issue-{ticket.get('key')}.json"
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    from .. import contracts
+    if not ticket.get("key"):
         return ""
-    if isinstance(data, dict):
-        fields = data.get("fields") if isinstance(data.get("fields"), dict) else {}
-        return str(fields.get("summary") or data.get("summary") or "")
-    return ""
+    doc, problems = contracts.load_contract(run["id"], "ticket", str(ticket["key"]))
+    return str(doc.get("title") or "") if doc is not None and not problems else ""
 
 
 def title_format(ship: dict) -> tuple[str, tuple[str, ...]]:
-    """(format, allowed placeholders): `ship.title_format`, else the legacy `mr_title_format`, else the default."""
-    if ship.get("title_format"):
-        return str(ship["title_format"]), TITLE_FIELDS
-    if ship.get("mr_title_format"):
-        return str(ship["mr_title_format"]), LEGACY_TITLE_FIELDS
-    return DEFAULT_TITLE, TITLE_FIELDS
+    """(format, allowed placeholders): `ship.title_format`, else the default."""
+    return str(ship.get("title_format") or DEFAULT_TITLE), TITLE_FIELDS
 
 
 def validate_title_format(fmt: str, allowed: tuple[str, ...]) -> None:
@@ -109,36 +103,46 @@ def _title(fmt: str, run: dict, alias: str, target: str) -> str:
     first = next((t for t in tickets if wanted and t.get("key") == wanted), tickets[0])
     key = first.get("key", run["id"])
     summary = _ticket_summary(run, first)
-    out = fmt.format(key=key, summary=summary, repo=alias, target=target, target_upper=target.upper(),
-                     area=first.get("area") or key).strip()
+    out = fmt.format(key=key, summary=summary, repo=alias, target=target).strip()
     if not summary:  # no summary known: never emit a dangling separator
         out = out.rstrip(" -").rstrip()
     return out
 
 
 def reviewers(ship: dict) -> list[str]:
-    """GitLab usernames from `ship.reviewers`; an identity entry (Jira/name) without gitlab_username is an error."""
+    """SCM user ids from `ship.reviewers`; an entry without `scm_user` (a ticket identity alone) is an error."""
     out = []
     for i, item in enumerate(ship.get("reviewers") or []):
         if isinstance(item, str):
             out.append(item)
             continue
-        user = item.get("gitlab_username") if isinstance(item, dict) else None
+        user = item.get("scm_user") if isinstance(item, dict) else None
         if not user:
             who = "?"
             if isinstance(item, dict):
-                who = item.get("jira") or item.get("jira_account") or item.get("name") or item.get("email") or "?"
-            raise FactoryError(f"ship.reviewers[{i}] ({who}): missing gitlab_username; set it in workspace.json "
-                               "(a Jira identity alone cannot be assigned as an MR reviewer)")
+                who = item.get("ticket_user") or item.get("name") or item.get("email") or "?"
+            raise FactoryError(f"ship.reviewers[{i}] ({who}): missing scm_user; set it in workspace.json "
+                               "(a ticket identity alone cannot be assigned as a change reviewer)")
         out.append(str(user))
     return out
 
 
-def _unwrap_mr(data):
-    """gitlab_get_merge_request saves {"merge_request": {...}, notes?, ...}; the MR object is what we compare."""
-    if isinstance(data, dict) and isinstance(data.get("merge_request"), dict):
-        return data["merge_request"]
-    return data
+def change_id(repo: str, target: str) -> str:
+    """Entity id of the change of a (repo, target): `contracts/change/<id>.json`, `raw/change/<id>.json`."""
+    return f"{repo}-{target}"
+
+
+def _rel(kind: str, ident: str, ext: str = "json") -> str:
+    return f"{kind}/{contracts.safe_id(ident)}.{ext}"
+
+
+def readback_path(repo: str, target: str) -> str:
+    """Run-relative path of the change contract a readback is verified from."""
+    return "contracts/" + _rel("change", change_id(repo, target))
+
+
+def raw_readback_path(repo: str, target: str) -> str:
+    return "raw/" + _rel("change", change_id(repo, target))
 
 
 def integrity_errors(run_id: str, run: dict, workspace: dict) -> list[str]:
@@ -157,49 +161,36 @@ def review_errors(run_id: str, run: dict, workspace: dict) -> list[str]:
 
 
 def branch_head(run: dict, workspace: dict, alias: str, target: str, branch: str) -> str | None:
-    """Local tip of the MR source branch (refs are shared by the run's worktrees)."""
+    """Local tip of the change source branch (refs are shared by the run's worktrees)."""
     wt = target_worktree(run, workspace, alias, target)
     if wt is None or not Path(wt).is_dir():
         return None
     return git(wt, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}", check=False) or None
 
 
-def _readback_sha(data: dict) -> str | None:
-    refs = data.get("diff_refs") if isinstance(data.get("diff_refs"), dict) else {}
-    return data.get("sha") or refs.get("head_sha")
+def change_contracts(run_id: str) -> tuple[list[dict], list[str]]:
+    """Every fresh, valid `contracts/change/*.json` of the run, plus a line per unusable one (stale, invalid)."""
+    return contracts.load_all(run_id, "change")
 
 
-def _merged_mrs(run_id: str) -> list[dict]:
-    out = []
-    for p in sorted((run_dir(run_id) / "remote").glob("mr-*.json")):
-        if p.name.endswith("-discussions.json"):
-            continue
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            continue
-        data = _unwrap_mr(data)
-        if isinstance(data, dict):
-            data["_file"] = p.name
-            out.append(data)
-    return out
+def _names_ticket(doc: dict, key: str) -> bool:
+    """The ticket key appears in the change title, description or source branch (whole token, case-insensitive)."""
+    rx = re.compile(rf"(?<![A-Za-z0-9]){re.escape(key)}(?![A-Za-z0-9])", re.IGNORECASE)
+    return any(rx.search(str(doc.get(f) or "")) for f in ("title", "description_md", "source_branch"))
 
 
 def check_dependencies(run: dict, internal: set[str] | None = None) -> list[str]:
     errors = []
     in_run = {t["key"] for t in run.get("tickets", [])} | set(internal or ())
-    mrs = _merged_mrs(run["id"])
+    changes, bad = change_contracts(run["id"])
+    merged = [c for c in changes if c.get("state") == "merged"]
     for t in run.get("tickets", []):
         for dep in t.get("depends_on") or []:
             if dep in in_run:
                 continue
-            needle = dep.lower()
-            merged = any(
-                m.get("state") == "merged" and needle in json.dumps(m, ensure_ascii=False).lower()
-                for m in mrs
-            )
-            if not merged:
-                errors.append(f"{t['key']} depends on {dep}: no remote/mr-*.json showing state merged for it")
+            if not any(_names_ticket(c, dep) for c in merged):
+                note = f" ({len(bad)} unusable change contract(s): re-ingest)" if bad else ""
+                errors.append(f"{t['key']} depends on {dep}: no fresh contracts/change/*.json with state merged naming it{note}")
     return errors
 
 
@@ -282,7 +273,7 @@ def _baseline_summary(run_id: str, alias: str) -> list[str]:
             src = data.get("failures") if isinstance(data.get("failures"), dict) else data
             named = {k: v for k, v in src.items() if isinstance(v, list)}
     detail = ", ".join(f"{k}: {len(v)}" for k, v in named.items()) or "recorded"
-    out = [f"Baseline (merge-base) pre-existing quality failures: {detail}. This MR adds none (prove gate)."]
+    out = [f"Baseline (merge-base) pre-existing quality failures: {detail}. This change adds none (prove gate)."]
     for k, v in named.items():
         if v:
             shown = "; ".join(str(x).replace("\n", " ")[:160] for x in v[:10])
@@ -387,6 +378,7 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
     else:
         lines.append("None.")
     lines += shots.description_lines(run, alias, target if run.get("hotfix") else None)
+    lines += design.description_lines(run["id"])
     lines += ["", "## Quality", ""] + _baseline_summary(run["id"], alias) + _quality_lines(run, alias, targets or [target])
     lines += _followup_lines(run["id"])
     if cross:
@@ -394,42 +386,83 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
     lines += mirrordiff.description_lines(run, alias, target)
     if deps:
         lines += ["", "## Dependencies", ""]
-        lines += [f"Depends on {{mr_url:{a}:{t}}}" for a, t in deps]
+        lines += [f"Depends on {{change_url:{a}:{t}}}" for a, t in deps]
     return "\n".join(lines) + "\n"
 
 
 def _cross(run: dict, alias: str, target: str, targets: list[str]) -> list[str]:
     hotfix = run.get("hotfix")
     if hotfix and target == hotfix["base"]:
-        return [f"Mirrored to {{mr_url:{alias}:{t}}}" for t in targets if t != target]
+        return [f"Mirrored to {{change_url:{alias}:{t}}}" for t in targets if t != target]
     if hotfix:
-        return [f"Mirror of {{mr_url:{alias}:{hotfix['base']}}}"]
+        return [f"Mirror of {{change_url:{alias}:{hotfix['base']}}}"]
     return []
 
 
 def local_link_errors(label: str, description: str) -> list[str]:
-    return [f"{label}: description links to a local file ({m!r}); GitLab cannot open it" for m in LOCAL_LINK_MARKERS
+    return [f"{label}: description links to a local file ({m!r}); the remote cannot open it" for m in LOCAL_LINK_MARKERS
             if m in (description or "")]
 
 
-def _adf_comment(mrs: list[dict]) -> dict:
-    content = []
-    for mr in mrs:
-        content.append({"type": "paragraph", "content": [
-            {"type": "text", "text": f"{mr['repo']} ({mr['target']}): "},
-            {"type": "inlineCard", "attrs": {"url": f"{{mr_url:{mr['repo']}:{mr['target']}}}"}},
-        ]})
-    return {"version": 1, "type": "doc", "content": content}
-
-
 def _needs_user(mode: str, kind: str, draft: bool = True) -> bool:
+    """Whether an intent needs the user's yes. `draft-auto` automates only pushes, read-only intents and draft changes."""
     if mode == "draft-auto":
-        return not (kind in ("push", "mr", "readback") and (kind != "mr" or draft))
+        if kind in ("push", "readback", "pipeline_watch"):
+            return False
+        return not (kind in ("change_request", "set_draft") and draft)
     return True
 
 
+def _links_md(changes: list[dict], prefix: str = "") -> str:
+    return "\n".join(f"- {c['repo']} ({c['target']}): {{change_url:{prefix}{c['repo']}:{c['target']}}}" for c in changes)
+
+
+def _change_actions(c: dict, mode: str, existing: dict | None, watch: bool, run_id: str) -> list[dict]:
+    """The intents that deliver one change: push, change_request, set_draft (an existing change whose draft state
+    differs), readback of the change, then pipeline_watch with its own readback paths."""
+    label_user = lambda kind, draft=True: _needs_user(mode, kind, draft)  # noqa: E731
+    acts = [{"type": "push", "repo": c["repo"], "target": c["target"], "branch": c["source_branch"],
+             "needs_user": label_user("push")}]
+    op = "update" if existing and isinstance(existing.get("number"), int) else "create"
+    cr = {"type": "change_request", "op": op, "repo": c["repo"], "target": c["target"], "title": c["title"],
+          "body_md": c["body_md"], "source": c["source_branch"], "target_branch": c["target_branch"],
+          "draft": c["draft"], "needs_user": label_user("change_request", c["draft"])}
+    if op == "update":
+        cr["number"] = existing["number"]
+    if c.get("reviewers"):
+        cr["reviewers"] = c["reviewers"]
+    acts.append(cr)
+    if op == "update" and existing.get("draft") is not None and bool(existing["draft"]) != bool(c["draft"]):
+        acts.append({"type": "set_draft", "repo": c["repo"], "target": c["target"], "draft": c["draft"],
+                     "needs_user": label_user("set_draft", c["draft"])})
+    ident = change_id(c["repo"], c["target"])
+    raw = abs_path(run_dir(run_id) / raw_readback_path(c["repo"], c["target"]))
+    acts.append({"type": "readback", "kind": "change", "id": ident, "repo": c["repo"], "target": c["target"],
+                 "save_to": raw, "ingest": f"factory ingest {run_id} change {raw} --id {ident} --repo {c['repo']}",
+                 "needs_user": label_user("readback")})  # a readback only reads what its change_request wrote
+    if watch:
+        praw = abs_path(run_dir(run_id) / "raw" / _rel("pipeline", ident))
+        jobs = praw + ".jobs"
+        acts.append({"type": "pipeline_watch", "repo": c["repo"], "target": c["target"], "sha": c["head_sha"],
+                     "save_to": praw, "jobs_save_to": jobs,
+                     "ingest": f"factory ingest {run_id} pipeline {praw} --id {ident} --repo {c['repo']} --raw jobs={jobs}",
+                     "needs_user": label_user("pipeline_watch")})
+    return acts
+
+
+def _existing_change(run_id: str, repo: str, target: str) -> dict | None:
+    """The change of a previous plan/readback (number, draft), when its contract file is readable: it makes the
+    next change_request an update. Staleness does not matter for the number; verify re-checks everything."""
+    p = run_dir(run_id) / readback_path(repo, target)
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] | None = None,
-               jira_mode: str | None = None, allow_mirror: int | None = None) -> dict:
+               ticket_mode: str | None = None, allow_mirror: int | None = None) -> dict:
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
     if allow_mirror is not None:
@@ -445,9 +478,9 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
     fmt, allowed = title_format(ship)
     validate_title_format(fmt, allowed)
     reviewer_names = reviewers(ship)
-    jira_mode = jira_mode or ship.get("jira") or "comment+transition"
-    if jira_mode not in JIRA_MODES:
-        raise FactoryError(f"ship jira mode {jira_mode!r} is not one of: {', '.join(JIRA_MODES)}")
+    ticket_mode = ticket_mode or ship.get("ticket_mode") or "comment+transition"
+    if ticket_mode not in TICKET_MODES:
+        raise FactoryError(f"ship ticket mode {ticket_mode!r} is not one of: {', '.join(TICKET_MODES)}")
 
     errors = integrity_errors(run_id, run, workspace) + check_dependencies(run, internal_deps)
     errors += mirrordiff.errors(run, workspace)
@@ -470,14 +503,14 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
         raise GateFailed(errors)
 
     draft = bool(ship.get("draft_default", True))
+    watch = bool(ship.get("pipeline_watch", False))
     hotfix = run.get("hotfix")
     seq = [(a, t) for t in targets for a in repos] if hotfix else [(a, t) for a in repos for t in targets]
-    mrs = []
+    changes = []
     for alias, target in seq:
         cross = _cross(run, alias, target, targets)
         deps = [] if hotfix else [(a, t) for (a, t) in seq if (a != alias and t == target and repos.index(a) < repos.index(alias))
                 or (a == alias and targets.index(t) < targets.index(target))]
-        base_title = _title(fmt, run, alias, target)
         src = source_branch(run, alias, target, targets)
         entry = {
             "repo": alias,
@@ -485,57 +518,50 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
             "source_branch": src,
             "head_sha": branch_head(run, workspace, alias, target, src),
             "target_branch": target_branch(workspace, alias, target),
-            "title": (DRAFT_PREFIX + base_title) if draft else base_title,
+            "title": _title(fmt, run, alias, target),  # never carries a draft marker: `draft` is its own field
             "draft": draft,
             "behind": 0,
             "depends_on": [{"repo": a, "target": t} for a, t in deps],
-            "description": _description(run, workspace, alias, target, deps, acs, cross, targets),
-            "readback": f"remote/mr-{alias}-{target}.json",
+            "body_md": _description(run, workspace, alias, target, deps, acs, cross, targets),
+            "readback": readback_path(alias, target),
         }
         if reviewer_names:
             entry["reviewers"] = reviewer_names
-        mrs.append(entry)
+        changes.append(entry)
 
-    actions = []
-    for mr in mrs:
-        label = f"{mr['repo']}/{mr['target']}"
-        actions.append({"type": "push", "repo": mr["repo"], "target": mr["target"], "branch": mr["source_branch"],
-                        "needs_user": _needs_user(mode, "push")})
-        mr_needs_user = _needs_user(mode, "mr", mr["draft"])
-        actions.append({"type": "mr", "repo": mr["repo"], "target": mr["target"], "draft": mr["draft"],
-                        "note": f"create or update MR {label}; draft flag and 'Draft: ' title prefix when draft",
-                        "needs_user": mr_needs_user, **({"reviewers": mr["reviewers"]} if mr.get("reviewers") else {})})
-        actions.append({"type": "readback", "repo": mr["repo"], "target": mr["target"], "save_to": mr["readback"],
-                        "needs_user": mr_needs_user})  # a readback only reads what its MR action wrote
+    actions: list[dict] = []
+    for c in changes:
+        actions += _change_actions(c, mode, _existing_change(run_id, c["repo"], c["target"]), watch, run_id)
 
     keys = [t["key"] for t in run.get("tickets", [])]
     epics = {e["key"]: e for e in workspace.get("epics", [])}
     epic = next((epics[t["parent"]] for t in run.get("tickets", []) if t.get("parent") in epics), None)
-    jira = None
-    if ship.get("jira_comment") == "mr-links" and jira_mode in ("comment", "comment+transition"):
-        jira = {"issues": keys, "adf": _adf_comment(mrs), "epic_ship_comment": (epic or {}).get("ship_comment")}
-        actions.append({"type": "jira_comment", "issues": keys, "needs_user": _needs_user(mode, "jira_comment")})
-    transition = ship.get("jira_transition") or (epic or {}).get("jira_transition")
-    if transition and jira_mode in ("transition", "comment+transition"):
-        actions.append({"type": "jira_transition", "issues": keys, "name": transition,
-                        "needs_user": _needs_user(mode, "jira_transition")})
+    if ship.get("ticket_comment") == "change-links" and ticket_mode in ("comment", "comment+transition"):
+        comment = {"type": "issue_comment", "issues": keys, "body_md": _links_md(changes),
+                   "needs_user": _needs_user(mode, "issue_comment")}
+        if (epic or {}).get("ship_comment"):
+            comment["epic_ship_comment"] = epic["ship_comment"]
+        actions.append(comment)
+    transition = ship.get("ticket_transition") or (epic or {}).get("ticket_transition")
+    if transition and ticket_mode in ("transition", "comment+transition"):
+        actions.append({"type": "issue_transition", "issues": keys, "to_status": transition,
+                        "needs_user": _needs_user(mode, "issue_transition")})
 
-    plan = {"schemaVersion": 1, "run": run_id, "autonomy": mode, "jira": jira_mode, "mrs": mrs, "jira_comment": jira, "actions": actions,
-            "visual_evidence": shots.gallery(run_id, run)}
+    plan = {"schemaVersion": PLAN_SCHEMA, "run": run_id, "autonomy": mode, "ticket_mode": ticket_mode,
+            "changes": changes, "actions": actions, "visual_evidence": shots.gallery(run_id, run)}
     write_json(run_dir(run_id) / "ship-plan.json", plan)
     return plan
 
 
-def _strip_draft(title: str) -> str:
-    t = title.strip()
-    for p in ("Draft:", "draft:", "[Draft]"):
-        if t.startswith(p):
-            return t[len(p):].strip()
-    return t
+def plan_version_errors(plan: dict) -> list[str]:
+    if not isinstance(plan, dict) or plan.get("schemaVersion") != PLAN_SCHEMA:
+        got = plan.get("schemaVersion") if isinstance(plan, dict) else None
+        return [f"ship-plan.json is schema {got!r}, this factory writes schema {PLAN_SCHEMA}: re-run ship plan"]
+    return []
 
 
 def _already_verified(run: dict, verified: list[dict]) -> bool:
-    """`ship verify` and `gate ship` both verify: the second, with the same MRs and nothing but gate passes
+    """`ship verify` and `gate ship` both verify: the second, with the same changes and nothing but gate passes
     recorded since the last `ship` event, must not log the same verification again."""
     events = run.get("events") or []
     for i in range(len(events) - 1, -1, -1):
@@ -545,52 +571,88 @@ def _already_verified(run: dict, verified: list[dict]) -> bool:
     return False
 
 
+def _contract_errors(label: str, what: str, problems: list[str]) -> list[str]:
+    return [f"{label}: {what} unusable: {p}" for p in problems]
+
+
+def _verify_change(run_id: str, run: dict, workspace: dict, c: dict, body: str, label: str) -> tuple[list[str], dict | None]:
+    errors: list[str] = []
+    doc, problems = contracts.load_contract(run_id, "change", change_id(c["repo"], c["target"]))
+    if doc is None or problems:
+        return _contract_errors(label, "change readback", problems), None
+    if doc.get("repo") != c["repo"]:
+        errors.append(f"{label}: readback is for repo {doc.get('repo')!r}, planned {c['repo']!r}")
+    if doc["source_branch"] != c["source_branch"]:
+        errors.append(f"{label}: source_branch {doc['source_branch']!r} != planned {c['source_branch']!r}")
+    if doc["target_branch"] != c["target_branch"]:
+        errors.append(f"{label}: target_branch {doc['target_branch']!r} != planned {c['target_branch']!r}")
+    errors += local_link_errors(label + " (planned)", body)
+    errors += local_link_errors(label + " (readback)", str(doc.get("description_md") or ""))
+    if bool(doc["draft"]) != bool(c["draft"]):
+        errors.append(f"{label}: draft is {doc['draft']}, planned {c['draft']}")
+    if doc["title"].strip() != str(c["title"]).strip():
+        errors.append(f"{label}: title {doc['title']!r} != planned {c['title']!r}")
+    planned = c.get("reviewers") or []
+    if planned:
+        have = doc.get("reviewers")
+        if have is None:
+            errors.append(f"{label}: readback carries no reviewers (unknown); planned {planned}")
+        elif missing := [r for r in planned if r not in have]:
+            errors.append(f"{label}: reviewers {have} lack planned {missing}")
+    current = branch_head(run, workspace, c["repo"], c["target"], c["source_branch"])
+    remote_sha = doc["head_sha"]
+    if not c.get("head_sha"):
+        errors.append(f"{label}: ship plan recorded no head for {c['source_branch']}; re-run factory ship plan")
+    elif current != c["head_sha"]:
+        errors.append(f"{label}: {c['source_branch']} is at {str(current)[:8]}, ship plan recorded "
+                      f"{c['head_sha'][:8]}; rewind to prove (factory run rewind {run_id} prove \"<reason>\")")
+    elif remote_sha != c["head_sha"]:
+        errors.append(f"{label}: change head sha {str(remote_sha)[:8]} != proven HEAD {c['head_sha'][:8]} "
+                      "(push the proven commit; never push unproven commits)")
+    return errors, doc
+
+
+def _verify_pipeline(run_id: str, act: dict, label: str) -> tuple[list[str], dict | None]:
+    """`pipeline_watch` readback: the pipeline contract ran on the watched sha (its status is reported, not judged here)."""
+    doc, problems = contracts.load_contract(run_id, "pipeline", change_id(act["repo"], act["target"]))
+    if doc is None or problems:
+        return _contract_errors(label, "pipeline readback", problems), None
+    errors = []
+    if doc["sha"] != act["sha"]:
+        errors.append(f"{label}: pipeline {doc['id']} ran on {doc['sha'][:8]}, watched sha is {str(act['sha'])[:8]}")
+    return errors, doc
+
+
 def verify(run_id: str) -> list[str]:
     plan_path = run_dir(run_id) / "ship-plan.json"
     if not plan_path.is_file():
         return ["ship-plan.json missing; run `factory ship plan` first"]
     plan = read_json(plan_path)
+    stale = plan_version_errors(plan)
+    if stale:
+        return stale
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
     errors = list(integrity_errors(run_id, run, workspace))
     errors += review_errors(run_id, run, workspace)
     verified = []
-    for mr in plan.get("mrs", []):
-        label = f"{mr['repo']}/{mr['target']}"
-        rb = run_dir(run_id) / mr.get("readback", f"remote/mr-{mr['repo']}-{mr['target']}.json")
-        if not rb.is_file():
-            errors.append(f"{label}: missing readback {rb.name}")
+    bodies = {(a["repo"], a["target"]): a.get("body_md", "") for a in plan.get("actions", []) if a.get("type") == "change_request"}
+    watches = {(a["repo"], a["target"]): a for a in plan.get("actions", []) if a.get("type") == "pipeline_watch"}
+    for c in plan.get("changes", []):
+        label = f"{c['repo']}/{c['target']}"
+        errs, doc = _verify_change(run_id, run, workspace, c, bodies.get((c["repo"], c["target"]), c.get("body_md", "")), label)
+        errors += errs
+        if doc is None:
             continue
-        try:
-            data = json.loads(rb.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as err:
-            errors.append(f"{label}: readback is not valid JSON ({err})")
-            continue
-        data = _unwrap_mr(data)
-        if data.get("source_branch") != mr["source_branch"]:
-            errors.append(f"{label}: source_branch {data.get('source_branch')!r} != planned {mr['source_branch']!r}")
-        if data.get("target_branch") != mr["target_branch"]:
-            errors.append(f"{label}: target_branch {data.get('target_branch')!r} != planned {mr['target_branch']!r}")
-        errors += local_link_errors(label + " (planned)", mr.get("description", ""))
-        errors += local_link_errors(label + " (readback)", str(data.get("description") or ""))
-        title = str(data.get("title", ""))
-        is_draft = bool(data.get("draft") or data.get("work_in_progress")) or title.lower().startswith("draft:")
-        if is_draft != bool(mr["draft"]):
-            errors.append(f"{label}: draft is {is_draft}, planned {mr['draft']}")
-        if _strip_draft(title) != _strip_draft(mr["title"]):
-            errors.append(f"{label}: title {title!r} != planned {mr['title']!r}")
-        current = branch_head(run, workspace, mr["repo"], mr["target"], mr["source_branch"])
-        remote_sha = _readback_sha(data)
-        if not mr.get("head_sha"):
-            errors.append(f"{label}: ship plan recorded no head for {mr['source_branch']}; re-run factory ship plan")
-        elif current != mr["head_sha"]:
-            errors.append(f"{label}: {mr['source_branch']} is at {str(current)[:8]}, ship plan recorded "
-                          f"{mr['head_sha'][:8]}; rewind to prove (factory run rewind {run_id} prove \"<reason>\")")
-        elif remote_sha != mr["head_sha"]:
-            errors.append(f"{label}: MR head sha {str(remote_sha)[:8]} != proven HEAD {mr['head_sha'][:8]} "
-                          "(push the proven commit; never push unproven commits)")
-        verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid"),
-                         "head": remote_sha or current})
+        item = {"repo": c["repo"], "target": c["target"], "url": doc.get("url"), "number": doc.get("number"),
+                "head": doc["head_sha"]}
+        watch = watches.get((c["repo"], c["target"]))
+        if watch:
+            perrs, pipe = _verify_pipeline(run_id, watch, label)
+            errors += perrs
+            if pipe is not None:
+                item["pipeline"] = {"id": pipe["id"], "status": pipe["status"]}
+        verified.append(item)
     if not errors:
         run = run_load(run_id)
         if not _already_verified(run, verified):
@@ -600,62 +662,59 @@ def verify(run_id: str) -> list[str]:
 
 
 def update_description(run_id: str, repo: str | None = None, target: str | None = None) -> dict:
-    """Rebuild the MR description(s) from current evidence; actions update the existing MR (iid from the readback)."""
+    """Rebuild the change body(ies) from current evidence; the intents update the existing change (number from its readback)."""
     plan_path = run_dir(run_id) / "ship-plan.json"
     if not plan_path.is_file():
         raise FactoryError("ship-plan.json missing; run `factory ship plan` first")
     plan = read_json(plan_path)
+    stale = plan_version_errors(plan)
+    if stale:
+        raise FactoryError(stale[0])
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
-    errors = integrity_errors(run_id, run, workspace)  # same proof checks as `ship plan`: no description from stale evidence
+    errors = integrity_errors(run_id, run, workspace)  # same proof checks as `ship plan`: no body from stale evidence
     if errors:
         raise GateFailed(errors)
     acs = read_json(run_dir(run_id) / "acs.json")
     mode = plan.get("autonomy") or (workspace.get("autonomy") or {}).get("ship", "ask")
-    selected = [m for m in plan.get("mrs", []) if (not repo or m["repo"] == repo) and (not target or m["target"] == target)]
+    selected = [c for c in plan.get("changes", []) if (not repo or c["repo"] == repo) and (not target or c["target"] == target)]
     if not selected:
-        raise FactoryError(f"no MR in ship-plan.json for repo={repo or '*'} target={target or '*'}")
-    targets = list(dict.fromkeys(m["target"] for m in plan["mrs"]))
-    missing, iids = [], {}
-    for mr in selected:
-        rb = run_dir(run_id) / mr.get("readback", f"remote/mr-{mr['repo']}-{mr['target']}.json")
-        try:
-            data = _unwrap_mr(json.loads(rb.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            data = None
-        iid = data.get("iid") if isinstance(data, dict) else None
-        if not iid:
-            missing.append(mr)
-        iids[(mr["repo"], mr["target"])] = iid
+        raise FactoryError(f"no change in ship-plan.json for repo={repo or '*'} target={target or '*'}")
+    targets = list(dict.fromkeys(c["target"] for c in plan["changes"]))
+    missing = []
+    for c in selected:
+        doc = _existing_change(run_id, c["repo"], c["target"])
+        if not (isinstance(doc, dict) and isinstance(doc.get("number"), int)):
+            missing.append(c)
     if missing:
-        fetch = [fetches.mr_fetch(run_id, workspace, m["repo"], "<iid>", f"mr-{m['repo']}-{m['target']}.json") for m in missing]
-        raise GateFailed([f"{m['repo']}/{m['target']}: missing or unreadable MR readback {m.get('readback')} (no iid)"
-                          for m in missing], fetch=fetch)
+        raise GateFailed([f"{c['repo']}/{c['target']}: missing or unreadable change readback {c.get('readback')} (no number)"
+                          for c in missing],
+                         fetch=[fetches.change_fetch(run_id, workspace, c["repo"], c["target"]) for c in missing])
     actions = []
-    for mr in selected:
-        deps = [(d["repo"], d["target"]) for d in mr.get("depends_on", [])]
-        mr["description"] = _description(run, workspace, mr["repo"], mr["target"], deps, acs,
-                                         _cross(run, mr["repo"], mr["target"], targets), targets)
-        needs = _needs_user(mode, "mr", bool(mr.get("draft", True)))
-        actions.append({"type": "mr_update_description", "repo": mr["repo"], "target": mr["target"],
-                        "iid": iids[(mr["repo"], mr["target"])], "description": mr["description"], "needs_user": needs})
-        actions.append({"type": "readback", "repo": mr["repo"], "target": mr["target"], "save_to": mr["readback"],
-                        "needs_user": needs})
+    for c in selected:
+        deps = [(d["repo"], d["target"]) for d in c.get("depends_on", [])]
+        c["body_md"] = _description(run, workspace, c["repo"], c["target"], deps, acs,
+                                    _cross(run, c["repo"], c["target"], targets), targets)
+        acts = _change_actions(c, mode, _existing_change(run_id, c["repo"], c["target"]), False, run_id)
+        actions += [a for a in acts if a["type"] in ("change_request", "readback")]
+        for a in plan["actions"]:  # keep the stored intent in step with the rebuilt body
+            if a.get("type") == "change_request" and (a["repo"], a["target"]) == (c["repo"], c["target"]):
+                a["body_md"] = c["body_md"]
     write_json(plan_path, plan)
-    return {"schemaVersion": 1, "run": run_id, "actions": actions}
+    return {"schemaVersion": PLAN_SCHEMA, "run": run_id, "actions": actions}
 
 
 # ---------- CLI ----------
 
 def _cmd_plan(args) -> int:
-    plan = build_plan(args.run, args.allow_behind, jira_mode=getattr(args, "jira", None),
+    plan = build_plan(args.run, args.allow_behind, ticket_mode=getattr(args, "ticket", None),
                       allow_mirror=getattr(args, "allow_mirror_divergence", None))
     if getattr(args, "json", False):
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         return 0
-    print(f"ship-plan.json: {len(plan['mrs'])} MR(s), autonomy {plan['autonomy']}")
-    for mr in plan["mrs"]:
-        print(f"- {mr['repo']} -> {mr['target']}: {mr['title']} (branch {mr['source_branch']})")
+    print(f"ship-plan.json: {len(plan['changes'])} change(s), autonomy {plan['autonomy']}")
+    for c in plan["changes"]:
+        print(f"- {c['repo']} -> {c['target']}: {c['title']} (branch {c['source_branch']}{', draft' if c['draft'] else ''})")
     for i, a in enumerate(plan["actions"], 1):
         who = "ASK" if a["needs_user"] else "auto"
         print(f"{i}. [{who}] {a['type']} {a.get('repo', '')} {a.get('target', '')}".rstrip())
@@ -673,34 +732,33 @@ def _cmd_update_description(args) -> int:
         return 0
     for i, a in enumerate(out["actions"], 1):
         who = "ASK" if a["needs_user"] else "auto"
-        extra = f" iid {a['iid']}" if a.get("iid") else ""
+        extra = f" #{a['number']}" if a.get("number") else ""
         print(f"{i}. [{who}] {a['type']} {a['repo']} {a['target']}{extra}")
-    print("ship-plan.json descriptions rebuilt from current evidence; run with --json for the description text")
+    print("ship-plan.json bodies rebuilt from current evidence; run with --json for the body text")
     return 0
 
 
 def _cmd_verify(args) -> int:
     errs = verify(args.run)
     if errs:
-        from ..fetches import readback_fetches
         run = run_load(args.run)
-        raise GateFailed(errs, fetch=readback_fetches(args.run, workspace_load(run["workspace"])))
+        raise GateFailed(errs, fetch=fetches.readback_fetches(args.run, workspace_load(run["workspace"])))
     print("OK ship verified")
     return 0
 
 
 def register(sub) -> None:
-    p = sub.add_parser("ship", help="ship plan and verification")
+    p = sub.add_parser("ship", help="delivery plan and verification")
     ssub = p.add_subparsers(dest="ship_cmd", required=True)
     pl = ssub.add_parser("plan")
     pl.add_argument("run")
     pl.add_argument("--allow-behind", action="store_true")
     pl.add_argument("--allow-mirror-divergence", type=int, metavar="DECISION",
                     help="hotfix: a user decision \"mirror diff: <reason>\" that allows the current mirror divergence")
-    pl.add_argument("--jira", choices=["none", "comment", "transition"],
-                    help="Jira actions to plan (default: workspace ship.jira, else comment+transition)")
+    pl.add_argument("--ticket", choices=["none", "comment", "transition"],
+                    help="ticket intents to plan (default: workspace ship.ticket_mode, else comment+transition)")
     pl.set_defaults(func=_cmd_plan)
-    ud = ssub.add_parser("update-description", help="rebuild MR description(s) from current evidence")
+    ud = ssub.add_parser("update-description", help="rebuild the change body(ies) from current evidence")
     ud.add_argument("run")
     ud.add_argument("--repo")
     ud.add_argument("--target")

@@ -144,7 +144,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
   "schemaVersion": 1, "id": "acme-dev-9454", "workspace": "acme", "kind": "ticket|epic",
   "parent": "<epic run id, child runs only>", "children": ["<child run ids, epic runs only>"],
   "tickets": [{"key": "DEV-9454", "type": "feature|bug", "parent": "DEV-7853", "depends_on": ["DEV-9451"]}],
-  "repos": {"React": {"branch": "feature/DEV-9454-x", "base": "pack", "worktree": "C:/…/wt/dev-9454-react", "head": "<sha>",
+  "repos": {"React": {"branch": "feature/DEV-9454-x", "base": "pack", "worktree": "C:/…/wt/dev-9454-react", "head": "<sha>", "branch_point": "<sha at run branch>",
                       "branches": {"homolog": "feature/DEV-9454-x-homolog"}, "base_branch": "<stacked epic child branch>", "base_run": "<child id>"}},
   "targets": ["pack", "homolog"],
   "env_slots": {"API": 1, "React": 0},
@@ -284,7 +284,7 @@ Phase exit criteria (`gate`):
 | intake | ≥1 ticket; every ticket has `remote/issue-<KEY>.json`; open blockers of kind question are empty |
 | plan | `acs.json` valid per §2.3; `figma check` OK; branches/worktrees created for every touched repo; env capability for every runtime check (bug runs then go to `reproduce`, not `build`; §8); writes the plan lock |
 | reproduce | bug runs only (§8): every `kind: bug` AC has a `reproduced` REPRO evidence bound to the merge-base; `diagnosis.md` has non-empty `## Root cause`, `## Evidence`, `## Ruled out`; env capability for runtime repro checks; plan files unchanged except `diagnosis.md` (re-locked) |
-| build | every touched repo worktree clean and ahead of base; commits match `commit.header_regex`; no forbidden trailers (commits reachable from a remote branch other than the run's own branch are inherited and skipped, with an info line) |
+| build | every touched repo worktree clean and ahead of base; commits match `commit.header_regex`; no forbidden trailers (commits reachable from a remote branch other than the run's own branch are inherited and skipped, with an info line; the span starts at the repo's `branch_point`, the HEAD `run branch` created the worktree at, when it is still an ancestor of HEAD, so commits the branch already had are not the run's, and runs without `branch_point` or with a rewritten history keep `<base>..HEAD`; merge commits that only bring the base in are never checked) |
 | prove | plan lock intact; every check has evidence `pass`, not dirty, `git_sha` == current HEAD of its repo, digest matching its event, written after the plan lock; quality delta vs baseline has no new failures; every rule check passes |
 | review | the prove criteria still hold at the current HEADs (else rewind to prove); latest `code` and `qa` reviews `APPROVE`, digests matching, bound to current SHAs and the current plan lock, zero blocker/major findings (`resolved` ignored); else phase → build and `loops.build += 1`. Blocked (question blocker; `run unblock` resumes at **build**) when `loops.build > autonomy.max_build_loops` or the review round count reaches `autonomy.max_review_rounds` with CHANGES |
 | ship | the prove criteria still hold; latest reviews still `APPROVE` and bound (as in review); `ship verify` OK |

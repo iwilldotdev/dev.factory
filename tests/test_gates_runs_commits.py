@@ -80,6 +80,65 @@ class OriginHead(CommitsCase):
         self.assertIn("not an ancestor", out)
 
 
+class BranchPoint(CommitsCase):
+    """Only the commits the run created are checked: what the branch already had at `run branch` time is inherited."""
+
+    def stacked_branch(self):
+        run(self.repo, "checkout", "-b", "feature/own")
+        self.commit("chore(deps): old non-conforming commit")
+        self.commit('Revert "something old"')
+        return run(self.repo, "rev-parse", "HEAD")
+
+    def test_commits_before_the_branch_point_are_not_checked(self):
+        point = self.stacked_branch()
+        self.commit("[X-2] - mine")
+        errors, out = self.check()
+        self.assertEqual(len(errors), 2, "without a recorded branch point the old behaviour stands")
+        errors, out = self.check(branch_point=point)
+        self.assertEqual(errors, [])
+        self.assertIn("2 commits already on the branch when the run started are not checked", out)
+
+    def test_run_commits_after_the_branch_point_are_still_checked(self):
+        point = self.stacked_branch()
+        self.commit("[X-2] - mine")
+        self.commit("bad run commit")
+        errors, _ = self.check(branch_point=point)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("bad run commit", errors[0])
+
+    def test_forbidden_trailer_after_the_branch_point_is_still_caught(self):
+        point = self.stacked_branch()
+        self.commit("[X-2] - mine\n\nCo-Authored-By: Bot")
+        ws = {"commit": {"header_regex": WS["commit"]["header_regex"], "forbidden_trailers": ["Co-Authored-By"]}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            errors = gate.commits_errors(self.repo, "main", ws, "R", "feature/own", branch_point=point)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("forbidden trailer", errors[0])
+
+    def test_a_branch_point_that_is_no_longer_an_ancestor_falls_back(self):
+        run(self.repo, "checkout", "-b", "feature/own")
+        self.commit("[X-2] - one")
+        gone = run(self.repo, "rev-parse", "HEAD")
+        run(self.repo, "reset", "--hard", "main")
+        self.commit("bad rewritten")
+        errors, _ = self.check(branch_point=gone)
+        self.assertEqual(len(errors), 1)
+        errors, _ = self.check(branch_point="0" * 40)
+        self.assertEqual(len(errors), 1)
+
+    def test_merge_commits_that_integrate_the_base_are_not_checked(self):
+        run(self.repo, "checkout", "-b", "feature/own")
+        point = run(self.repo, "rev-parse", "HEAD")
+        self.commit("[X-2] - mine")
+        run(self.repo, "checkout", "main")
+        self.commit("[X-3] - main moved")
+        run(self.repo, "checkout", "feature/own")
+        run(self.repo, "merge", "--no-ff", "main", "-m", "Merge branch main into feature/own")
+        for kw in ({}, {"branch_point": point}):
+            errors, _ = self.check(**kw)
+            self.assertEqual(errors, [], kw)
+
+
 class InheritedScope(CommitsCase):
     def stale_bad_commit_on_own_run(self):
         run(self.repo, "checkout", "-b", "feature/stale")

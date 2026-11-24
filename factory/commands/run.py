@@ -426,7 +426,7 @@ def cmd_branch(args) -> int:
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
     run["repos"][alias] = {"branch": branch, "base": args.base, "worktree": str(worktree),
-                           "head": git_head(worktree), "base_ref": base}
+                           "head": git_head(worktree), "base_ref": base, "branch_point": git_head(worktree)}
     if base_branch:
         run["repos"][alias]["base_branch"] = base_branch
         run["repos"][alias]["base_run"] = args.from_run

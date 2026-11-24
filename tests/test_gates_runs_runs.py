@@ -111,6 +111,39 @@ class RetypeAndStart(IntegrityCase):
         self.assertEqual(self.types(self.rid), ["feature"])
 
 
+class BranchPointRecord(IntegrityCase):
+    def test_run_branch_records_the_branch_point_and_gate_build_uses_it(self):
+        from tests.integrity_support import commit_file
+        self.start()
+        rec = core.run_load(self.rid)["repos"]["React"]
+        self.assertEqual(rec["branch_point"], sh("git", "rev-parse", "HEAD", cwd=self.wt))
+        self.acs()
+        self.ok("gate", self.rid, "intake")
+        self.ok("gate", self.rid, "plan")
+        # an inherited non-conforming commit sits before the branch point: only the run's own commits count
+        commit_file(self.wt, "src/old.txt", "o\n", "chore(deps): inherited from the stacked branch")
+        def move_point(run):
+            run["repos"]["React"]["branch_point"] = sh("git", "rev-parse", "HEAD", cwd=self.wt)
+        core.run_update(self.rid, move_point)
+        commit_file(self.wt, "src/a.txt", "a\n", "[Area] - change")
+        self.ok("gate", self.rid, "build")
+
+    def test_runs_without_a_branch_point_keep_the_old_span(self):
+        from tests.integrity_support import commit_file
+        self.start()
+        self.acs()
+        self.ok("gate", self.rid, "intake")
+        self.ok("gate", self.rid, "plan")
+        commit_file(self.wt, "src/old.txt", "o\n", "chore(deps): not matching")
+        commit_file(self.wt, "src/a.txt", "a\n", "[Area] - change")
+        def legacy(run):
+            run["repos"]["React"].pop("branch_point", None)
+        core.run_update(self.rid, legacy)
+        rc, out = self.gate("build")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("header does not match commit.header_regex", out)
+
+
 class BlockersAndNaming(IntegrityCase):
     def test_decision_is_a_blocker_kind(self):
         self.start()

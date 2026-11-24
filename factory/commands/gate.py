@@ -740,10 +740,22 @@ def merged_mr_heads(run: dict) -> list[str]:
     return shas
 
 
+def _integrates_base(path: Path, parents: list[str], base_ref: str) -> bool:
+    """A merge commit whose extra parent is already part of the base branch: it only brings the base in."""
+    return len(parents) > 1 and any(
+        subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", p, base_ref],
+                       capture_output=True, text=True).returncode == 0 for p in parents[1:])
+
+
 def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str | None = None, *,
                    own: tuple[str, ...] = (), origin_head: str | None = None,
-                   allow: set[str] | None = None, merged_heads: tuple[str, ...] = ()) -> list[str]:
+                   allow: set[str] | None = None, merged_heads: tuple[str, ...] = (),
+                   branch_point: str | None = None) -> list[str]:
     """Commit header/trailer rules over the commits the run added.
+
+    `branch_point` (the commit `run branch` created the worktree at; absent in older runs) limits the span to
+    `<branch_point>..HEAD` when it is still an ancestor of HEAD, so commits the branch already had when the run
+    started (a stacked or reused branch) are not the run's. Merge commits that only bring the base in are never checked.
 
     `origin_head` (a review-fix run: the MR head recorded at conversion) limits the span to
     `<origin_head>..HEAD` without merges: the MR's own earlier commits are not this run's. Otherwise
@@ -754,6 +766,14 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
     forbidden = [t.lower() for t in commit.get("forbidden_trailers") or []]
     errors = []
     span = [f"{base_ref}..HEAD"]
+    if branch_point and not origin_head:
+        known = git(path, "rev-parse", "--verify", "--quiet", f"{branch_point}^{{commit}}", check=False)
+        if known and subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", known, "HEAD"],
+                                    capture_output=True, text=True).returncode == 0:
+            span = [f"{known}..HEAD", f"^{base_ref}"]
+            before = git(path, "rev-list", "--count", f"{base_ref}..{known}", check=False)
+            if before.isdigit() and int(before) > 0:
+                print(f"{alias}: {before} commits already on the branch when the run started are not checked")
     if origin_head and git(path, "rev-parse", "--verify", "--quiet", f"{origin_head}^{{commit}}", check=False):
         proc = subprocess.run(["git", "-C", str(path), "merge-base", "--is-ancestor", origin_head, "HEAD"],
                               capture_output=True, text=True)
@@ -770,14 +790,17 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
         refs += [sha for sha in merged_heads
                  if git(path, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}", check=False)]
     if refs:
+        total = git(path, "rev-list", "--count", *span, check=False)
         span += ["--not", *refs]
-        total = git(path, "rev-list", "--count", f"{base_ref}..HEAD", check=False)
         kept = git(path, "rev-list", "--count", *span, check=False)
         if total.isdigit() and kept.isdigit() and int(total) > int(kept):
             print(f"{alias}: {int(total) - int(kept)} inherited commits on other remote branches skipped")
-    log = git(path, "log", "--format=%H%x1f%B%x1e", *span)
+    log = git(path, "log", "--format=%H%x1f%P%x1f%B%x1e", *span)
     for rec in filter(None, (r.strip() for r in log.split("\x1e"))):
-        sha, _, msg = rec.partition("\x1f")
+        sha, _, rest = rec.partition("\x1f")
+        parents, _, msg = rest.partition("\x1f")
+        if _integrates_base(path, parents.split(), base_ref):
+            continue
         header = msg.strip().splitlines()[0] if msg.strip() else ""
         if regex and not regex.search(header):
             errors.append(f"{alias} {sha[:8]}: header does not match commit.header_regex: {header!r}")
@@ -810,7 +833,8 @@ def _build(run_id, run, ws) -> list[str]:
             own = tuple(v for v in (rec.get("branches") or {}).values() if v)
             errors.extend(commits_errors(path, base, ws, alias, rec.get("branch"), own=own, origin_head=origin,
                                          allow=inherited_allow(run, ws, alias),
-                                         merged_heads=tuple(merged_mr_heads(run))))
+                                         merged_heads=tuple(merged_mr_heads(run)),
+                                         branch_point=rec.get("branch_point")))
     errors.extend(mirrordiff.errors(run, ws))  # hotfix with mirror branches: same changes as the base fix
     return errors
 

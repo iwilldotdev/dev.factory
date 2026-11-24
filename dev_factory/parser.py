@@ -10,6 +10,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
     from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics
+    from .cli_composite import cmd_mirror
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
@@ -121,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--no-retry", action="store_true", help="do not retry an assertion failure once")
             sp.add_argument("--scoped", action="store_true", help="quality checks run their scoped template on the changed files (never satisfies a gate)")
             sp.add_argument("--estimate", action="store_true", help="print reuse or run, with the median duration, per check; runs nothing")
+            sp.add_argument("--mirror", action="store_true", help="hotfix: run the mirror: true checks from each mirror worktree")
     sp = add("baseline", cmd_baseline, "record the baseline of the quality checks at the branch point", [scoped])
     sp.add_argument("--check", metavar="ID")
     sp.add_argument("--repo")
@@ -188,6 +190,11 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--selector", required=True, help="CSS selector of the element that implements the node")
         elif name in ("review", "refresh"):
             sp.add_argument("--user-said", required=name == "review", help="the user's own words" + (" (needed without a design adapter)" if name == "refresh" else ""))
+    sp = add("mirror", cmd_mirror, "hotfix: cherry-pick the fix onto a target (or `diff`: compare the mirror with the base fix)", [scoped])
+    sp.add_argument("words", nargs="+", metavar="<repo> | diff [<repo>]")
+    sp.add_argument("--to", metavar="TARGET", help="the mirror target name")
+    sp.add_argument("--ticket", help="the ticket key of this target's change (default: the run ticket)")
+    sp.add_argument("--decision", help="diff: a recorded user decision naming every divergent file")
     sp = add("wait", cmd_wait, "wait for a file, a command or a local URL (600 s cap)")
     sp.add_argument("--file")
     sp.add_argument("--cmd")

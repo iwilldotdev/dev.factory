@@ -102,6 +102,12 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
             praw, pdata = fwd(path_of(run, f"readback/{r}-pipeline.raw.json")), fwd(path_of(run, f"readback/{r}-pipeline.json"))
             add("pipeline", repo=r, sha=heads[r], contract="pipeline", optional=not cfg["ship"]["require_pipeline"],
                 ingest=f'factory ingest pipeline --raw "{praw}" --contract "{pdata}"')
+    from . import mirror  # a hotfix: one more change per mirror, titled with its own target ticket key [L-100]
+    for m in mirror.applied(st):
+        sha = git.head(Path(m["path"]))
+        add("push", repo=m["repo"], remote="origin", branch=m["branch"], sha=sha, target=m["target"])
+        add("mirror_change_request", repo=m["repo"], target=m["target"], sha=sha, source_branch=m["branch"], target_branch=m["target_branch"],
+            title=shipbody.title(cfg, {**ticket, "id": m["ticket"]}), draft=draft, body_file=fwd(path_of(run, "body.md")))
     if mode in ("comment", "both"):
         add("issue_comment", ticket=ticket["id"], body_md=f"A draft change for {ticket['id']} is ready for review: {ttl}\n\nChange: <the change url from the readback>")
     if mode in ("transition", "both"):

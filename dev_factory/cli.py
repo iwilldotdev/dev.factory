@@ -188,6 +188,8 @@ def _batch(args, fn) -> int:
     from . import verify
     proj = _project(args)
     opts = verify.Opts(args.check, args.repo, args.fresh, not getattr(args, "no_retry", False), args.actor, getattr(args, "scoped", False))
+    if getattr(args, "mirror", False) and (getattr(args, "estimate", False) or getattr(args, "scoped", False)):
+        raise FactoryError("--mirror runs the full mirror checks: it cannot be combined with --estimate or --scoped")
     if getattr(args, "estimate", False):
         from . import estimate
         s = estimate.compute(proj, _run(args, proj, writable=False), opts)
@@ -199,8 +201,8 @@ def _batch(args, fn) -> int:
 
 
 def cmd_verify(args) -> int:
-    from . import verify
-    return _batch(args, verify.verify)
+    from . import mirror, verify
+    return _batch(args, mirror.verify if args.mirror else verify.verify)
 
 
 def cmd_reproduce(args) -> int:

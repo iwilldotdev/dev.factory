@@ -164,8 +164,24 @@ def branch_name(template: str, kind: str, key: str, title: str) -> str:
     return name[:-5] if name.endswith(".lock") else name
 
 
+_OVERLAY: dict[str, dict] = {}
+
+
+@contextmanager
+def overlay(trees: dict[str, dict]):
+    """Inside the block `current` answers with these worktree events: `verify --mirror` serves and checks the mirror trees [L-99]."""
+    _OVERLAY.update(trees)
+    try:
+        yield
+    finally:
+        for repo in trees:
+            _OVERLAY.pop(repo, None)
+
+
 def current(st: dict, repo: str) -> dict | None:
     """The run worktree event of a repo (the latest non-throwaway one)."""
+    if repo in _OVERLAY:
+        return _OVERLAY[repo]
     found = [w for w in st["worktrees"] if w["repo"] == repo and not w.get("throwaway")]
     return found[-1] if found else None
 
@@ -187,8 +203,9 @@ def _event(repo: dict, path: Path, branch: str | None, bp: str, throwaway: bool,
             "throwaway": throwaway, **setup}
 
 
-def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: str | None = None) -> dict:
-    """Create (or finish the setup of) the run worktree of one repo; the branch point is recorded here [L-89]."""
+def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: str | None = None, base_ref: str | None = None) -> dict:
+    """Create (or finish the setup of) the run worktree of one repo; the branch point is recorded here [L-89].
+    `base_ref` starts a stacked branch from another commit (the head of the dependency) [L-91, L-92]."""
     cfg, main = project.cfg, Path(repo["path"])
     st = run.state()
     have = current(st, repo["name"])
@@ -197,7 +214,7 @@ def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: st
             raise FactoryError(f"the worktree of {repo['name']} already exists: {have['path']}")
         setup = run_setup(cfg, repo, Path(have["path"]))
         return run.append(_event(repo, Path(have["path"]), have["branch"], have["branch_point"], False, setup), actor)
-    base = rev(main, repo["base"]) or rev(main, f"origin/{repo['base']}")
+    base = base_ref or rev(main, repo["base"]) or rev(main, f"origin/{repo['base']}")
     if base is None:
         raise FactoryError(f"base branch {repo['base']!r} of repo {repo['name']} does not exist in {fwd(main)}")
     path = config.worktree_root(cfg) / run.id / repo["name"]

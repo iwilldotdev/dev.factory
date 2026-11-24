@@ -234,7 +234,7 @@ Common fields on every event:
 | `waiver` | `pipeline` (an id), `user_said`: covers that pipeline only, never a newer one [L-20] |
 | `claim` | `session`, `takeover` (bool) [L-184] |
 | `tokens` | `session`, `input`, `output` [L-183] |
-| `mirror` | `repo`, `target`, `branch`, `commits`, `result` (`applied` or `conflict`) [L-95] |
+| `mirror` | `repo`, `target`, `branch`, `path`, `branch_point` (the target tip), `target_branch`, `ticket`, `commits`, `result` (`applied` or `conflict`) [L-93, L-95]. `result: accepted` adds `decision`, `files` (the divergent files the user's decision names) and `heads` (`base`, `mirror`): it covers those commits only. The mirror tree is not a `worktree` event, so the base worktree stays the run's |
 | `closed` | `reason` [L-103] |
 
 ## 6. Evidence record (`type: evidence`)
@@ -340,6 +340,7 @@ A finding whose `source` is already in a feedback record for the same heads is n
 | `set_draft` | `repo`, `change_id`, `draft` | only with `draft` true |
 | `readback` | `repo`, `raw`, `contract_file`, `ingest` (the command), `adapter` (true when `[providers.change] fetch` reads it back in `ship verify`) | yes |
 | `pipeline` | `repo`, `sha`, `optional`, `ingest`; planned with `--pipeline` or `require_pipeline` | yes |
+| `mirror_change_request` | hotfix runs, one per applied mirror: `repo`, `target`, `sha`, `source_branch`, `target_branch`, `title` (with the target's own ticket key [L-100]), `draft`, `body_file` | no |
 | `issue_comment`, `issue_transition` | `ticket`, `body_md` or `to` | never |
 
 Under `autonomy.ship = "ask"` every intent has `needs_user`. Ready and merge are not intents. The CLI runs none of them [L-145].

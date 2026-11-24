@@ -203,7 +203,8 @@ def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
     out = review.reasons(st, plan, lk) + designflow.review_reasons(run, st, plan)
     if name in ("ship", "feedback") and not out:
-        out = ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan)
+        from . import mirror
+        out = ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan) + mirror.reasons(run, project, st)
     return out + feedback.reasons(run, project, st) if name == "feedback" and not out else out
 
 

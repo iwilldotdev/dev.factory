@@ -103,14 +103,15 @@ def derive(events: list[dict]) -> dict:
     st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
                 "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
                 "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "confirms": [], "waivers": [], "ships": [], "baselines": [],
-                "shipped": [], "design_reviews": [], "design_refreshes": [], "lock_at": -1, "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
+                "shipped": [], "design_reviews": [], "design_refreshes": [], "lock_at": -1, "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events),
+                "mirrors": [], "parent": None, "epic": None, "owner": None, "reports": [], "slot": 0, "dismissals": []}
     consumed: set[str] = set()
     for i, ev in enumerate(events):
         t = ev.get("type")
         st["first_ts"] = st["first_ts"] or ev.get("ts")
         st["last_ts"] = ev.get("ts")
         if t == "run_started":
-            st.update(ticket=ev.get("ticket"), kind=ev.get("kind"), repos=list(ev.get("repos") or []))
+            st.update(ticket=ev.get("ticket"), kind=ev.get("kind"), repos=list(ev.get("repos") or []), parent=ev.get("parent"))
         elif t == "repos":
             st["repos"] = list(ev.get("repos") or [])
         elif t == "retype":
@@ -180,7 +181,15 @@ def derive(events: list[dict]) -> dict:
                 st["env_failures"] = []
         elif t == "closed":
             st["closed"] = ev
-        if t in ("unblock", "loop", "ship_planned") and ev.get("decision"):
+        elif t in ("mirror", "review_report", "dismiss"):
+            st[{"mirror": "mirrors", "review_report": "reports", "dismiss": "dismissals"}[t]].append({**ev, "at": i})
+        elif t == "epic_planned":
+            st["epic"] = ev
+        elif t == "claim":
+            st["owner"] = ev.get("session")
+        elif t == "slot":
+            st["slot"] = ev.get("slot", 0)
+        if t in ("unblock", "loop", "ship_planned", "mirror", "dismiss") and ev.get("decision"):
             consumed.add(ev["decision"])
     for did, d in st["decisions"].items():
         d["consumed"] = did in consumed

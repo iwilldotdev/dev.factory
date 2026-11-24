@@ -26,6 +26,7 @@ class Opts:
     retry: bool = True
     actor: str | None = None
     scoped: bool = False  # quality checks run their scoped template (cheap feedback, never satisfies a gate) [L-60]
+    mirror: str | None = None  # a hotfix mirror target: only `mirror: true` checks run, from that target's tree [L-41]
 
 
 class Batch:
@@ -54,7 +55,8 @@ class Batch:
         self.env_problem: str | None = None
 
     def chosen(self) -> list[dict]:
-        return [c for c in self.all if (not self.opts.check or c["id"] == self.opts.check) and (not self.opts.repo or c["repo"] == self.opts.repo)]
+        return [c for c in self.all if (not self.opts.check or c["id"] == self.opts.check) and (not self.opts.repo or c["repo"] == self.opts.repo)
+                and (not self.opts.mirror or c.get("mirror"))]
 
     def tree(self, repo: str) -> Path:
         w = git.current(self.st, repo)
@@ -118,7 +120,7 @@ class Batch:
             out.update(result="flaky", kind=None, reason=f"attempt {first['attempt']} failed ({first['reason']}) and attempt "
                        f"{first['attempt'] + 1} passed: flaky never satisfies the gate until a clean run follows [L-14]")
         return evidence.append(self.run, c, self.spec(c), mode, sha, tree, clean, out, self.cfg["checks"]["tail_lines"],
-                               {**meta, **(extra or {}), **({"retry_of": first["attempt"]} if first else {})}, self.opts.actor)
+                               {**meta, **(extra or {}), **({"retry_of": first["attempt"]} if first else {}), **({"target": self.opts.mirror} if self.opts.mirror else {})}, self.opts.actor)
 
     def prefetch(self, todo: list[dict], heads: dict) -> None:
         """Run a repo's browser, visual, style and screenshot checks together in one runner process and one browser [L-57]."""
@@ -270,7 +272,7 @@ def verify(project, run: Run, opts: Opts) -> dict:
             rec = b.run_one(c, "verify", path, sha, not dirty, first=rec)
         if not b.note(c, rec):
             break
-    if b.plan["kind"] == "bug" and not b.stopped:
+    if b.plan["kind"] == "bug" and not b.stopped and not opts.mirror:
         _red_green(b, heads)
     out = b.summary("verify")
     out["dirty"] = [r for r, (_, _, d) in heads.items() if d]

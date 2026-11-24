@@ -11,6 +11,10 @@ M1_COVERED = {
     "L-131", "L-134", "L-140", "L-141", "L-142", "L-143", "L-148", "L-150", "L-152", "L-156", "L-157", "L-158", "L-162", "L-163",
     "L-165", "L-166", "L-167", "L-168", "L-171", "L-172", "L-173", "L-174", "L-177",
 }
+# Lessons that M2 (plan, lock, worktrees, cmd checks, verify, reproduce, red-green, commit pattern, metrics) covers.
+M2_COVERED = {
+    "L-01", "L-04", "L-06", "L-58", "L-72", "L-89", "L-132", "L-135", "L-136", "L-137",
+}
 
 
 def rows() -> dict[str, str]:
@@ -53,10 +57,12 @@ class LessonTests(unittest.TestCase):
                     bad.append(f"{file}::{name}: docstring does not cite {lid}")
         self.assertEqual(bad, [])
 
-    def test_the_m1_lessons_are_all_covered_by_a_tagged_test(self):
+    def test_the_m1_and_m2_lessons_are_all_covered_by_a_tagged_test(self):
         tagged = {lid for _, _, ids, _ in tags() for lid in ids}
-        self.assertEqual(sorted(M1_COVERED - tagged), [])
-        self.assertEqual(sorted(tagged - M1_COVERED), [], "add new tagged lessons to M1_COVERED so they cannot silently disappear")
+        covered = M1_COVERED | M2_COVERED
+        self.assertEqual(M1_COVERED & M2_COVERED, set())
+        self.assertEqual(sorted(covered - tagged), [])
+        self.assertEqual(sorted(tagged - covered), [], "add new tagged lessons to M2_COVERED so they cannot silently disappear")
 
 
 if __name__ == "__main__":

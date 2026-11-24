@@ -1,13 +1,17 @@
-"""Gates read evidence and never write it; a pass or fail is recorded as one `gate` event."""
+"""Gates read evidence and never write it; a pass or fail is recorded as one `gate` event [L-01, L-16]."""
 from __future__ import annotations
 
-from . import acquire, media
+import re
+from pathlib import Path
+
+from . import acquire, evidence, git, lock, media, plan as planmod
 from .run import Run
-from .util import FactoryError
+from .util import FactoryError, fwd, sha256_file
 
 # Run kind -> the ticket `type` it requires; epic and review runs do not derive from a single ticket type.
 KIND_TYPE = {"feature": "feature", "bug": "bug", "hotfix": "bug"}
-NAMES = ("intake",)
+NAMES = ("intake", "plan", "reproduce", "verify")
+SECTIONS = ("Root cause", "Evidence", "Ruled out")
 
 
 def effective_kind(run: Run, st: dict) -> str | None:
@@ -16,6 +20,10 @@ def effective_kind(run: Run, st: dict) -> str | None:
         return st["kind"]
     env, problems = acquire.load(run, "ticket", st["ticket"]) if st["ticket"] else (None, [])
     return env["data"]["type"] if env and not problems else None
+
+
+def is_bug(run: Run, st: dict) -> bool:
+    return effective_kind(run, st) in ("bug", "hotfix")
 
 
 def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
@@ -40,17 +48,148 @@ def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
     return out
 
 
-def run_gate(run: Run, cfg: dict, name: str, actor: str | None = None) -> tuple[bool, list[str]]:
-    if name not in NAMES:
-        raise FactoryError(f"gate {name!r} is not available in this build (available: {', '.join(NAMES)})")
-    st = run.state()
-    reasons = intake_reasons(run, cfg, st)
-    run.append({"type": "gate", "name": name, "result": "fail" if reasons else "pass", "reasons": reasons}, actor)
-    return not reasons, reasons
-
-
 def intake_passed(run: Run, cfg: dict, st: dict) -> bool:
     """A recorded pass that no later retype or contract change invalidated, and that still holds now."""
     g = st["gates"].get("intake")
     return bool(g and g["result"] == "pass" and g["at"] > max(st["retype_at"], st["contract_at"])
                 and not intake_reasons(run, cfg, st))
+
+
+def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[str]:
+    """Why `gate plan` would fail: the plan, the worktrees with their setup, open questions, raws, and any drift since the lock."""
+    cfg = project.cfg
+    plan, out = planmod.load_plan(run)
+    if plan is None:
+        return out
+    out = planmod.validate(plan, cfg, run.dir, effective_kind(run, st))
+    out += [f"question {q['id']} is still open: the user answers before the plan locks" for q in st["questions"].values() if q["answered"] is None]
+    for r in plan["repos"] if isinstance(plan.get("repos"), list) else []:
+        w = git.current(st, r)
+        if w is None or not Path(w["path"]).is_dir():
+            out.append(f"repo {r}: no run worktree; run factory run branch")
+        elif w.get("setup") == "fail":
+            out.append(f"repo {r}: the setup command failed in the worktree (exit {w.get('setup_exit')}); fix it and run factory run branch again [L-06]\n{w.get('setup_tail', '')}".rstrip())
+    out += acquire.stale(run)
+    if with_lock and st["locks"]:
+        out += lock.problems(run, cfg, st)
+    return out
+
+
+def diagnosis_reasons(run: Run) -> list[str]:
+    path = run.dir / "diagnosis.md"
+    if not path.is_file():
+        return [f"diagnosis.md is missing: write it at {fwd(path)} with ## Root cause, ## Evidence, ## Ruled out and ## Scenario"]
+    secs: dict[str, str] = {}
+    title = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            title = line[3:].strip().lower()
+            secs[title] = ""
+        elif title is not None:
+            secs[title] += line + "\n"
+    out = [f"diagnosis.md: ## {s} is missing or empty [L-38]" for s in SECTIONS if not secs.get(s.lower(), "").strip()]
+    scen = secs.get("scenario", "")
+    bullets = [ln for ln in scen.splitlines() if re.match(r"^\s*[-*]\s+\S", ln)]
+    if "ticket scenario used" not in scen.lower() and not (bullets and all(re.search(r":|because", b) for b in bullets)):
+        out.append("diagnosis.md: ## Scenario must say 'ticket scenario used' or list each deviation with its reason ('- what: why') [L-27]")
+    return out
+
+
+def reproduce_reasons(run: Run, project, st: dict, strict: bool = True) -> tuple[list[str], list[str]]:
+    """(diagnosis problems, reproduction record problems); the lock must hold first."""
+    if not is_bug(run, st):
+        return [f"gate reproduce is for bug runs; this run is {effective_kind(run, st)}"], []
+    drift = lock.problems(run, project.cfg, st, strict)
+    if drift:
+        return drift, []
+    lk, plan = lock.current(st), planmod.load_plan(run)[0]
+    recs = []
+    for c in planmod.effective_checks(plan, project.cfg):
+        if c.get("reproduce") and not evidence.satisfied(st, c["id"], "reproduce", lk["spec_hashes"][c["id"]], lk["branch_points"][c["repo"]]):
+            recs.append(f"{c['id']}: no reproduced record at the base {lk['branch_points'][c['repo']][:7]}: run factory reproduce [L-03, L-05, L-33]")
+    return diagnosis_reasons(run), recs
+
+
+def verify_reasons(run: Run, project, st: dict) -> list[str]:
+    """Every effective check passes at its repo's current HEAD from a clean worktree under the locked spec [L-01, L-07, L-08, L-09]."""
+    out = lock.problems(run, project.cfg, st)
+    if out:
+        return out
+    if is_bug(run, st):
+        out += sum(reproduce_reasons(run, project, st), [])
+    lk, plan = lock.current(st), planmod.load_plan(run)[0]
+    checks, heads = planmod.effective_checks(plan, project.cfg), {}
+    for r in plan["repos"]:
+        w = git.current(st, r)
+        if w is None or not Path(w["path"]).is_dir():
+            out.append(f"repo {r}: the run worktree is missing")
+            continue
+        path = Path(w["path"])
+        heads[r] = (path, git.head(path), w["branch_point"])
+        if (d := git.dirty(path)):
+            out.append(f"repo {r}: the worktree has {len(d)} uncommitted or untracked path(s); commit them, evidence from a dirty worktree never counts [L-07]")
+        if git.ahead(path, w["branch_point"]) == 0:
+            out.append(f"repo {r}: no commit past the branch point {w['branch_point'][:7]} [L-87]")
+    passing: set[str] = set()
+    for c in checks:
+        if c["repo"] not in heads:
+            continue
+        path, sha, bp = heads[c["repo"]]
+        rec = evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha)
+        if rec is None:
+            out.append(f"{c['id']}: no verify record at {sha[:7]} for the locked spec: run factory verify [L-08, L-09]")
+        elif rec["result"] != "pass":
+            out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})")
+        else:
+            passing |= {*c["ac"]}
+        if c.get("red_green") and rec is not None:
+            out += _red_green_reasons(st, c, lk, plan, path, bp)
+    out += [f"{a['id']}: no passing check backs this AC [L-01]" for a in plan["acs"] if a["id"] not in passing]
+    return out
+
+
+def _red_green_reasons(st: dict, c: dict, lk: dict, plan: dict, path: Path, bp: str) -> list[str]:
+    fix = git.rev(path, plan.get("fix_commit", "HEAD"))
+    if fix is None or fix == bp or not git.is_ancestor(path, bp, fix):
+        return [f"{c['id']}: fix_commit {plan.get('fix_commit', 'HEAD')!r} is not a commit past the branch point"]
+    h = lk["spec_hashes"][c["id"]]
+    out = []
+    if not evidence.satisfied(st, c["id"], "red", h, None, fix):
+        out.append(f"{c['id']}: red-green not proven at fix {fix[:7]}: the test must fail before the fix and pass after; run factory verify [L-34]")
+    elif not evidence.satisfied(st, c["id"], "green", h, None, fix):
+        out.append(f"{c['id']}: the green side at fix {fix[:7]} did not pass [L-34]")
+    return out
+
+
+def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
+    if name == "intake":
+        return intake_reasons(run, project.cfg, st)
+    if name == "plan":
+        return plan_reasons(run, project, st) if intake_passed(run, project.cfg, st) else ["gate intake has not passed"]
+    if name == "reproduce":
+        return sum(reproduce_reasons(run, project, st, strict), [])
+    return verify_reasons(run, project, st)
+
+
+def passed(run: Run, project, st: dict, name: str) -> bool:
+    """A recorded pass that still holds now: later commits, edits or drift invalidate it."""
+    g = st["gates"].get(name)
+    if not (g and g["result"] == "pass"):
+        return False
+    if name == "intake":
+        return intake_passed(run, project.cfg, st)
+    return not reasons_for(run, project, st, name)
+
+
+def run_gate(run: Run, project, name: str, actor: str | None = None) -> tuple[bool, list[str]]:
+    if name not in NAMES:
+        raise FactoryError(f"gate {name!r} is not available in this build (available: {', '.join(NAMES)})")
+    st = run.state()
+    reasons = reasons_for(run, project, st, name, strict=False)
+    extra: dict = {}
+    if not reasons and name == "plan" and not st["locks"]:
+        lock.lock_event(run, lock.compute(run, project.cfg, st, planmod.load_plan(run)[0]), {}, actor)
+    if not reasons and name == "reproduce":
+        extra["diagnosis"] = sha256_file(run.dir / "diagnosis.md")
+    run.append({"type": "gate", "name": name, "result": "fail" if reasons else "pass", "reasons": reasons, **extra}, actor)
+    return not reasons, reasons

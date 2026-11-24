@@ -16,6 +16,8 @@ The agent writes `.factory/runs/<run-id>/plan.json` during the plan phase. `gate
 | `login_user` | string slug | no | selects the `<KEY>_<slug>` secrets and a login state per user [L-81] |
 | `evidence` | `{ "screenshots": bool }` | no | `true` (set from an answered question) requires a `screenshot` check per touched UI repo [L-56, L-190] |
 
+M2 builds `cmd` checks only. Every other check type is rejected by `gate plan` with a message saying it arrives in a later milestone. A bug `cmd` check with `reproduce` must carry `red_green`, and `red_green` is only valid together with `reproduce`.
+
 ### Parity check types (summary; full field tables arrive with their milestone)
 
 | `type` | Keys | Rule |
@@ -144,7 +146,8 @@ Every `expect` value must be a fact of the node `node` through the property tabl
 | `files` | `{run-relative path: sha256}` of every declared spec and fixture file |
 | `config_hash` | sha256 of the proof-relevant effective config [L-131] |
 | `contracts` | `{contract path: raw_sha256}` [L-122] |
-| `diagnosis` | sha256 of `diagnosis.md`, added by `gate reproduce` |
+| `diagnosis` | sha256 of `diagnosis.md`. It is written on the passing `gate reproduce` event (`diagnosis`), not on the lock event, and a later change fails every gate until `gate reproduce` passes again |
+| `acs` | `{ac id: sha256}` of each canonical AC, so an amend can list the changed ACs |
 | `branch_points` | `{repo: sha}` recorded at worktree creation [L-89] |
 | `amend` | on an amend: `reason`, `decision` (or null), `changed_acs`, `changed_checks`, `counts_loop` [L-134] |
 

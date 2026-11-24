@@ -1,7 +1,6 @@
 """Command line: argument parsing and thin handlers; the work lives in the other modules."""
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
@@ -9,8 +8,6 @@ from pathlib import Path
 
 from . import __version__
 from .util import FactoryError, build_identity, fwd
-
-DESC = "Take one ticket from intake to a draft change request; no step passes on a model's claim."
 
 
 def _out(args, payload, text: str) -> None:
@@ -88,7 +85,8 @@ def cmd_status(args) -> int:
     s = lifecycle.status(proj, _run(args, proj, writable=False))
     text = [f"run {s['run']}: ticket {s['ticket']} kind {s['kind']} phase {s['phase']}" + (f" (closed: {s['closed']})" if s["closed"] else ""),
             f"repos: {', '.join(s['repos']) or 'none declared'}", f"events: {s['events']}  updated {s['updated']}",
-            f"gates: {', '.join(f'{k}={v}' for k, v in s['gates'].items()) or 'none run'}"]
+            f"gates: {', '.join(f'{k}={v}' for k, v in s['gates'].items()) or 'none run'}",
+            f"plan lock: {s['plan_lock'] or 'not locked'}  loops used: {s['loops']}"]
     for key in ("open_questions", "open_blockers", "unconsumed_decisions"):
         if s[key]:
             text.append(f"{key.replace('_', ' ')}: {', '.join(s[key])}")
@@ -120,7 +118,7 @@ def cmd_next(args) -> int:
         text.append(f"command: {n['command']}")
     text += [f"expects file: {f}" for f in n["files"]] + [f"role: {n['role']}"]
     if n["reasons"]:
-        text += ["pending gate intake would fail:"] + [f"  - {r}" for r in n["reasons"]]
+        text += [f"pending gate {n['gate']} would fail:"] + [f"  - {r}" for r in n["reasons"]]
     if n.get("decisions_note"):
         text.append(n["decisions_note"])
     text += [f"do not run: {c}" for c in n["refused"]]
@@ -140,6 +138,15 @@ def cmd_run(args) -> int:
     elif args.sub == "repos":
         lifecycle.set_repos(proj, _run(args, proj), args.names.split(","), args.actor)
         print(f"affected repos: {args.names}")
+    elif args.sub == "branch":
+        evs = lifecycle.branch(proj, _run(args, proj), args.repos.split(",") if args.repos else None, args.actor)
+        text = [f"worktree {e['repo']}: {e['path']} (branch {e['branch']}, branch point {e['branch_point'][:7]}, setup {e['setup']})" for e in evs]
+        _out(args, evs, "\n".join(text) or "every repo already has its worktree")
+        bad = [e for e in evs if e["setup"] == "fail"]
+        for e in bad:
+            print(f"setup failed in {e['repo']} (exit {e.get('setup_exit')}); it never counts as a result, fix it and run "
+                  f"this again:\n{e.get('setup_tail', '')}", file=sys.stderr)
+        return 1 if bad else 0
     elif args.sub == "close":
         run = _run(args, proj)
         lifecycle.close(run, args.reason, args.actor)
@@ -150,6 +157,46 @@ def cmd_run(args) -> int:
         print(f"deleted run {run.id}")
         for t in trees:
             print(f"remove this worktree yourself if you no longer need it: {fwd(t)}")
+    return 0
+
+
+def cmd_plan(args) -> int:
+    from . import gates, lock, plan as planmod
+    if args.sub == "example":
+        print(json.dumps(planmod.EXAMPLE, indent=2))
+        return 0
+    proj = _project(args)
+    run = _run(args, proj)
+    ev = lock.amend(run, proj.cfg, gates.plan_reasons(run, proj, run.state(), with_lock=False), args.reason, args.decision, args.actor)
+    a = ev["amend"]
+    _out(args, ev, f"plan re-locked (seq {ev['seq']}); changed ACs: {', '.join(a['changed_acs']) or 'none'}; changed checks: "
+                   f"{', '.join(a['changed_checks']) or 'none'}; " + ("consumed " + a["decision"] if a["decision"] else "counts against the loop budget"))
+    return 0
+
+
+def _batch(args, fn) -> int:
+    from . import verify
+    proj = _project(args)
+    s = fn(proj, _run(args, proj), verify.Opts(args.check, args.repo, args.fresh, not getattr(args, "no_retry", False), args.actor))
+    _out(args, s, verify.render(s))
+    return s["exit"]
+
+
+def cmd_verify(args) -> int:
+    from . import verify
+    return _batch(args, verify.verify)
+
+
+def cmd_reproduce(args) -> int:
+    from . import verify
+    return _batch(args, verify.reproduce)
+
+
+def cmd_metrics(args) -> int:
+    from . import gates, metrics
+    run = _run(args, _project(args), writable=False)
+    m = metrics.compute(run.read(), gates.is_bug(run, run.state()))
+    _out(args, {"run": run.id, **m}, metrics.render(run.id, m))
     return 0
 
 
@@ -220,103 +267,15 @@ def cmd_media(args) -> int:
 def cmd_gate(args) -> int:
     from . import gates
     proj = _project(args)
-    ok, reasons = gates.run_gate(_run(args, proj), proj.cfg, args.name, args.actor)
+    ok, reasons = gates.run_gate(_run(args, proj), proj, args.name, args.actor)
     _out(args, {"gate": args.name, "result": "pass" if ok else "fail", "reasons": reasons},
          f"gate {args.name}: pass" if ok else f"gate {args.name}: fail\n" + "\n".join(f"  - {r}" for r in reasons))
     return 0 if ok else 1
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="factory", description=DESC)
-    p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
-    p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
-    sub = p.add_subparsers(dest="cmd", metavar="<command>")
-    common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--project", metavar="DIR", help="project directory (default: climb from the cwd)")
-    common.add_argument("--json", action="store_true", help="machine-readable output")
-    common.add_argument("--actor", help="free-text hint stored in events (audit trail only)")
-    scoped = argparse.ArgumentParser(add_help=False, parents=[common])
-    scoped.add_argument("--run", metavar="RUN", help="run id (default: the only open run)")
-
-    def add(name, func, help_, parents=(common,)):
-        sp = sub.add_parser(name, help=help_, parents=list(parents))
-        sp.set_defaults(func=func)
-        return sp
-
-    sp = add("init", cmd_init, "create factory.toml and .factory/ in a directory")
-    sp.add_argument("--name", help="project name (default: the directory name)")
-    sp.add_argument("--repo", action="append", metavar="PATH", help="repo path (repeat for a workspace; default .)")
-    sp.add_argument("--base", default="main", help="base branch of the repos (default main)")
-    sp.add_argument("--harness", default="none", help="write a harness adapter: agents-md or none")
-    sp.add_argument("--import", dest="import_file", metavar="FILE", help="convert a v0 workspace or project file")
-    add("check", cmd_check, "validate the configuration")
-    sp = add("status", cmd_status, "status of a run, or of the project with --config", [scoped])
-    sp.add_argument("run_id", nargs="?")
-    sp.add_argument("--config", action="store_true", help="show the effective configuration")
-    add("runs", cmd_runs, "list runs")
-    sp = add("log", cmd_log, "events of a run", [scoped])
-    sp.add_argument("run_id", nargs="?")
-    sp.add_argument("--tail", type=int, metavar="N")
-    sp = add("next", cmd_next, "print the next required action", [scoped])
-    sp.add_argument("run_id", nargs="?")
-
-    rp = sub.add_parser("run", help="start, retype, close or delete a run").add_subparsers(dest="sub", required=True)
-    for name, helptext in (("start", "open a run for a ticket"), ("retype", "change the run kind"), ("repos", "declare affected repos"),
-                           ("close", "end a run without gates"), ("delete", "remove a run directory")):
-        sp = rp.add_parser(name, help=helptext, parents=[common if name == "start" else scoped])
-        sp.set_defaults(func=cmd_run)
-        if name == "start":
-            sp.add_argument("ticket")
-            sp.add_argument("--kind", help="feature, bug, hotfix, epic or review (default: from the ticket contract)")
-            sp.add_argument("--repos", help="affected repos, comma separated")
-        elif name == "retype":
-            sp.add_argument("--kind", required=True)
-        elif name == "repos":
-            sp.add_argument("names", help="comma separated repo names")
-        elif name == "close":
-            sp.add_argument("--reason", required=True)
-        else:
-            sp.add_argument("run_id", nargs="?")
-            sp.add_argument("--yes", action="store_true", help="confirm the removal")
-    sp = add("ask", cmd_human, "open a question for the user", [scoped])
-    sp.add_argument("text")
-    sp.add_argument("--ref", help="e.g. attachment:<id>")
-    sp = add("answer", cmd_human, "record the user's answer to a question", [scoped])
-    sp.add_argument("question")
-    sp.add_argument("--user-said", required=True, help="the user's own words")
-    sp = add("decide", cmd_human, "record a decision the user made", [scoped])
-    sp.add_argument("--user-said", required=True)
-    sp = add("human", cmd_human, "record a typed human event", [scoped])
-    sp.add_argument("--kind", required=True, help="answer, decision, env-hint or correction")
-    sp.add_argument("text")
-    sp = add("block", cmd_human, "block the run", [scoped])
-    sp.add_argument("--kind", required=True, help="question, decision, infra or tooling")
-    sp.add_argument("--reason", required=True)
-    sp = add("unblock", cmd_human, "resolve a blocker", [scoped])
-    sp.add_argument("blocker")
-    sp.add_argument("--decision", help="a recorded decision (Q-n or D-n), consumed once")
-    sp = add("fetch", cmd_fetch, "acquire a contract through the configured adapter", [scoped])
-    sp.add_argument("kind")
-    sp.add_argument("id")
-    sp.add_argument("--repo")
-    sp = add("ingest", cmd_ingest, "validate a contract the agent wrote, or --check stale raws", [scoped])
-    sp.add_argument("kind", nargs="?")
-    sp.add_argument("--raw", metavar="FILE")
-    sp.add_argument("--contract", metavar="FILE")
-    sp.add_argument("--stdin", action="store_true", help="read the contract data from stdin")
-    sp.add_argument("--check", action="store_true", help="list raws that changed since they were acquired")
-    mp = sub.add_parser("media", help="record ticket media as seen or unseen").add_subparsers(dest="sub", required=True)
-    sp = mp.add_parser("seen", parents=[scoped])
-    sp.set_defaults(func=cmd_media)
-    sp.add_argument("attachment")
-    sp.add_argument("--file", required=True, help="file under the run's media folder")
-    sp = mp.add_parser("unseen", parents=[scoped])
-    sp.set_defaults(func=cmd_media)
-    sp.add_argument("attachment")
-    sp.add_argument("--question", required=True, help="a question opened with --ref attachment:<id>")
-    sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
-    sp.add_argument("name")
-    return p
+def build_parser():
+    from .parser import build_parser as build
+    return build()
 
 
 def main(argv: list[str] | None = None) -> int:

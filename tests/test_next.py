@@ -59,7 +59,7 @@ class NextTests(FactoryCase):
         self.assertEqual(n["reasons"], [])
         self.ok("gate", "intake")
         n = self.nxt()
-        self.assertEqual((n["phase"], n["kind_of_action"]), ("plan", "none"))
+        self.assertEqual((n["phase"], n["command"]), ("plan", "factory run branch"))
 
     def test_declare_repos_before_the_gate_in_a_workspace(self):
         self.write("factory.toml", self.TOML + '\n[[repo]]\npath = "../b"\nname = "b"\n')

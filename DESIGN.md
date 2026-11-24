@@ -150,7 +150,7 @@ Children get closed stdin and an English locale [L-44, L-45].
 - **`screenshot`:** artifacts only. Before images come from base in `reproduce`, after images from HEAD [L-56].
 - **Runtime binding:** before a runtime check, the env lock must show a factory-started process from the checked worktree at its HEAD. Otherwise there is one restart, then `error`. There is no weaker mode [L-13, L-69, L-85].
 - **Reproduce:** `factory reproduce` runs bug checks in a throwaway worktree at `branch_point`, never the run worktree [L-36]. It serves runtime checks from it, then restores the run env; a failed restore exits 3 [L-37]. `reproduced` needs a non-setup failure matching `expect_fail_pattern` [L-03, L-05].
-- **Red-green:** in a throwaway worktree, red runs at `fix_commit~1` with `test_files` from git at `fix_commit` and must be `reproduced`. Green runs at `fix_commit` and must pass [L-34, L-35]. Runtime-only reproductions are covered by reproduce plus verify.
+- **Red-green:** `verify` runs it for bug runs once the check passes at HEAD. In a throwaway worktree, red runs at `fix_commit~1` with `test_files` from git at `fix_commit` and must be `reproduced`. Green runs at `fix_commit` and must pass [L-34, L-35]. Runtime-only reproductions are covered by reproduce plus verify.
 
 ## 9. Design pillar
 

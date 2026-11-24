@@ -216,10 +216,10 @@ Common fields on every event:
 | `answer` | `question`, `user_said`, `decision` (id, consumable once) [L-126] |
 | `decision` | `id` (`D-n`), `user_said` |
 | `human` | `kind` (`answer`, `decision`, `env-hint` or `correction`), `text` [L-177] |
-| `worktree` | `repo`, `path`, `branch`, `branch_point`, `throwaway` (bool) |
-| `gate` | `name`, `result` (`pass` or `fail`), `reasons` (list) |
+| `worktree` | `repo`, `path`, `branch`, `branch_point`, `throwaway` (bool), `setup` (`pass`, `fail` or `none`), and on failure `setup_exit`, `setup_tail`. A repeated event for the same repo means the setup ran again |
+| `gate` | `name`, `result` (`pass` or `fail`), `reasons` (list); a passing `reproduce` adds `diagnosis` (sha256 of `diagnosis.md`) |
 | `plan_locked` | lock fields from `plan-json.md`, `seq` (1 = initial lock) |
-| `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135] |
+| `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135]. An amend that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
 | `env` | `repo`, `action` (`up`, `down`, `restart` or `fail`), `pid`, `create_time`, `group`, `cwd`, `sha`, `kind` (on failure: `files`, `port`, `health`, `start` or `restore`) |
 | `evidence` | evidence record, §6 |
 | `review` | review record, §7 |
@@ -249,7 +249,7 @@ Common fields on every event:
  "artifacts":["artifacts/CHK-2/3/"],"hash":"<sha256 of canonical record without hash>"}
 ```
 
-- `mode`: `verify`, `reproduce`, `red` or `green`.
+- `mode`: `verify`, `reproduce`, `red` or `green`. `red` and `green` records add `fix` (the full SHA of the fix commit; `sha` is then `fix^` or `fix`). A retry that passes after an assertion failure is the `flaky` record of the next attempt and adds `retry_of`. The implicit commit check has `check` `<repo>:commits`.
 - `result`:
 
   | `result` | `kind` | Notes |

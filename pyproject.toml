@@ -15,7 +15,7 @@ dependencies = []
 factory = "dev_factory.cli:main"
 
 [tool.setuptools]
-packages = ["dev_factory"]
+packages = ["dev_factory", "dev_factory.checks"]
 
 [tool.setuptools.dynamic]
 version = { attr = "dev_factory.__version__" }

@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import gates, next as nxt
+from . import acquire, git, gates, lock, next as nxt
 from .project import Project
 from .run import KINDS, Run, derive
 from .util import FactoryError, fwd, safe_id
@@ -96,16 +96,37 @@ def delete(run: Run, confirmed: bool) -> list[str]:
     return trees
 
 
+def branch(project: Project, run: Run, names: list[str] | None, actor: str | None) -> list[dict]:
+    """Create the run worktree of each repo (default: the declared repos); a repo that already has a good one is left alone."""
+    st = run.state()
+    if not gates.intake_passed(run, project.cfg, st):
+        raise FactoryError("gate intake has not passed; run it before creating worktrees")
+    by_name = {r["name"]: r for r in project.cfg["repo"]}
+    names = names or st["repos"]
+    unknown = [n for n in names if n not in by_name]
+    if unknown:
+        raise FactoryError(f"unknown repo {', '.join(unknown)} (repos: {', '.join(by_name)})")
+    title = acquire.load(run, "ticket", st["ticket"])[0]["data"]["title"]
+    out = []
+    for n in names:
+        have = git.current(st, n)
+        if have and Path(have["path"]).is_dir() and have.get("setup") != "fail":
+            continue
+        out.append(git.add_worktree(project, run, by_name[n], gates.effective_kind(run, st) or "feature", title, actor))
+    return out
+
+
 def status(project: Project, run: Run) -> dict:
     st = run.state()
     ph = nxt.phase(run, project, st)
-    missing = [w["path"] for w in st["worktrees"] if not Path(w["path"]).exists()]
+    missing = [w["path"] for r in st["repos"] if (w := git.current(st, r)) and not Path(w["path"]).exists()]  # throwaway trees are gone by design
     out = {"run": run.id, "ticket": st["ticket"], "kind": gates.effective_kind(run, st), "phase": ph, "repos": st["repos"],
            "events": st["count"], "started": st["first_ts"], "updated": st["last_ts"],
            "open_questions": [q["id"] for q in st["questions"].values() if q["answered"] is None],
            "open_blockers": [b["id"] for b in st["blockers"].values() if b["open"]],
            "unconsumed_decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]],
            "gates": {n: g["result"] for n, g in st["gates"].items()}, "missing_worktrees": missing,
+           "plan_lock": len(st["locks"]) or None, "loops": f"{lock.loops_used(st)}/{project.cfg['autonomy']['max_loops']}",
            "closed": st["closed"]["reason"] if st["closed"] else None}
     out["problems"] = [f"worktree is missing: {fwd(p)} (close the run with factory run close --reason, or recreate it)" for p in missing]
     return out
@@ -128,7 +149,9 @@ def describe(ev: dict) -> str:
             "contract": ("kind", "id", "source"), "media": ("attachment", "state", "file", "question"),
             "question": ("id", "text", "ref"), "answer": ("question", "user_said"), "decision": ("id", "user_said"),
             "human": ("kind", "text"), "blocker": ("id", "kind", "reason"), "unblock": ("blocker", "decision"),
-            "gate": ("name", "result", "reasons"), "closed": ("reason",)}.get(t, ())
+            "gate": ("name", "result", "reasons"), "worktree": ("repo", "path", "branch", "setup"),
+            "plan_locked": ("seq",), "loop": ("kind", "decision", "counts"),
+            "evidence": ("check", "mode", "result", "sha"), "closed": ("reason",)}.get(t, ())
     return " ".join(f"{k}={ev[k]!r}" if isinstance(ev.get(k), str) and " " in ev[k] else f"{k}={ev[k]}"
                     for k in keys if ev.get(k) not in (None, [], ""))
 

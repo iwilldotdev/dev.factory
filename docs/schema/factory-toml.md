@@ -38,7 +38,10 @@ Composition rules (DESIGN §2):
 | `branch` | template: `{kind}`, `{key}`, `{slug}` | `"{kind}/{key}-{slug}"` | no | R, W | run branch name |
 | `setup` | command string | none | no | R, W | runs in every new worktree and throwaway worktree; failure blocks the check, never counts as a result [L-06, L-72] |
 | `files_from_main` | list of repo-relative paths | `[]` | no | R, W | gitignored files copied into worktrees [L-64, L-65] |
-| `commit_pattern` | regex | none | no | R, W | see decision 6; checked over `branch_point..HEAD` only [L-89, L-90] |
+| `commit_pattern` | regex | none | no | R, W | see decision 6; checked over `branch_point..HEAD` only, and not over commits the base already has [L-89, L-90] |
+| `commit_forbidden_trailers` | list of trailer names (e.g. `Co-Authored-By`) | `[]` | no | R, W | a commit in the same range that carries one fails the check, merges included [L-90] |
+
+A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit standing check `<repo>:commits`; `verify` runs it like any other check, so its result is evidence bound to the SHA.
 
 ### `[repo.env]` (optional, required for runtime checks)
 

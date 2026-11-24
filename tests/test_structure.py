@@ -33,7 +33,7 @@ def repo_files() -> list[Path]:
 
 
 def source_files() -> list[Path]:
-    return sorted(PKG.glob("*.py"))
+    return sorted(PKG.rglob("*.py"))
 
 
 class GrepBanTests(unittest.TestCase):

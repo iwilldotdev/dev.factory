@@ -99,9 +99,13 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def run(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: float) -> Result:
-    """Run argv with stdin closed, output to temp files (no pipe holds), killed as a tree on timeout [L-42, L-44]."""
-    exe = shutil.which(argv[0], path=env.get("PATH")) or argv[0]
+def run(argv: list[str] | str, *, cwd: Path, env: dict[str, str], timeout_s: float, shell: bool = False) -> Result:
+    """Run argv (or, with shell=True, one command line for the platform shell) with stdin closed, output to temp
+    files (no pipe holds), killed as a tree on timeout [L-42, L-44]."""
+    if shell:
+        argv0, line = str(argv), str(argv)
+    else:
+        argv0, line = argv[0], [shutil.which(argv[0], path=env.get("PATH")) or argv[0], *argv[1:]]
     kwargs: dict = {}
     if WINDOWS:
         kwargs["creationflags"] = 0x00000200 | 0x08000000  # new process group, no console window
@@ -110,10 +114,10 @@ def run(argv: list[str], *, cwd: Path, env: dict[str, str], timeout_s: float) ->
     start = time.monotonic()
     with tempfile.TemporaryFile() as fout, tempfile.TemporaryFile() as ferr:
         try:
-            proc = subprocess.Popen([exe, *argv[1:]], cwd=str(cwd), env=env, stdin=subprocess.DEVNULL,
-                                    stdout=fout, stderr=ferr, **kwargs)
+            proc = subprocess.Popen(line, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=fout, stderr=ferr,
+                                    shell=shell, **kwargs)
         except OSError as exc:
-            raise FactoryError(f"cannot start {argv[0]!r}: {exc}") from exc
+            raise FactoryError(f"cannot start {argv0!r}: {exc}") from exc
         timed_out = False
         try:
             proc.wait(timeout=timeout_s)

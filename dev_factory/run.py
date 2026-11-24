@@ -102,7 +102,7 @@ def derive(events: list[dict]) -> dict:
     """Everything a command needs to know about a run, computed from its events."""
     st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
                 "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
-                "human": [], "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
+                "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
     consumed: set[str] = set()
     for i, ev in enumerate(events):
         t = ev.get("type")
@@ -134,7 +134,18 @@ def derive(events: list[dict]) -> dict:
         elif t == "unblock" and ev.get("blocker") in st["blockers"]:
             st["blockers"][ev["blocker"]]["open"] = False
         elif t == "gate":
-            st["gates"][ev["name"]] = {"result": ev.get("result"), "reasons": ev.get("reasons", []), "at": i}
+            st["gates"][ev["name"]] = {"result": ev.get("result"), "reasons": ev.get("reasons", []), "at": i,
+                                       "diagnosis": ev.get("diagnosis")}
+            if ev["name"] == "reproduce" and ev.get("result") == "pass":
+                st["diagnosis"] = ev.get("diagnosis")
+        elif t == "plan_locked":
+            st["locks"].append(ev)
+        elif t == "loop":
+            st["loops"].append(ev)
+        elif t == "evidence":
+            st["evidence"].append(ev)
+        elif t == "review":
+            st["reviews"].append(ev)
         elif t == "worktree":
             st["worktrees"].append(ev)
         elif t == "env":

@@ -1,0 +1,120 @@
+"""Argument parser of the command line; handlers live in cli.py."""
+from __future__ import annotations
+
+import argparse
+
+DESC = "Take one ticket from intake to a draft change request; no step passes on a model's claim."
+
+
+def build_parser() -> argparse.ArgumentParser:
+    from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
+                      cmd_plan, cmd_reproduce, cmd_run, cmd_runs, cmd_status, cmd_verify)
+    p = argparse.ArgumentParser(prog="factory", description=DESC)
+    p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
+    p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--project", metavar="DIR", help="project directory (default: climb from the cwd)")
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    common.add_argument("--actor", help="free-text hint stored in events (audit trail only)")
+    scoped = argparse.ArgumentParser(add_help=False, parents=[common])
+    scoped.add_argument("--run", metavar="RUN", help="run id (default: the only open run)")
+
+    def add(name, func, help_, parents=(common,)):
+        sp = sub.add_parser(name, help=help_, parents=list(parents))
+        sp.set_defaults(func=func)
+        return sp
+
+    sp = add("init", cmd_init, "create factory.toml and .factory/ in a directory")
+    sp.add_argument("--name", help="project name (default: the directory name)")
+    sp.add_argument("--repo", action="append", metavar="PATH", help="repo path (repeat for a workspace; default .)")
+    sp.add_argument("--base", default="main", help="base branch of the repos (default main)")
+    sp.add_argument("--harness", default="none", help="write a harness adapter: agents-md or none")
+    sp.add_argument("--import", dest="import_file", metavar="FILE", help="convert a v0 workspace or project file")
+    add("check", cmd_check, "validate the configuration")
+    sp = add("status", cmd_status, "status of a run, or of the project with --config", [scoped])
+    sp.add_argument("run_id", nargs="?")
+    sp.add_argument("--config", action="store_true", help="show the effective configuration")
+    add("runs", cmd_runs, "list runs")
+    sp = add("log", cmd_log, "events of a run", [scoped])
+    sp.add_argument("run_id", nargs="?")
+    sp.add_argument("--tail", type=int, metavar="N")
+    sp = add("next", cmd_next, "print the next required action", [scoped])
+    sp.add_argument("run_id", nargs="?")
+
+    rp = sub.add_parser("run", help="start, retype, close or delete a run").add_subparsers(dest="sub", required=True)
+    for name, helptext in (("start", "open a run for a ticket"), ("retype", "change the run kind"), ("repos", "declare affected repos"),
+                           ("branch", "create the run worktrees"), ("close", "end a run without gates"), ("delete", "remove a run directory")):
+        sp = rp.add_parser(name, help=helptext, parents=[common if name == "start" else scoped])
+        sp.set_defaults(func=cmd_run)
+        if name == "start":
+            sp.add_argument("ticket")
+            sp.add_argument("--kind", help="feature, bug, hotfix, epic or review (default: from the ticket contract)")
+            sp.add_argument("--repos", help="affected repos, comma separated")
+        elif name == "retype":
+            sp.add_argument("--kind", required=True)
+        elif name == "repos":
+            sp.add_argument("names", help="comma separated repo names")
+        elif name == "branch":
+            sp.add_argument("--repos", help="repos to branch (default: the declared repos)")
+        elif name == "close":
+            sp.add_argument("--reason", required=True)
+        else:
+            sp.add_argument("run_id", nargs="?")
+            sp.add_argument("--yes", action="store_true", help="confirm the removal")
+    sp = add("ask", cmd_human, "open a question for the user", [scoped])
+    sp.add_argument("text")
+    sp.add_argument("--ref", help="e.g. attachment:<id>")
+    sp = add("answer", cmd_human, "record the user's answer to a question", [scoped])
+    sp.add_argument("question")
+    sp.add_argument("--user-said", required=True, help="the user's own words")
+    sp = add("decide", cmd_human, "record a decision the user made", [scoped])
+    sp.add_argument("--user-said", required=True)
+    sp = add("human", cmd_human, "record a typed human event", [scoped])
+    sp.add_argument("--kind", required=True, help="answer, decision, env-hint or correction")
+    sp.add_argument("text")
+    sp = add("block", cmd_human, "block the run", [scoped])
+    sp.add_argument("--kind", required=True, help="question, decision, infra or tooling")
+    sp.add_argument("--reason", required=True)
+    sp = add("unblock", cmd_human, "resolve a blocker", [scoped])
+    sp.add_argument("blocker")
+    sp.add_argument("--decision", help="a recorded decision (Q-n or D-n), consumed once")
+    sp = add("fetch", cmd_fetch, "acquire a contract through the configured adapter", [scoped])
+    sp.add_argument("kind")
+    sp.add_argument("id")
+    sp.add_argument("--repo")
+    sp = add("ingest", cmd_ingest, "validate a contract the agent wrote, or --check stale raws", [scoped])
+    sp.add_argument("kind", nargs="?")
+    sp.add_argument("--raw", metavar="FILE")
+    sp.add_argument("--contract", metavar="FILE")
+    sp.add_argument("--stdin", action="store_true", help="read the contract data from stdin")
+    sp.add_argument("--check", action="store_true", help="list raws that changed since they were acquired")
+    mp = sub.add_parser("media", help="record ticket media as seen or unseen").add_subparsers(dest="sub", required=True)
+    sp = mp.add_parser("seen", parents=[scoped])
+    sp.set_defaults(func=cmd_media)
+    sp.add_argument("attachment")
+    sp.add_argument("--file", required=True, help="file under the run's media folder")
+    sp = mp.add_parser("unseen", parents=[scoped])
+    sp.set_defaults(func=cmd_media)
+    sp.add_argument("attachment")
+    sp.add_argument("--question", required=True, help="a question opened with --ref attachment:<id>")
+    pp = sub.add_parser("plan", help="print an example plan, or amend the locked plan").add_subparsers(dest="sub", required=True)
+    sp = pp.add_parser("example", parents=[common])
+    sp.set_defaults(func=cmd_plan)
+    sp = pp.add_parser("amend", parents=[scoped])
+    sp.set_defaults(func=cmd_plan)
+    sp.add_argument("--reason", required=True, help="why the locked plan or config changed")
+    sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this amend from the loop budget, once")
+    for name, func, helptext in (("verify", cmd_verify, "run the checks at HEAD and record evidence"),
+                                 ("reproduce", cmd_reproduce, "bug runs: run the reproducing checks on the base")):
+        sp = add(name, func, helptext, [scoped])
+        sp.add_argument("--check", metavar="ID", help="run only this declared check")
+        sp.add_argument("--repo", help="run only the checks of this repo")
+        sp.add_argument("--fresh", action="store_true", help="ignore reuse and run everything selected")
+        if name == "verify":
+            sp.add_argument("--no-retry", action="store_true", help="do not retry an assertion failure once")
+    sp = add("metrics", cmd_metrics, "time per phase, loops, blocked hours and gate failures of a run", [scoped])
+    sp.add_argument("run_id", nargs="?")
+    sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
+    sp.add_argument("name")
+    return p

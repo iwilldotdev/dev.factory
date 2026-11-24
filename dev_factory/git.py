@@ -1,0 +1,157 @@
+"""Local git through `proc`: run and throwaway worktrees, branch points, dirty checks, commit scans [L-06, L-72, L-89, L-90]."""
+from __future__ import annotations
+
+import re
+import shutil
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
+
+from . import config, proc
+from .run import Run
+from .util import FactoryError, fwd, redact
+
+
+def git(repo: Path, *args: str, check: bool = True, timeout: float = 120) -> proc.Result:
+    res = proc.run(["git", "-c", "core.quotepath=false", *args], cwd=repo, env=proc.child_env({"GIT_TERMINAL_PROMPT": "0"}),
+                   timeout_s=timeout)
+    if check and res.exit != 0:
+        raise FactoryError(f"git {' '.join(args[:3])} failed in {fwd(repo)}: {(res.err or res.out).strip()[-300:]}")
+    return res
+
+
+def rev(repo: Path, ref: str) -> str | None:
+    """Full SHA of a ref, or None when it does not resolve."""
+    res = git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+    return res.out.strip() if res.exit == 0 and res.out.strip() else None
+
+
+def head(path: Path) -> str:
+    sha = rev(path, "HEAD")
+    if sha is None:
+        raise FactoryError(f"{fwd(path)} has no commit yet")
+    return sha
+
+
+def dirty(path: Path) -> list[str]:
+    """Changed and untracked paths of a worktree (untracked files count) [L-07]."""
+    out = git(path, "status", "--porcelain", "--untracked-files=all").out
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def ahead(path: Path, base: str) -> int:
+    return int(git(path, "rev-list", "--count", f"{base}..HEAD").out.strip() or 0)
+
+
+def is_ancestor(path: Path, old: str, new: str) -> bool:
+    return git(path, "merge-base", "--is-ancestor", old, new, check=False).exit == 0
+
+
+def show_file(path: Path, sha: str, rel: str) -> bytes:
+    """A file exactly as git stores it at `sha`; the red side of red-green reads test files this way [L-35]."""
+    res = git(path, "show", f"{sha}:{rel}")
+    return res.raw
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:40].strip("-") or "change"
+
+
+def branch_name(template: str, kind: str, key: str, title: str) -> str:
+    name = template.format(kind=kind, key=key, slug=slug(title))
+    name = re.sub(r"[^A-Za-z0-9._/-]", "-", name)
+    name = re.sub(r"\.{2,}|/{2,}", "-", name).strip("/.")
+    return name[:-5] if name.endswith(".lock") else name
+
+
+def current(st: dict, repo: str) -> dict | None:
+    """The run worktree event of a repo (the latest non-throwaway one)."""
+    found = [w for w in st["worktrees"] if w["repo"] == repo and not w.get("throwaway")]
+    return found[-1] if found else None
+
+
+def run_setup(cfg: dict, repo: dict, path: Path) -> dict:
+    """The repo's `setup` command in a worktree: its own dependencies, never a link to another checkout [L-72]."""
+    if not repo.get("setup"):
+        return {"setup": "none"}
+    res = proc.run(repo["setup"], cwd=path, env=proc.child_env(), timeout_s=cfg["checks"]["cmd_timeout_s"], shell=True)
+    values = config.resolve_secrets(cfg)[0].values()
+    tail = redact("\n".join((res.out + res.err).splitlines()[-10:]), values)
+    if res.timed_out or res.exit != 0:
+        return {"setup": "fail", "setup_exit": res.exit, "setup_tail": tail}
+    return {"setup": "pass", "setup_exit": 0}
+
+
+def _event(repo: dict, path: Path, branch: str | None, bp: str, throwaway: bool, setup: dict) -> dict:
+    return {"type": "worktree", "repo": repo["name"], "path": fwd(path), "branch": branch, "branch_point": bp,
+            "throwaway": throwaway, **setup}
+
+
+def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: str | None = None) -> dict:
+    """Create (or finish the setup of) the run worktree of one repo; the branch point is recorded here [L-89]."""
+    cfg, main = project.cfg, Path(repo["path"])
+    st = run.state()
+    have = current(st, repo["name"])
+    if have and Path(have["path"]).is_dir():
+        if have.get("setup") == "pass" or have.get("setup") == "none":
+            raise FactoryError(f"the worktree of {repo['name']} already exists: {have['path']}")
+        setup = run_setup(cfg, repo, Path(have["path"]))
+        return run.append(_event(repo, Path(have["path"]), have["branch"], have["branch_point"], False, setup), actor)
+    base = rev(main, repo["base"]) or rev(main, f"origin/{repo['base']}")
+    if base is None:
+        raise FactoryError(f"base branch {repo['base']!r} of repo {repo['name']} does not exist in {fwd(main)}")
+    path = config.worktree_root(cfg) / run.id / repo["name"]
+    if path.exists():
+        raise FactoryError(f"{fwd(path)} exists but is not a worktree of this run; remove it or set worktree_root in .factory/local.toml")
+    branch = branch_name(repo["branch"], kind, st["ticket"], title)
+    if rev(main, f"refs/heads/{branch}"):
+        git(main, "worktree", "add", str(path), branch)
+        bp = git(main, "merge-base", base, branch).out.strip()
+    else:
+        git(main, "worktree", "add", "-b", branch, str(path), base)
+        bp = base
+    return run.append(_event(repo, path, branch, bp, False, run_setup(cfg, repo, path)), actor)
+
+
+def remove_tree(main: Path, path: Path) -> None:
+    """Remove a throwaway worktree. Links inside it are unlinked, never followed [L-72]."""
+    if git(main, "worktree", "remove", str(path), check=False).exit != 0 and path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+    git(main, "worktree", "prune", check=False)
+
+
+@contextmanager
+def throwaway(project, run: Run, repo: dict, sha: str, label: str, actor: str | None = None):
+    """A detached worktree at `sha` with the repo's setup done; yields (path, setup result). Removed afterwards."""
+    main = Path(repo["path"])
+    path = config.worktree_root(project.cfg) / run.id / "_throwaway" / f"{repo['name']}-{label}-{uuid.uuid4().hex[:6]}"
+    git(main, "worktree", "add", "--detach", str(path), sha)
+    try:
+        setup = run_setup(project.cfg, repo, path)
+        run.append(_event(repo, path, None, sha, True, setup), actor)
+        yield path, setup
+    finally:
+        remove_tree(main, path)
+
+
+def commit_problems(path: Path, bp: str, base: str, pattern: str | None, forbidden: list[str]) -> list[str]:
+    """Commits in `branch_point..HEAD` (minus what the base already has) that break the header pattern or carry a
+    forbidden trailer. A merge that only integrates the base skips the header check, never the trailer check [L-89, L-90]."""
+    args = ["log", "--format=%H%x1f%P%x1f%B%x1e", "HEAD", f"^{bp}"]
+    base_sha = rev(path, base)
+    if base_sha:
+        args.append(f"^{base_sha}")
+    problems: list[str] = []
+    for rec in git(path, *args).out.split("\x1e"):
+        if not rec.strip():
+            continue
+        sha, parents, body = rec.strip("\n").split("\x1f", 2)
+        parents = parents.split()
+        subject = body.strip().splitlines()[0] if body.strip() else ""
+        integrates = len(parents) > 1 and base_sha and any(is_ancestor(path, p, base_sha) for p in parents[1:])
+        if pattern and not integrates and not re.search(pattern, subject):
+            problems.append(f"{sha[:7]}: header {subject!r} does not match commit_pattern {pattern!r}")
+        for key in forbidden:
+            if any(re.match(rf"^\s*{re.escape(key)}\s*:", line, re.I) for line in body.splitlines()):
+                problems.append(f"{sha[:7]}: carries the forbidden trailer {key}")
+    return problems

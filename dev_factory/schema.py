@@ -21,7 +21,7 @@ ENV = {"up": "c", "down": "c", "health": T("s", "/"), "base_url": "c", "ready_ti
        "login_http": "c", "seed": "c", "reset": "c", "preflight": T("lc", []), "warmup": T("ls", []),
        "env_patterns": T("re+", []), "shareable": T("b", False)}
 REPO = {"path": "c", "name": "c", "base": T("c", "main"), "branch": T("c", "{kind}/{key}-{slug}"), "setup": "c",
-        "files_from_main": T("ls", []), "commit_pattern": "re", "env": ENV, "check": [CHECK],
+        "files_from_main": T("ls", []), "commit_pattern": "re", "commit_forbidden_trailers": T("ls", []), "env": ENV, "check": [CHECK],
         "mirror": [{"name": "c", "branch": "c"}]}
 APPROX = {"px": T("n", 4), "color_delta_e": T("n", 6), "font_size_px": T("n", 2), "max_diff_ratio": T(("nr", 0, 1), 0.10)}
 SPEC = {

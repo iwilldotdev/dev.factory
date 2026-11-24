@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import acquire, gates, media
+from . import acquire, gates, git, lock, media
 from .project import Project
 from .run import Run
 from .util import fwd, safe_id
@@ -26,7 +26,11 @@ def phase(run: Run, project: Project, st: dict) -> str:
         return "closed"
     if not gates.intake_passed(run, project.cfg, st):
         return "intake"
-    return "plan"
+    if not gates.passed(run, project, st, "plan"):
+        return "plan"
+    if gates.is_bug(run, st) and not gates.passed(run, project, st, "reproduce"):
+        return "reproduce"
+    return "build" if not gates.passed(run, project, st, "verify") else "review"
 
 
 def _repeated_env_failure(st: dict) -> dict | None:
@@ -43,7 +47,7 @@ def compute(project: Project, run: Run) -> dict:
     out: dict = {"run": run.id, "ticket": tid, "kind": gates.effective_kind(run, st), "phase": ph,
                  "action": None, "kind_of_action": None, "command": None, "files": [], "reasons": [], "role": "orchestrator",
                  "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]], "refused": []}
-    reasons = gates.intake_reasons(run, project.cfg, st) if ph == "intake" else []
+    reasons = gates.reasons_for(run, project, st, {"build": "verify"}.get(ph, ph)) if ph in ("intake", "plan", "reproduce", "build") else []
 
     def set_(action, kind, command=None, files=(), role="orchestrator"):
         out.update(action=action, kind_of_action=kind, command=command, files=[fwd(f) for f in files], role=role)
@@ -65,8 +69,20 @@ def compute(project: Project, run: Run) -> dict:
              f'factory answer {q["id"]} --user-said "<their words>"{flag}')
     elif ph == "intake":
         _intake_action(project, run, st, reasons, set_, flag)
+    elif ph == "plan":
+        _plan_action(project, run, st, reasons, set_, flag)
+    elif ph == "reproduce":
+        _reproduce_action(project, run, st, reasons, set_, flag)
+    elif ph == "build":
+        trees = [Path(w["path"]) for r in st["repos"] if (w := git.current(st, r))]
+        if reasons:
+            set_("build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
+                 "repo from a clean worktree, and the gate lists what is still missing", "command", f"factory verify{flag}", trees, "builder")
+        else:
+            set_("every check passes at HEAD; run the verify gate", "command", f"factory gate verify{flag}")
     else:
-        set_("intake is complete; the plan phase is not available in this build", "none")
+        set_("verify passed; the review phase is not available in this build", "none")
+    out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:
         out["decisions_note"] = "recorded user decisions not consumed yet: " + ", ".join(out["decisions"])
@@ -95,3 +111,32 @@ def _intake_action(project: Project, run: Run, st: dict, reasons: list[str], set
     else:
         set_("run the intake gate" if not reasons else "resolve the problems listed under reasons, then run the intake gate",
              "command", f"factory gate intake{flag}")
+
+
+def _plan_action(project: Project, run: Run, st: dict, reasons: list[str], set_, flag: str) -> None:
+    plan_path = run.dir / "plan.json"
+    missing = [r for r in st["repos"] if not (w := git.current(st, r)) or not Path(w["path"]).is_dir() or w.get("setup") == "fail"]
+    if missing:
+        set_(f"create the run worktrees (and their setup) for: {', '.join(missing)}", "command", f"factory run branch{flag}")
+    elif st["locks"] and lock.problems(run, project.cfg, st):
+        set_("the plan or the config changed after the lock; amend it with a reason (without a recorded user decision it counts "
+             "against the loop budget)", "command", f'factory plan amend --reason "<why>" [--decision Q-n]{flag}', [plan_path])
+    elif not plan_path.is_file():
+        set_("write plan.json: one AC per verifiable behaviour and a check that executes each (factory plan example prints a "
+             "minimal plan); ask the user every open question in one round before the gate", "command", f"factory gate plan{flag}",
+             [plan_path], "any")
+    else:
+        set_("run the plan gate (it locks the plan); fix the reasons first if any" if reasons else "run the plan gate; it locks the plan",
+             "command", f"factory gate plan{flag}", [plan_path], "any")
+
+
+def _reproduce_action(project: Project, run: Run, st: dict, reasons: list[str], set_, flag: str) -> None:
+    diag, recs = gates.reproduce_reasons(run, project, st)
+    if recs:
+        set_("reproduce the bug: each reproducing check runs in a throwaway worktree at the branch point and must fail with its "
+             "expected pattern", "command", f"factory reproduce{flag}", [], "builder")
+    elif diag:
+        set_("write diagnosis.md with ## Root cause, ## Evidence, ## Ruled out and ## Scenario, then run the reproduce gate",
+             "command", f"factory gate reproduce{flag}", [run.dir / "diagnosis.md"], "any")
+    else:
+        set_("run the reproduce gate", "command", f"factory gate reproduce{flag}")

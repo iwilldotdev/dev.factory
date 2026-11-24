@@ -11,6 +11,8 @@ from . import config, proc
 from .run import Run
 from .util import FactoryError, fwd, redact
 
+SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
 
 def git(repo: Path, *args: str, check: bool = True, timeout: float = 120) -> proc.Result:
     res = proc.run(["git", "-c", "core.quotepath=false", *args], cwd=repo, env=proc.child_env({"GIT_TERMINAL_PROMPT": "0"}),
@@ -20,10 +22,67 @@ def git(repo: Path, *args: str, check: bool = True, timeout: float = 120) -> pro
     return res
 
 
+_MEMO: dict | None = None
+
+
+@contextmanager
+def memo():
+    """Inside a command that only reads git state, `rev`, `dirty` and `ahead` ask git once per question (a gate chain repeats them)."""
+    global _MEMO
+    outer, _MEMO = _MEMO, _MEMO if _MEMO is not None else {}
+    try:
+        yield
+    finally:
+        _MEMO = outer
+
+
+def _once(key: tuple, compute):
+    if _MEMO is None:
+        return compute()
+    if key not in _MEMO:
+        _MEMO[key] = compute()
+    return _MEMO[key]
+
+
+def _read_head(path: Path) -> str | None:
+    """HEAD of a work tree from its files (no process): the usual layouts only, anything else returns None and git is asked."""
+    try:
+        dot = Path(path) / ".git"
+        gitdir = dot
+        if dot.is_file():
+            text = dot.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return None
+            gitdir = (Path(path) / text[7:].strip()).resolve()
+        head = (gitdir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head if SHA.match(head) else None
+        common = gitdir
+        if (gitdir / "commondir").is_file():
+            common = (gitdir / (gitdir / "commondir").read_text(encoding="utf-8").strip()).resolve()
+        ref = head[5:]
+        for base in (gitdir, common):
+            if (base / ref).is_file():
+                sha = (base / ref).read_text(encoding="utf-8").strip()
+                return sha if SHA.match(sha) else None
+        if (common / "packed-refs").is_file():
+            for line in (common / "packed-refs").read_text(encoding="utf-8").splitlines():
+                if line.endswith(" " + ref) and line[:1] not in "#^":
+                    return line.split()[0] if SHA.match(line.split()[0]) else None
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def rev(repo: Path, ref: str) -> str | None:
     """Full SHA of a ref, or None when it does not resolve."""
-    res = git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
-    return res.out.strip() if res.exit == 0 and res.out.strip() else None
+    if ref == "HEAD" and (fast := _read_head(repo)):
+        return fast
+
+    def ask():
+        res = git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+        return res.out.strip() if res.exit == 0 and res.out.strip() else None
+    return _once(("rev", str(repo), ref), ask)
 
 
 def head(path: Path) -> str:
@@ -35,12 +94,14 @@ def head(path: Path) -> str:
 
 def dirty(path: Path) -> list[str]:
     """Changed and untracked paths of a worktree (untracked files count) [L-07]."""
-    out = git(path, "status", "--porcelain", "--untracked-files=all").out
+    out = _once(("dirty", str(path)), lambda: git(path, "status", "--porcelain", "--untracked-files=all").out)
     return [line for line in out.splitlines() if line.strip()]
 
 
 def ahead(path: Path, base: str) -> int:
-    return int(git(path, "rev-list", "--count", f"{base}..HEAD").out.strip() or 0)
+    if _read_head(path) == base:
+        return 0
+    return int(_once(("ahead", str(path), base), lambda: git(path, "rev-list", "--count", f"{base}..HEAD").out.strip()) or 0)
 
 
 def is_ancestor(path: Path, old: str, new: str) -> bool:

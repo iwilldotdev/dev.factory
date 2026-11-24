@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
-from . import __version__
+from . import __version__, git
 from .util import FactoryError, build_identity, fwd
+
+READS = {"next", "status", "runs", "gate", "review", "ship", "confirm", "waive", "metrics", "log"}  # commands that never change a worktree
 
 
 def _out(args, payload, text: str) -> None:
@@ -349,7 +352,8 @@ def main(argv: list[str] | None = None) -> int:
         if not hasattr(args, attr):
             setattr(args, attr, default)
     try:
-        return args.func(args) or 0
+        with git.memo() if args.cmd in READS and getattr(args, "name", "") != "plan" else nullcontext():
+            return args.func(args) or 0
     except FactoryError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return exc.code

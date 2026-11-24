@@ -153,17 +153,24 @@ def _subagent_files(main: Path) -> list[Path]:
     return sorted(d.rglob("*.jsonl")) if d.is_dir() else []
 
 
+ESCAPED_SEVERITIES = ("blocker", "major")
+
+
 def _escaped(run: dict, rd: Path) -> dict:
+    """Findings that got past the prove gate: blocker/major findings recorded after it passed (code/qa reviews and
+    feedback), each counted once even when later rounds carry it forward. Minor and nit findings are in `all_findings`."""
     t0 = None
     for e in run.get("events", []):
         d = e.get("data") or {}
         if e.get("kind") == "gate_pass" and (d.get("phase") == "prove" or d.get("gate") == "prove"):
             t0 = _ts(e.get("at"))
             break
-    result = {"count": 0, "by_severity": {}}
+    result = {"count": 0, "by_severity": {}, "all_findings": 0}
     if t0 is None:
         return result
     sev: Counter = Counter()
+    seen: set = set()
+    total = 0
     for p in sorted((rd / "reviews").glob("*.json")):
         try:
             rec = read_json(p)
@@ -172,10 +179,19 @@ def _escaped(run: dict, rd: Path) -> dict:
         when = _ts(rec.get("recorded") or rec.get("at") or rec.get("created")) or _dt.datetime.fromtimestamp(
             p.stat().st_mtime, _dt.timezone.utc)
         if when > t0:
-            for f in rec.get("findings", []):
-                sev[f.get("severity", "unknown")] += 1
+            for f in rec.get("findings") or []:
+                if not isinstance(f, dict):
+                    continue
+                key = (p.stem.rsplit("-", 1)[0], f.get("file"), f.get("text") or f.get("id"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                total += 1
+                if f.get("severity") in ESCAPED_SEVERITIES:
+                    sev[f["severity"]] += 1
     result["count"] = sum(sev.values())
     result["by_severity"] = dict(sev)
+    result["all_findings"] = total
     return result
 
 

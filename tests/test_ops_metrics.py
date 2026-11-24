@@ -70,8 +70,9 @@ class MetricsTests(FactoryCase):
         self.assertEqual(m["loops"]["build"], 1)
         self.assertEqual(m["wall_time_h"], 2.0)
         self.assertEqual(m["transcript_span_h"], 3.0)
-        self.assertEqual(m["escaped_findings"]["count"], 2)
-        self.assertEqual(m["escaped_findings"]["by_severity"], {"major": 1, "minor": 1})
+        self.assertEqual(m["escaped_findings"]["count"], 1)  # only the major one raised after the prove gate
+        self.assertEqual(m["escaped_findings"]["by_severity"], {"major": 1})
+        self.assertEqual(m["escaped_findings"]["all_findings"], 2)
         self.assertTrue((self.home / "runs/ws-dev-1/metrics.json").is_file())
         rows = metrics.report(None)
         self.assertEqual(len(rows), 1)

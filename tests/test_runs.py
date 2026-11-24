@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from tests.helpers import FactoryCase, lesson, valid_ticket
+from tests.helpers import FactoryCase, lesson
 
 
 class StartTests(FactoryCase):

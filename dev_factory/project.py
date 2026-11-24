@@ -122,8 +122,8 @@ def check(project: Project) -> tuple[list[str], list[str]]:
     for path, tpl, allowed in templates:
         bad = proc.placeholders(tpl) - allowed
         if bad:
-            errs.append(f"{path}: unknown placeholder {', '.join('{' + b + '}' for b in sorted(bad))} (allowed: "
-                        f"{', '.join('{' + a + '}' for a in sorted(allowed))})")
+            names = lambda items: ", ".join("{" + x + "}" for x in sorted(items))  # noqa: E731
+            errs.append(f"{path}: unknown placeholder {names(bad)} (allowed: {names(allowed)})")
         try:
             exe = proc.split_template(tpl)[0]
         except FactoryError as exc:

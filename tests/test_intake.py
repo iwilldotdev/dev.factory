@@ -2,7 +2,7 @@
 import json
 import unittest
 
-from tests.helpers import FactoryCase, lesson, valid_ticket
+from tests.helpers import FactoryCase, lesson
 
 PNG = {"id": "att-1", "name": "screen.png", "mime": "image/png"}
 MP4 = {"id": "att-2", "name": "demo.mp4", "mime": "Application/Octet-Stream"}

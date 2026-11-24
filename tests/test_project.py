@@ -4,7 +4,7 @@ import re
 import tomllib
 import unittest
 
-from tests.helpers import ROOT, FactoryCase, lesson
+from tests.helpers import FactoryCase, lesson
 from dev_factory import config, harness
 from dev_factory.cli import build_parser
 

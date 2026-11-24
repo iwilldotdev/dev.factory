@@ -26,6 +26,9 @@ def cmd_env(args) -> int:
         print(env.logs(proj, repo or _only(proj), args.tail))
         return 0
     run = cli._run(args, proj, writable=sub != "health")
+    if sub == "up" and args.slot is not None:
+        from . import slots
+        slots.choose(proj, run, args.slot, args.actor)
     names = [repo] if repo else _declared(proj, run)
     out: list[str] = []
     code = 0

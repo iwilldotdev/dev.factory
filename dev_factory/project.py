@@ -21,6 +21,8 @@ TEMPLATE_PLACEHOLDERS = {"providers.*.fetch": FETCH_PLACEHOLDERS, "metrics.token
 class Project:
     dir: Path
     cfg: dict
+    slot: int = 0  # the env slot of the run that is being worked on (slots.apply)
+    pristine: dict | None = None
 
     @property
     def factory_dir(self) -> Path:

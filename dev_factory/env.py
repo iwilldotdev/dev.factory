@@ -125,6 +125,8 @@ def _up_one(project, run: Run, name: str, path: Path, restart: bool, wait_s: flo
     rec = _wait_free(project, name, run.id, wait_s)
     if rec is not None:
         mine = rec.get("run") == run.id and not rec.get("pending")
+        if not mine and env.get("shareable") and rec.get("sha") == sha and localhttp.healthy(url):
+            return [f"{name}: shared with run {rec.get('run')} (shareable, same commit {sha[:7]}, pid {rec['pid']})"]
         if not mine:
             raise _fail(project, run, name, "lock", f"held by {ep.describe(rec)}; stop that run's env or wait with --wait <seconds> [L-75]", actor)
         if rec.get("cwd") == fwd(path) and rec.get("sha") == sha and not restart and localhttp.healthy(url):
@@ -221,7 +223,7 @@ def binding(project, st: dict, repo: str, override: Path | None = None) -> tuple
             warnings.append(f"{name} is served from its main path {fwd(path)}, not from a run worktree [L-71]")
         if rec is None or rec.get("pending") or not ep.holder_alive(rec):
             problems.append(f"{name}: no live env process recorded by the factory")
-        elif rec.get("cwd") != fwd(path):
+        elif rec.get("cwd") != fwd(path) and not (env_of(project, name).get("shareable") and rec.get("sha") == sha):
             problems.append(f"{name}: the env serves {rec.get('cwd')}, not {fwd(path)} [L-69]")
         elif rec.get("sha") != sha:
             problems.append(f"{name}: the env process started at {str(rec.get('sha'))[:7]} but HEAD is {sha[:7]} [L-13, L-85]")

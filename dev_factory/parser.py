@@ -198,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("--restart", action="store_true", help="stop this run's env of the repo first and start it again")
             sp.add_argument("--wait", type=float, metavar="S", help="queue up to S seconds for another run's env lock")
             sp.add_argument("--user", help="login user slug (state file and <KEY>_<SLUG> secrets)")
+            sp.add_argument("--slot", type=int, metavar="N", help="serve on the ports of slot N (local.toml [repo.<name>.slots] port_offset), with its own lock and login state")
         elif name == "logs":
             sp.add_argument("--tail", type=int, default=40)
     dp = sub.add_parser("design", help="design frames: add an approximate image, expect skeleton, review, refresh").add_subparsers(dest="sub", required=True)

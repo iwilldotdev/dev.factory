@@ -24,8 +24,11 @@ def _project(args):
 
 def _run(args, project, writable: bool = True):
     from . import lifecycle
+    from . import slots
     name = getattr(args, "run_id", None) or getattr(args, "run", None)
-    return lifecycle.writable(project, name) if writable else lifecycle.resolve(project, name, allow_closed=True)
+    run = lifecycle.writable(project, name) if writable else lifecycle.resolve(project, name, allow_closed=True)
+    slots.apply(project, run.state()["slot"])  # the run's env slot: ports, locks and placeholders [L-78]
+    return run
 
 
 def cmd_init(args) -> int:

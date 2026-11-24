@@ -61,7 +61,7 @@ A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit sta
 | `preflight` | list of command strings | `[]` | no | run after health; failure = env kind `data` [L-50] |
 | `warmup` | list of URL paths | `[]` | no | requested once after `up` [L-40] |
 | `env_patterns` | list of regexes | `[]` | no | failure output that means env, not product [L-49] |
-| `shareable` | bool | `false` | no | read-only runs may share a running env [L-76] |
+| `shareable` | bool | `false` | no | a run may use another run's live env when it serves the same commit; the env is never restarted for it [L-76] |
 
 ### `[[repo.check]]` (standing checks, optional)
 
@@ -182,7 +182,7 @@ Each key resolves in this order:
 | `[repo.<name>] path` | path | where this member lives on this machine |
 | `[repo.<name>.env] base_url`, `health`, `vars` | as above | ports and hosts |
 | `[checks.browser] runner`, `bundled`, `headless` | template / path / bool | local runner paths |
-| `[repo.<name>.slots] port_offset`, `count` | int, int | `env up --slot n` adds `n * port_offset` to the `{port}` in `base_url`, `health` and `vars` [L-78] |
+| `[repo.<name>.slots] port_offset`, `count` | int, int | `env up --slot n` (before the plan locks) records the slot in the run and adds `n * port_offset` to the port of `base_url` and an absolute `health`; `{port}`, `{base_url}`, `{<repo>.port}` and `{<repo>.base_url}` in `up`, `down`, `seed`, `reset`, `health` and `vars` are derived. Each slot has its own lock, log and login state, and evidence records the slot and its base URL [L-78] |
 
 Any other key is an error. Paths, ports and base URLs are excluded from the plan's `config_hash`, while every command and cap is included, so `local.toml` cannot loosen proof [L-131].
 

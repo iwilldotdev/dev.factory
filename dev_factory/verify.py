@@ -109,7 +109,8 @@ class Batch:
             base, out = quality.baseline_for(self, c)  # taken once at the branch point and recorded [L-61]
         meta = {}
         if bound is not None:
-            meta = {"heads": bound["heads"], "served": bound["served"], **({"warnings": bound["warnings"]} if bound["warnings"] else {})}
+            meta = {"heads": bound["heads"], "served": bound["served"], **({"warnings": bound["warnings"]} if bound["warnings"] else {}),
+                    **({"slot": self.project.slot, "base_url": self.repos[c["repo"]]["env"]["base_url"]} if self.project.slot else {})}
         if out is None:
             ctx = self.ctx(c, mode, tree, bound)
             ctx.baseline = base

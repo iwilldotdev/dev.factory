@@ -7,18 +7,18 @@ import re
 import shutil
 from pathlib import Path
 
-from . import git, proc
+from . import git, proc, slots
 from .util import FactoryError, fwd, write_atomic
 
 TOLERANCE_S = 2.0  # clock ticks and FILETIME rounding: a recorded create time within this of the live one is the same process
 
 
 def lock_path(project, repo: str) -> Path:
-    return project.factory_dir / "env" / f"{repo}.lock"
+    return project.factory_dir / "env" / f"{slots.key(project, repo)}.lock"
 
 
 def log_path(project, repo: str) -> Path:
-    return project.factory_dir / "env" / f"{repo}.log"
+    return project.factory_dir / "env" / f"{slots.key(project, repo)}.log"
 
 
 def read_lock(project, repo: str) -> dict | None:

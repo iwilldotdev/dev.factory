@@ -83,7 +83,9 @@ def matches_env(patterns: list[str], text: str) -> str | None:
 
 
 def state_file(project, repo: str, user: str | None = None) -> Path:
-    return project.factory_dir / "env" / (f"{repo}.{safe_id(user)}.state.json" if user else f"{repo}.state.json")
+    from . import slots
+    key = slots.key(project, repo)
+    return project.factory_dir / "env" / (f"{key}.{safe_id(user)}.state.json" if user else f"{key}.state.json")
 
 
 def login(project, run, rc: dict, tree: Path, base_url: str, user: str | None = None) -> str | None:

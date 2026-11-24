@@ -76,6 +76,21 @@ test('factory subcommands reserved for the main session', () => {
   assert.ok(!denied(guard('auditor', bash('factory run status r'))));
 });
 
+test('mirror-diff is read-only for workers; mirroring and the divergence allowance stay main-session', () => {
+  for (const role of ['builder', 'author', 'auditor']) {
+    for (const cmd of ['factory run mirror-diff r', 'factory run mirror-diff r --json', 'python -m factory run mirror-diff r']) {
+      assert.ok(!denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
+    }
+  }
+  for (const role of ['builder', 'author', 'auditor']) {
+    for (const cmd of ['factory run mirror r React --to pack', 'factory gate r build --allow-mirror-divergence 2',
+      'factory ship plan r --allow-mirror-divergence 2',
+      'factory run decide r "mirror diff: x" --by user --user-said "ok"']) {
+      assert.ok(denied(guard(role, bash(cmd))), `${role}: ${cmd}`);
+    }
+  }
+});
+
 test('only the auditor records reviews', () => {
   const cmd = `factory review record r --kind qa --file ${TMP}/qa.json`;
   assert.ok(!denied(guard('auditor', bash(cmd))));

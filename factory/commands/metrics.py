@@ -8,7 +8,7 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from ..core import HUMAN_TYPES, factory_home, read_json, run_dir, run_load, write_json
+from ..core import HUMAN_TYPES, valid_session_id, factory_home, read_json, run_dir, run_load, write_json
 
 RUN_MARKER = "factory-run: "
 
@@ -57,16 +57,12 @@ def find_transcripts(run: dict) -> list[Path]:
     that carry the run marker when at least one session is registered. No registered session: nothing (metrics show
     "unknown" instead of attributing someone else's tokens)."""
     sessions = [s.get("session") if isinstance(s, dict) else s for s in run.get("sessions") or []]
-    sessions = [s for s in sessions if s]
+    sessions = [s for s in sessions if s and valid_session_id(s)]
     if not sessions:
         return []
     found: dict[Path, None] = {}
     roots = claude_roots(run)
     for s in sessions:
-        p = Path(s)
-        if p.suffix == ".jsonl" and p.is_file():
-            found[p] = None
-            continue
         for root in roots:
             for hit in root.glob(f"*/{s}.jsonl"):
                 found[hit] = None

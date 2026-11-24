@@ -10,6 +10,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from ..collectors.test import copy_main_files, files_from_main_of, prepare_workt
 from ..core import (HUMAN_TYPES, SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home, flaky_checks,
                     git, git_dirty, git_head, now, register_session, repo_conf, run_dir, target_branch, run_load,
-                    run_save, run_update, session_id, session_short, workspace_load, write_json)
+                    run_save, run_update, session_id, session_short, valid_session_id, workspace_load, write_json)
 from .. import integrity
 from . import gate
 
@@ -898,9 +899,16 @@ def cmd_session(args) -> int:
     sid = args.session or session_id()
     if not sid:
         raise FactoryError("no session id given and none in the environment (CLAUDE_CODE_SESSION_ID); pass <session-id>")
+    sid = sid.strip()
+    if not valid_session_id(sid):
+        raise FactoryError(f"invalid session id {sid!r}: only letters, digits, '_' and '-' are accepted")
     out: dict = {}
 
     def mutate(run: dict) -> None:
+        owner = current_owner(run)
+        if owner and owner.get("session") != sid:
+            print(f"warning: run {run['id']} is claimed by session {session_short(owner['session'])}, not {session_short(sid)}; "
+                  "registering the session anyway (metrics only, no ownership)", file=sys.stderr)
         out["added"] = register_session(run, sid)
 
     run_update(args.run, mutate)

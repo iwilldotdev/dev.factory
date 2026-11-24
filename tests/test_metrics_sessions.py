@@ -58,6 +58,15 @@ class TranscriptLookupTests(FactoryCase):
         run = {"id": "r", "sessions": ["s4"], "transcript_roots": [str(c)]}
         self.assertEqual([p.name for p in metrics.find_transcripts(run)], ["s4.jsonl"])
 
+    def test_stored_invalid_ids_are_ignored(self):
+        prof = self.profile("prof", sid="abc")
+        (prof / "projects" / "p" / "other.jsonl").write_text(rec("x"), encoding="utf-8")
+        outside = self.tmp / "secret.jsonl"
+        outside.write_text(rec("x"), encoding="utf-8")
+        self.env(CLAUDE_CONFIG_DIR=str(prof))
+        for bad in ("*", "a*", "../../secret", str(outside), "x/y"):
+            self.assertEqual(metrics.find_transcripts({"id": "r", "sessions": [bad]}), [], bad)
+
 
 class RegisterSessionTests(FactoryCase):
     def setUp(self):
@@ -82,6 +91,25 @@ class RegisterSessionTests(FactoryCase):
         self.assertIn("registered", out)
         cli("run", "session", rid, "sess-bbbb2222")
         self.assertEqual(core.run_load(rid)["sessions"], ["sess-aaaa1111", "sess-bbbb2222"])
+
+    def test_run_session_refuses_ids_that_are_not_plain(self):
+        rid = self.make_run(branch=False)
+        for bad in ("*", "../x", "a b", "a/b"):
+            rc, out = cli("run", "session", rid, bad)
+            self.assertEqual(rc, 2, bad)
+            self.assertIn("invalid session id", out)
+        self.assertEqual(core.run_load(rid)["sessions"], ["sess-aaaa1111"])
+        self.assertFalse(core.register_session(core.run_load(rid), "*"))
+
+    def test_run_session_by_a_non_owner_warns_but_registers(self):
+        rid = self.make_run(branch=False)
+        run = core.run_load(rid)
+        run["sessions"].append({"session": "owner-0001", "claimed_at": core.now(), "pid": 1})
+        core.run_save(run)
+        rc, out = cli("run", "session", rid, "sess-cccc3333")
+        self.assertEqual(rc, 0)
+        self.assertIn("warning", out)
+        self.assertIn("sess-cccc3333", core.run_load(rid)["sessions"])
 
     def test_run_session_without_any_id_is_a_usage_error(self):
         rid = self.make_run(branch=False)

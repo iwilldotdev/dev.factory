@@ -282,12 +282,20 @@ def session_short(sid: str | None) -> str:
     return (sid or "")[:8]
 
 
+SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def valid_session_id(sid: object) -> bool:
+    """Session ids become file names (`<id>.jsonl`): letters, digits, `_` and `-` only (no globs, no paths)."""
+    return isinstance(sid, str) and SESSION_ID_RE.fullmatch(sid) is not None
+
+
 def register_session(run: dict, sid: str | None = None) -> bool:
     """Record a Claude session id (default: this session's) in run["sessions"] as a plain id, so metrics can find its
     transcript. Not a claim: it grants and takes no ownership. Idempotent. The profile dir (`CLAUDE_CONFIG_DIR`) the
     session runs under is kept in run["transcript_roots"]. Returns True when something was added."""
     sid = (sid or session_id() or "").strip()
-    if not sid:
+    if not sid or not valid_session_id(sid):
         return False
     changed = False
     known = {(s.get("session") if isinstance(s, dict) else s) for s in run.get("sessions") or []}

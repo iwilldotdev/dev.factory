@@ -119,7 +119,7 @@ class FetchTests(FactoryCase):
 
     @lesson("L-157")
     def test_two_contract_ids_mapping_to_one_file_name_are_an_error_naming_both(self):
-        """L-157: provider ids that collide as file names are refused."""
+        """L-157: provider ids that collide as file names are refused (a ticket id that differs from the run is refused earlier)."""
         run = self.start("ABC-1")
         self.ingest_ticket(run, id="ABC-1")
         raw = run / "raw" / "other.json"
@@ -129,7 +129,8 @@ class FetchTests(FactoryCase):
         for tid in ("g/4", "g:4"):
             raw = run2 / f"{tid.replace('/', '_').replace(':', '_')}.json"
             raw.write_text("{}")
-            code, _, err = self.cli("ingest", "ticket", "--raw", str(raw), "--stdin", "--run", "X-1", stdin=json.dumps(valid_ticket(id=tid)))
+            pipe = {"id": tid, "sha": "a" * 40, "created_at": "2026-11-24T14:03:11Z", "status": "success"}
+            code, _, err = self.cli("ingest", "pipeline", "--raw", str(raw), "--stdin", "--run", "X-1", stdin=json.dumps(pipe))
         self.assertEqual(code, 2)
         self.assertIn("'g/4' and 'g:4'", err)
 
@@ -138,6 +139,18 @@ class IngestTests(FactoryCase):
     def setUp(self):
         super().setUp()
         self.run_dir = self.start("ABC-1")
+
+    def test_a_ticket_contract_for_another_ticket_is_refused_and_nothing_is_stored(self):
+        """Open question 3 of M1: ingest and fetch refuse a ticket contract whose id differs from the run's ticket."""
+        raw = self.run_dir / "raw" / "ticket" / "OTHER-9.json"
+        raw.parent.mkdir(parents=True)
+        raw.write_text("{}")
+        err = self.fails("ingest", "ticket", "--raw", str(raw), "--stdin", stdin=json.dumps(valid_ticket(id="OTHER-9")))
+        self.assertIn("ticket contract id 'OTHER-9' differs from the run ticket 'ABC-1'; nothing was stored", err)
+        self.assertFalse((self.run_dir / "contracts").exists())
+        self.assertEqual([e["type"] for e in self.events(self.run_dir)], ["run_started"])
+        self.write("factory.toml", provider_toml(adapter_scenario(self, stdout=json.dumps({"contract": valid_ticket(id="OTHER-9")}))))
+        self.assertIn("differs from the run ticket", self.fails("fetch", "ticket", "ABC-1"))
 
     @lesson("L-121")
     def test_ingest_records_source_agent_and_reads_the_data_from_stdin(self):

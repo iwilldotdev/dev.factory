@@ -19,6 +19,9 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
           raw_src: Path | None = None) -> dict:
     """Validate, write raw + contract files, append the `contract` event. Nothing is written when invalid [L-156]."""
     data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]])
+    if kind == "ticket" and data["id"] != run.state()["ticket"]:
+        raise FactoryError(f"ticket contract id {data['id']!r} differs from the run ticket {run.state()['ticket']!r}; nothing was stored "
+                           "(fetch or ingest the ticket this run is for)")
     sid = safe_id(data["id"])
     cpath = run.dir / "contracts" / kind / f"{sid}.json"
     if cpath.exists():

@@ -252,6 +252,33 @@ test('grammar: a write through a junction or link into the guarded tree is not p
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
+// MSYS/Cygwin follow two link kinds that node sees as plain files: a "magic cookie" file and a `<name>.lnk` shortcut.
+test('grammar: a write target that is an MSYS cookie link, sits under one, or has a .lnk twin is not provably safe', () => {
+  const base = fs.mkdtempSync(path.join(TMP, 'fg-cookie-'));
+  try {
+    const home = path.join(base, 'home', '.factory');
+    const run = path.join(home, 'runs', 'r1');
+    fs.mkdirSync(run, { recursive: true });
+    fs.writeFileSync(path.join(run, 'run.json'), '{}');
+    const cookie = (name, target) => fs.writeFileSync(path.join(base, name),
+      Buffer.concat([Buffer.from('!<symlink>\xff\xfe', 'latin1'), Buffer.from(`${target}\0`, 'utf16le')]));
+    cookie('ck', path.join(run, 'run.json'));
+    cookie('ckdir', run);
+    fs.writeFileSync(path.join(base, 'sc.lnk'), 'L');
+    fs.writeFileSync(path.join(base, 'f'), '{}');
+    const c = { home: lib.normPath(home), cwd: base };
+    const B = base.replace(/\\/g, '/');
+    const RR = run.replace(/\\/g, '/');
+    for (const ok of [`cp ${RR}/run.json ${B}/new.json`, `sed -i s/a/b/ ${B}/f && cat ${RR}/run.json`]) assert.ok(safe(ok, c), ok);
+    for (const cmd of [`cp ${RR}/run.json ${B}/ck`, `cat ${RR}/run.json > ${B}/ck`, `sed -i s/a/b/ ${B}/ck && cat ${RR}/run.json`,
+      `cp ${RR}/run.json ${B}/ckdir/run.json`, `cp ${RR}/run.json ${B}/sc`, `cp ${RR}/run.json ${B}/sc/run.json`]) {
+      assert.ok(!safe(cmd, c), cmd);
+      if (oldDenies(cmd, c)) assert.ok(denies(cmd, c), cmd);
+    }
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
 test('grammar: on Windows a /x write target is the drive root in PowerShell and a Git Bash mount: unknown mounts are refused', { skip: !WIN && 'Windows paths' }, () => {
   const tail = `${S.replace(/^[A-Za-z]:/, '')}/x`;
   for (const pre of ['/proc/cygdrive/c', '/cygdrive/c', '/mnt/c', '/dev', '/home/u', '/usr', '/tmp', '/c']) {

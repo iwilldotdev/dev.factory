@@ -960,11 +960,36 @@ function landsSafe(real, homes, roots) {
   if (real === null) return false;
   const p = normPath(real);
   if (nearHome(p, homes) || !roots.some((r) => under(p, r))) return false;
+  // Links node cannot see: MSYS/Cygwin follow a "magic cookie" file (`!<symlink>` + target) and a `<name>.lnk` shortcut as
+  // symlinks. So no path component may have a `.lnk` twin, the nearest existing ancestor must be a real folder (a cookie
+  // is a file), and an existing target must not be a cookie.
+  let at = real;
+  let st = null;
+  for (;;) {
+    if (fs.existsSync(`${at}.lnk`)) return false;
+    try {
+      st = fs.lstatSync(at);
+      break;
+    } catch (e) {
+      if (e.code !== 'ENOENT') return false;
+    }
+    const up = path.dirname(at);
+    if (up === at) return false;
+    at = up;
+  }
+  if (at !== real) return st.isDirectory();
+  if (!st.isFile() || st.nlink > 1) return false;
   try {
-    const st = fs.lstatSync(real);
-    return !st.isDirectory() && st.nlink <= 1;
-  } catch (e) {
-    return e.code === 'ENOENT';
+    const fd = fs.openSync(real, 'r');
+    try {
+      const head = Buffer.alloc(12);
+      const n = fs.readSync(fd, head, 0, 12, 0);
+      return !head.subarray(0, n).toString('latin1').includes('!<symlink>');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
   }
 }
 

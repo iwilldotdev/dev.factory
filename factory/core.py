@@ -558,8 +558,99 @@ def write_evidence(run_id: str, check: dict, body: dict, repo_path: Path | None,
     }
     if record["status"] not in ("pass", "fail", "error"):
         record["status"] = "error"
+    if record["status"] != "pass" and isinstance(body.get("failure"), dict):
+        record["failure"] = body["failure"]  # {kind, reason[, env_kind]}: why it is not a pass (see prove.failure_of)
+    keep_history(run_id, check["id"])
+    if record["status"] == "pass" and is_flaky(evidence_history(run_id, check["id"]), record):
+        record["flaky"] = True
     write_json(run_dir(run_id) / "evidence" / f"{check['id']}.json", record)
     return record
+
+
+HISTORY_CAP = 20  # attempts kept per check in evidence/history/<id>.jsonl (the latest stays in evidence/<id>.json)
+HISTORY_DETAIL_KEYS = ("check_digest", "mode", "run_heads", "fail_kind", "env_kind", "flaky", "http_status")
+
+
+def history_file(run_id: str, check_id: str) -> Path:
+    return run_dir(run_id) / "evidence" / "history" / f"{check_id}.jsonl"
+
+
+def _slim_attempt(rec: dict) -> dict:
+    """What the history keeps of an evidence record: enough to see how a check went before, never the artifacts."""
+    details = rec.get("details") if isinstance(rec.get("details"), dict) else {}
+    out = {k: rec.get(k) for k in ("check_id", "status", "git_sha", "dirty", "started", "duration_s") if k in rec}
+    out["summary"] = str(rec.get("summary") or "")[:300]
+    for k in ("failure", "flaky"):
+        if rec.get(k):
+            out[k] = rec[k]
+    out["details"] = {k: details[k] for k in HISTORY_DETAIL_KEYS if k in details}
+    return out
+
+
+def keep_history(run_id: str, check_id: str) -> None:
+    """Before `evidence/<id>.json` is overwritten, append the record it holds to the history (capped, oldest dropped).
+    Readers of the latest evidence are unchanged; the history is a separate file nothing but flaky detection reads."""
+    path = evidence_file(run_id, check_id)
+    if not path.is_file():
+        return
+    try:
+        prev = read_json(path)
+    except (FactoryError, OSError, ValueError):
+        return
+    if not isinstance(prev, dict):
+        return
+    hist = history_file(run_id, check_id)
+    lines = [json.dumps(a, ensure_ascii=False) for a in evidence_history(run_id, check_id)]
+    lines.append(json.dumps(_slim_attempt(prev), ensure_ascii=False))
+    hist.parent.mkdir(parents=True, exist_ok=True)
+    hist.write_text(chr(10).join(lines[-HISTORY_CAP:]) + chr(10), encoding="utf-8")
+
+
+def evidence_history(run_id: str, check_id: str) -> list[dict]:
+    """Previous attempts of a check, oldest first (the latest one is `evidence/<id>.json`)."""
+    try:
+        text = history_file(run_id, check_id).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def is_flaky(history: list[dict], record: dict) -> bool:
+    """`record` (a pass) is flaky when an earlier attempt of the same check FAILED with the same check digest at the same
+    repo sha (and, for runtime evidence, the same `run_heads`): the check flipped without any change to code or check."""
+    det = record.get("details") if isinstance(record.get("details"), dict) else {}
+    digest, heads = det.get("check_digest"), det.get("run_heads")
+    if record.get("status") != "pass" or not digest:
+        return False
+    for old in history:
+        odet = old.get("details") if isinstance(old.get("details"), dict) else {}
+        if (old.get("status") == "fail" and odet.get("check_digest") == digest and old.get("git_sha") == record.get("git_sha")
+                and odet.get("run_heads") == heads):
+            return True
+    return False
+
+
+def flaky_checks(run_id: str) -> list[str]:
+    """Evidence ids of the run whose latest record is marked flaky (a fail followed by a pass at the same sha and digest, or a
+    browser assert that passed on the immediate retry)."""
+    out = []
+    for p in sorted((run_dir(run_id) / "evidence").glob("*.json")):
+        try:
+            rec = read_json(p)
+        except (FactoryError, OSError, ValueError):
+            continue
+        det = rec.get("details") if isinstance(rec, dict) and isinstance(rec.get("details"), dict) else {}
+        if isinstance(rec, dict) and (rec.get("flaky") or det.get("flaky")):
+            out.append(p.stem)
+    return out
 
 
 def evidence_file(run_id: str, check_id: str) -> Path:
@@ -569,8 +660,12 @@ def evidence_file(run_id: str, check_id: str) -> Path:
 def evidence_event(run: dict, record: dict) -> None:
     """`evidence` event with the sha256 of the written file; gates compare it with the file (DESIGN §2.4)."""
     cid = record["check_id"]
-    event(run, "evidence", check=cid, status=record.get("status"), sha=record.get("git_sha"),
-          digest=file_sha256(evidence_file(run["id"], cid)))
+    data = {"check": cid, "status": record.get("status"), "sha": record.get("git_sha"),
+            "digest": file_sha256(evidence_file(run["id"], cid))}
+    fail = record.get("failure")
+    if record.get("status") != "pass" and isinstance(fail, dict):  # why it is not a pass (`kind` is event()'s own arg)
+        data.update(reason=fail.get("reason"), kind=fail.get("kind"))
+    run.setdefault("events", []).append({"at": now(), "kind": "evidence", "data": data})
 
 
 def load_evidence(run_id: str, check_id: str) -> dict | None:

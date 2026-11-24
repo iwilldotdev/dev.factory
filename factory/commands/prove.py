@@ -19,7 +19,7 @@ from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, files_from_main
 from ..core import (SCHEMA_VERSION, check_target, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
-                    load_evidence, target_serve_path, target_worktree, workspace_load, write_evidence, write_json)
+                    keep_history, load_evidence, target_serve_path, target_worktree, workspace_load, write_evidence, write_json)
 from .. import integrity, shots
 from . import gate
 
@@ -277,6 +277,7 @@ def collect_one(run: dict, ws: dict, check: dict, target: str | None = None, ski
         if shared:  # shared repos serve another run's code (DESIGN section 11)
             body["details"]["shared"] = shared
     duration = float(pre["duration_s"]) if pre and not (skip_reason or bound) else time.monotonic() - t0
+    body = dict(body, failure=failure_of(check.get("type") or "", body))
     record = write_evidence(run["id"], check, body, repo_path, started, duration)
     log_evidence(run, record)
     return record
@@ -425,6 +426,7 @@ def quality_delta(run: dict, ws: dict, alias: str, mode: str = "default") -> dic
                         "current": {k: {"exit": v["exit"], "failures": len(v["failures"])} for k, v in current.items()},
                         "mode": mode, "check_digest": quality_digest(run, ws, alias, mode)}}
     check = {"id": gate.quality_id(alias), "type": "quality", "repo": alias}
+    body["failure"] = failure_of("quality", body)
     record = write_evidence(run["id"], check, body, wt, started, time.monotonic() - t0)
     log_evidence(run, record)
     return record
@@ -496,6 +498,7 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
         "summary": f"{status}: {body.get('summary', '')}",
         "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
     }
+    keep_history(run["id"], rid)
     write_json(run_dir(run["id"]) / "evidence" / f"{rid}.json", record)
     log_evidence(run, record)
     return record
@@ -534,6 +537,7 @@ def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
         "collector": "factory/before screenshot", "started": started, "duration_s": round(time.monotonic() - t0, 2),
         "summary": body.get("summary", ""), "artifacts": body.get("artifacts", []), "details": body.get("details", {}),
     }
+    keep_history(run["id"], bid)
     write_json(run_dir(run["id"]) / "evidence" / f"{bid}.json", record)
     log_evidence(run, record)
     return record
@@ -623,6 +627,11 @@ ENV_RE = re.compile(
     r"ECONNREFUSED|ECONNRESET|ERR_CONNECTION|ERR_NAME_NOT_RESOLVED|ERR_EMPTY_RESPONSE|ERR_SSL|connection refused|"
     r"env not reachable|not reachable|login (?:failed|did not|form)|session expired|storage ?state|"
     r"no storage state|health(?:check)? .{0,20}\b5\d\d\b|\b50[234] (?:bad gateway|service unavailable|gateway)", re.I)
+# Text a runtime check can show that names an infrastructure cause, not a product bug: (pattern, env kind). The env kind
+# becomes `ENV-FAIL repo=<alias> kind=<env kind>` and stops the repo's remaining runtime checks. Extend the table, not classify().
+ENV_BODY_CLASSES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"SSL Authentication Error", re.I), "db"),
+]
 TIMEOUT_RE = re.compile(r"timed out after|Timeout \d+ms exceeded|\[timeout after|check cap", re.I)
 
 
@@ -639,6 +648,14 @@ def _text_of(record: dict) -> str:
     except (TypeError, ValueError):
         blob = ""
     return f"{record.get('summary', '')}\n{blob}"
+
+
+def body_env_kind(text: str) -> str | None:
+    """Env kind of the first `ENV_BODY_CLASSES` pattern found in `text` (a response body, a test error), else None."""
+    for pattern, kind in ENV_BODY_CLASSES:
+        if pattern.search(text or ""):
+            return kind
+    return None
 
 
 def env_kind_of(text: str) -> str:
@@ -661,6 +678,8 @@ def classify(record: dict, first_runtime: bool = False) -> tuple[str, str | None
     text = _text_of(record)
     if record.get("type") in RUNTIME and details.get("fail_kind") == "env":
         return "env", details.get("env_kind") or env_kind_of(text)
+    if record.get("type") in RUNTIME and (body_kind := body_env_kind(text)):
+        return "env", body_kind
     if record.get("type") in RUNTIME and ENV_RE.search(text):
         return "env", env_kind_of(text)
     if details.get("timeout") or TIMEOUT_RE.search(text):
@@ -668,6 +687,21 @@ def classify(record: dict, first_runtime: bool = False) -> tuple[str, str | None
             return "timeout", "timeout"
         return "timeout", None
     return ("assert" if status == "fail" else "setup"), None
+
+
+def failure_of(check_type: str, body: dict) -> dict | None:
+    """`{kind, reason[, env_kind]}` of a non-pass result (kind: timeout|assert|env|setup|flaky, reason: its first summary
+    line, <=160 chars), stored in the evidence record and on its run.json event; None for a pass."""
+    if body.get("status") == "pass":
+        return None
+    kind, env_kind = classify({"type": check_type, "status": body.get("status"), "summary": body.get("summary"),
+                               "details": body.get("details")}) or ("setup", None)
+    if (body.get("details") or {}).get("flaky"):
+        kind = "flaky"
+    out = {"kind": kind, "reason": _first_line(body.get("summary") or "", 160)}
+    if env_kind:
+        out["env_kind"] = env_kind
+    return out
 
 
 class Reporter:
@@ -1192,6 +1226,9 @@ def cmd_prove(args) -> int:
         print(f"{len(records) - len(failed)}/{len(records)} passed" + (f" ({len(reused)} reused)" if reused else ""))
         if skipped:
             print(f"fail-fast: {len(skipped)} runtime check(s) not run; fix the cause, then `factory prove {run['id']}` again")
+    flaky = [r["check_id"] for r in records if r.get("flaky")]
+    if flaky:  # no gate effect: a pass that failed before at the same sha and check digest is reported, not blocked
+        rep.line(f"FLAKY: {', '.join(flaky)} failed earlier at the same sha with the same check and pass now (see evidence/history/)")
     if rep.env_failed:
         return EXIT_ENV
     return EXIT_FAIL if failed else 0

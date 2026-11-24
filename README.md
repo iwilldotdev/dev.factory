@@ -175,6 +175,8 @@ factory run close <run> --reason "abandoned"               # end a run you will 
 | `run … is claimed by session …` | Another session drives this run | Continue there, or `factory run claim <run> --takeover` |
 | `missing secrets file` / login failure | Credentials not set | Add the keys to `FACTORY_HOME/secrets/<ws>.env` |
 | `ENV-FAIL repo=… kind=unhealthy\|start\|timeout` | The env did not come up or answer | Fix what `detail=` names (port, SDK, DB), then `factory env check <ws> --run <run>` |
+| `ENV-FAIL … kind=db` | A response body showed a database or connection failure ("SSL Authentication Error"), not a product bug | Restart the API or fix the connection, then re-run `prove` |
+| `flaky: CHK-n` in `run status`, `FLAKY:` in `prove` | The check failed earlier at the same sha and check digest and passes now (history in `evidence/history/`) | Not a gate failure; stabilise the check or the env warm-up |
 | `ENV-FAIL … kind=files` | a file listed in `env.files_from_main` is missing in the served worktree | Create it (copy from the main checkout) and re-run `env up` / `prove` |
 | `ENV-FAIL … kind=seed\|preflight` | `env.seed` command or an `env.preflight` entry exited non-zero | Fix the data or DB state `detail=` names, then re-run `env check` / `prove` |
 | `ENV-FAIL … kind=stale` | The env runs an older commit | `factory env check <ws> --run <run> --auto-restart` (prove also does it once) |

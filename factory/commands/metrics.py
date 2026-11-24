@@ -192,7 +192,7 @@ def check_stats(run: dict, rd: Path) -> dict:
             continue
         if not isinstance(rec, dict):
             continue
-        if isinstance(rec.get("details"), dict) and rec["details"].get("flaky"):
+        if rec.get("flaky") or (isinstance(rec.get("details"), dict) and rec["details"].get("flaky")):
             flaky += 1
         if rec.get("duration_s") is not None:
             rows.append({"id": rec.get("id") or rec.get("check") or p.stem, "type": rec.get("type"),

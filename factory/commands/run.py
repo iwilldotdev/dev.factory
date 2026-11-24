@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..collectors.test import copy_main_files, files_from_main_of, prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
-                    factory_home,
+                    factory_home, flaky_checks,
                     git, git_dirty, git_head, now, repo_conf, run_dir, target_branch, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
 from .. import integrity
@@ -209,6 +209,7 @@ def cmd_status(args) -> int:
         print(json.dumps({"id": run["id"], "phase": run["phase"], "loops": run["loops"],
                           "owner": owner["session"] if owner else None,
                           "blockers": [dict(b, n=i) for i, b in open_blockers],
+                          "flaky": flaky_checks(run["id"]),
                           "next": action, "missing": errors, "gone": gone}, indent=2))
         return 0
     print(f"{run['id']}  phase={run['phase']}  risk={run.get('risk')}  "
@@ -220,6 +221,9 @@ def cmd_status(args) -> int:
         print(f"blocker #{i} [{b['kind']}] {b['text']}")
     for g in gone:
         print(f"missing: {g}")
+    flaky = flaky_checks(run["id"])
+    if flaky:
+        print(f"flaky: {', '.join(flaky)} (a fail followed by a pass at the same sha and check digest; not a gate failure)")
     print(f"next: {action}")
     for e in errors[1:6]:
         print(f"  - {e}")

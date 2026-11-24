@@ -96,6 +96,33 @@ class FollowupTests(ShipCase):
         self.assertIn("- F1 `src/one.txt`: first finding", desc)
         self.assertNotIn("second finding", desc)
 
+    def resolve_carried(self, resolved: list[str]) -> str:
+        # the same F1 (same text, whitespace aside) is carried by rounds 1 and 2; round 3 resolves it
+        self.to_review()
+        self.assertEqual(self.round_with("code", [minor("F1", "carried  finding")])[0], 0)
+        self.assertEqual(self.round_with("code", [minor("F1", "carried finding")])[0], 0)
+        self.assertEqual(self.round_with("code", [], resolved=resolved)[0], 0)
+        self.assertEqual(self.record("qa")[0], 0)
+        self.ok("gate", self.rid, "review")
+        return self.description()
+
+    def test_resolving_a_carried_finding_by_round_closes_its_earlier_rounds(self):
+        self.assertNotIn("carried finding", self.resolve_carried(["2:F1"]))
+
+    def test_resolving_a_carried_finding_by_bare_id_closes_its_earlier_rounds(self):
+        self.assertNotIn("carried finding", self.resolve_carried(["F1"]))
+
+    def test_resolving_a_reused_id_keeps_an_earlier_finding_with_other_text(self):
+        self.to_review()
+        self.assertEqual(self.round_with("code", [minor("F1", "first finding", file="src/one.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [minor("F1", "second finding", file="src/two.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [], resolved=["2:F1"])[0], 0)
+        self.assertEqual(self.record("qa")[0], 0)
+        self.ok("gate", self.rid, "review")
+        desc = self.description()
+        self.assertIn("- F1 `src/one.txt`: first finding", desc)
+        self.assertNotIn("second finding", desc)
+
     def test_a_round_qualified_entry_must_name_an_earlier_round(self):
         self.to_review()
         self.assertEqual(self.round_with("code", [minor("F1", "still open")], resolved=["1:F1", "2:F1", "9:F1"])[0], 0)

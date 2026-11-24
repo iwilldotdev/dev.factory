@@ -313,7 +313,9 @@ def _resolved_findings(history: list[dict]) -> set[tuple[int, str]]:
     """`(index in history, finding id)` pairs that a later round of the same kind marks fixed in its `resolved` list.
 
     Auditors reuse ids (round 1 F1 is not round 2 F1), so an entry must be unambiguous: `"<round>:<id>"` (`"1:F1"`)
-    names that round, a bare id names only the round immediately before the one that lists it."""
+    names that round, a bare id names only the round immediately before the one that lists it. A resolved finding also
+    closes the same id with the same text in EARLIER rounds (one finding carried from round to round), never a same-id
+    finding with other text."""
     fixed: set[tuple[int, str]] = set()
     for j, later in enumerate(history):
         for entry in later.get("resolved") or []:
@@ -326,6 +328,13 @@ def _resolved_findings(history: list[dict]) -> set[tuple[int, str]]:
                 fixed.update((k, m.group(2).strip()) for k in rounds)
             elif j > 0:
                 fixed.add((j - 1, text))
+
+    def texts(k: int, fid: str) -> set[str]:
+        return {" ".join(str(f.get("text", "")).split()) for f in history[k].get("findings") or [] if str(f.get("id")) == fid}
+
+    for k, fid in list(fixed):
+        mine = texts(k, fid)
+        fixed.update((e, fid) for e in range(k) if mine & texts(e, fid))
     return fixed
 
 

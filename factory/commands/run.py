@@ -507,17 +507,18 @@ def cmd_target_ticket(args) -> int:
     return 0
 
 
-def _prepare(ws: dict, conf: dict, main: Path, worktree: Path, copied: list[str] | None = None) -> str | None:
+def _prepare(ws: dict, conf: dict, main: Path, worktree: Path, copied: list[str] | None = None,
+             skipped: list[str] | None = None) -> str | None:
     """Same preparation as the temp worktrees of baseline/repro/red-green (quality.setup or node_modules link), plus
     the repo's `env.files_from_main` (gitignored files copied from the main checkout; their names are appended to
-    `copied`)."""
+    `copied`; the ones refused, with the reason, to `skipped`)."""
     try:
         prepare_worktree(main, worktree, setup_command(ws, conf["alias"]), (conf.get("env") or {}).get("env_vars"))
     except RuntimeError as err:
         return f"{err}; fix it and rerun the setup command in {worktree}"
     finally:
         if copied is not None:
-            copied.extend(copy_main_files(main, worktree, files_from_main_of(ws, conf["alias"])))
+            copied.extend(copy_main_files(main, worktree, files_from_main_of(ws, conf["alias"]), skipped))
     return None
 
 
@@ -566,7 +567,8 @@ def cmd_mirror(args) -> int:
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
     copied: list[str] = []
-    warn = _prepare(ws, conf, main, worktree, copied)
+    skipped: list[str] = []
+    warn = _prepare(ws, conf, main, worktree, copied, skipped)
     if warn:
         print(f"WARNING: {warn}")
     rec.setdefault("branches", {})[target] = name

@@ -412,15 +412,18 @@ def branch_for_mr(args, run: dict, ws: dict, conf: dict, main: Path) -> int:
         prepare_worktree(main, worktree, setup_command(ws, alias), (conf.get("env") or {}).get("env_vars"))
     except RuntimeError as err:
         print(f"WARNING: {err}; fix it and rerun the setup command in {worktree}")
-    copied = copy_main_files(main, worktree, files_from_main_of(ws, alias))
+    skipped: list[str] = []
+    copied = copy_main_files(main, worktree, files_from_main_of(ws, alias), skipped)
     run["repos"][alias] = {"branch": mr["source_branch"], "base": mr["target_branch"], "worktree": str(worktree),
                            "head": git_head(worktree), "base_ref": gate.resolve_base(main, mr["target_branch"]),
                            "mr": args.mr, "detached": True}
     mr["head_sha"] = sha
     run_save(run)
-    _emit(args, dict(run["repos"][alias], **({"copied_from_main": copied} if copied else {})),
+    _emit(args, dict(run["repos"][alias], **({"copied_from_main": copied} if copied else {}),
+                     **({"not_copied_from_main": skipped} if skipped else {})),
           f"{alias}: detached worktree for !{args.mr} at {sha[:10]} in {worktree}"
-          + (f"\ncopied from main checkout: {', '.join(copied)}" if copied else ""))
+          + (f"\ncopied from main checkout: {', '.join(copied)}" if copied else "")
+          + (f"\nnot copied from main checkout: {'; '.join(skipped)}" if skipped else ""))
     return 0
 
 

@@ -93,22 +93,103 @@ def safe_rel(rel) -> bool:
     return ".." not in re.split(r"[\\/]+", text)
 
 
-def copy_main_files(src: Path, dst: Path, files: list[str] | None) -> list[str]:
+def is_link(path) -> bool:
+    """A symlink, or on Windows any reparse point (junction, mount point): never followed when copying."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _inside(child: Path, root: Path) -> bool:
+    try:
+        c, r = os.path.normcase(os.path.realpath(child)), os.path.normcase(os.path.realpath(root))
+        return os.path.commonpath([c, r]) == r
+    except ValueError:  # another drive
+        return False
+
+
+def _copy_one(source: Path, target: Path, root: Path, rel: str, main: Path) -> str | None:
+    """Copy one file; returns the reason it was refused, or None when copied. Never writes outside `root`."""
+    try:
+        st = os.lstat(source)
+    except OSError:
+        return "absent"  # not reported: `env check` names the file that is still missing
+    if is_link(source):
+        return "source is a symlink"
+    if stat.S_ISDIR(st.st_mode):
+        return "source is a directory (files_from_main entries must be files)"
+    if not stat.S_ISREG(st.st_mode):
+        return "source is not a regular file"
+    if not _inside(source, main):
+        return "source resolves outside the main checkout"
+    cur = Path(root)
+    for part in re.split(r"[\\/]+", rel):  # every existing component of the destination, then the destination itself
+        cur = cur / part
+        if os.path.lexists(cur) and is_link(cur):
+            return f"destination {cur.name} is a link (symlink/junction): not written through"
+    if os.path.lexists(target):
+        return "present"  # never overwritten (not reported)
+    new_dirs = [d for d in reversed(target.parents) if _inside(d, root) and not d.exists() and d != root]
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not _inside(target.parent, root):
+            return "destination is outside the worktree"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(target, flags, 0o600)  # exclusive create: a dangling link cannot be written through
+    except FileExistsError:
+        return "present"
+    except OSError as err:
+        return f"cannot write: {err.strerror or err}"
+    try:
+        with os.fdopen(fd, "wb") as out, open(source, "rb") as src_fh:
+            shutil.copyfileobj(src_fh, out)
+        shutil.copystat(source, target)
+    except OSError as err:
+        _remove_copy(target, new_dirs)
+        return f"cannot copy: {err.strerror or err}"
+    ignored = subprocess.run(["git", "-C", str(root), "check-ignore", "-q", "--", rel.replace("\\", "/")],
+                             capture_output=True, text=True).returncode == 0
+    if not ignored:  # e.g. the review worktree of someone else's MR: a secret one `git add -A` from a commit
+        _remove_copy(target, new_dirs)
+        return "not gitignored in this worktree: not copied"
+    return None
+
+
+def _remove_copy(target: Path, new_dirs: list[Path]) -> None:
+    try:
+        os.remove(target)
+    except OSError:
+        pass
+    for d in reversed(new_dirs):  # only the directories this copy created, deepest first
+        try:
+            os.rmdir(d)
+        except OSError:
+            break
+
+
+def copy_main_files(src: Path, dst: Path, files: list[str] | None, skipped: list[str] | None = None) -> list[str]:
     """Copy (never link) each `files` entry from the main checkout `src` into the worktree `dst` when it exists in `src`
-    and is absent in `dst`; an existing file is never overwritten. Returns the relative paths copied."""
+    and is absent in `dst`; an existing file is never overwritten. Nothing is ever written outside `dst`: a destination
+    (or any component of its path) that is a symlink/junction, a source that is a link, a directory or outside `src`,
+    and a file that `git check-ignore` does not ignore in `dst` are refused, never raised: the reason is appended to
+    `skipped` as `<rel>: <reason>`. Returns the relative paths copied."""
     copied: list[str] = []
+    main, root = Path(src), Path(dst)
     for rel in files or []:
         if not safe_rel(rel):
-            continue
-        source, target = Path(src) / rel, Path(dst) / rel
-        if not source.is_file() or target.exists():
+            if skipped is not None:
+                skipped.append(f"{rel}: not a relative path inside the repo")
             continue
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-        except OSError:
-            continue
-        copied.append(rel)
+            reason = _copy_one(main / rel, root / rel, root, rel, main)
+        except OSError as err:
+            reason = f"cannot copy: {err}"
+        if reason is None:
+            copied.append(rel)
+        elif skipped is not None and reason not in ("absent", "present"):
+            skipped.append(f"{rel}: {reason}")
     return copied
 
 

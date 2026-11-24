@@ -577,7 +577,16 @@ def files_missing(workspace: dict, run: dict | None, alias: str, target: str | N
     if not wanted:
         return []
     root = root or _serve_root(workspace, run, alias, target)
-    return [f"file {rel} missing in worktree {root}" for rel in wanted if not (root / rel).is_file()]
+    main = repo.get("path")
+    out: list[str] = []
+    for rel in wanted:
+        if (root / rel).is_file():
+            continue
+        if main and (Path(main) / rel).is_dir():  # a config error, not a file a copy would ever supply
+            out.append(f"files_from_main entries must be files: {rel} is a directory in the main checkout")
+        else:
+            out.append(f"file {rel} missing in worktree {root}")
+    return out
 
 
 def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: list[str],

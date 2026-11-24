@@ -177,7 +177,7 @@ def _request_errors(where: str, req) -> list[str]:
     return errors
 
 
-def _files_errors(alias: str, env: dict) -> list[str]:
+def _files_errors(alias: str, env: dict, main: str | None = None) -> list[str]:
     """env.files_from_main: an array of relative file paths (no absolute path, no `..`) copied from the main checkout
     into every new worktree."""
     from ..collectors.test import safe_rel
@@ -186,8 +186,12 @@ def _files_errors(alias: str, env: dict) -> list[str]:
         return []
     if not isinstance(files, list):
         return [f"{alias}: env.files_from_main must be an array of relative file paths"]
-    return [f"{alias}: env.files_from_main[{i}] must be a relative path inside the repo (no absolute path, no `..`), got {f!r}"
-            for i, f in enumerate(files) if not (isinstance(f, str) and safe_rel(f))]
+    errors = [f"{alias}: env.files_from_main[{i}] must be a relative path inside the repo (no absolute path, no `..`), got {f!r}"
+              for i, f in enumerate(files) if not (isinstance(f, str) and safe_rel(f))]
+    for f in files:  # a directory is a config error, reported once here (not "missing" at every env up)
+        if isinstance(f, str) and safe_rel(f) and main and (Path(main) / f).is_dir():
+            errors.append(f"{alias}: env.files_from_main entries must be files: {f!r} is a directory in the main checkout")
+    return errors
 
 
 def _warmup_errors(alias: str, env: dict) -> list[str]:
@@ -451,7 +455,7 @@ def check_workspace(ws: dict) -> list[str]:
             if "hot_reload" in env and not isinstance(env["hot_reload"], bool):
                 missing.append(f"{alias}: env.hot_reload must be true or false")
             missing.extend(_data_errors(alias, env))
-            missing.extend(_files_errors(alias, env))
+            missing.extend(_files_errors(alias, env, repo.get("path")))
             missing.extend(_warmup_errors(alias, env))
             missing.extend(_slot_errors(alias, env))
     autonomy = ws.get("autonomy") or {}

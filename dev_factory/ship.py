@@ -116,7 +116,7 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     return sp
 
 
-def _proof(run: Run, st: dict, kind: str, ident: str, cev: dict) -> list[str]:
+def proof_reasons(run: Run, st: dict, kind: str, ident: str, cev: dict) -> list[str]:
     """A readback or pipeline used as proof needs an adapter, or the user's confirmation recorded after it was ingested [L-21]."""
     env = read_json(run.dir / cev["path"])
     if env["source"] == "adapter" or any(c.get("contract") == f"{kind}:{ident}" and c["at"] > cev["at"] for c in st["confirms"]):
@@ -145,7 +145,7 @@ def _compare(sp: dict, it: dict, d: dict, head: str) -> list[str]:
     return out
 
 
-def _pipeline(run: Run, st: dict, repo: str, head: str, listed: str | None) -> list[str]:
+def pipeline_reasons(run: Run, st: dict, repo: str, head: str, listed: str | None) -> list[str]:
     """`require_pipeline`: the newest pipeline for the pushed head is success, or the user waived that very pipeline [L-19, L-20, L-155]."""
     made = []
     for (kind, ident), ev in st["contracts"].items():
@@ -164,7 +164,7 @@ def _pipeline(run: Run, st: dict, repo: str, head: str, listed: str | None) -> l
         return probs
     if d["sha"] != head:
         return [f"{repo}: the newest pipeline {d['id']} ran for {d['sha'][:7]}, not the pushed head {head[:7]} [L-155]"]
-    out = _proof(run, st, "pipeline", d["id"], ev)
+    out = proof_reasons(run, st, "pipeline", d["id"], ev)
     if d["status"] != "success" and not any(w["pipeline"] == d["id"] for w in st["waivers"]):
         out.append(f"{repo}: pipeline {d['id']} is {d['status']}: it has to be success, or the user waives that pipeline: "
                    f"factory waive pipeline:{d['id']} --user-said \"<their words>\" [L-20]")
@@ -200,11 +200,13 @@ def reasons(run: Run, project, st: dict) -> list[str]:
                        "factory ingest change (or configure providers.change.fetch) and run factory ship verify [L-153]")
             continue
         cev, env = found[-1]
+        if cev.get("refresh"):  # read back again for feedback after the gate passed: what feedback judges, not what the plan promised
+            continue
         d = env["data"]
         probs = acquire.load(run, "change", d["id"])[1]
-        out += probs or _proof(run, st, "change", d["id"], cev) + _compare(sp, it, d, sp["heads"][r])
+        out += probs or proof_reasons(run, st, "change", d["id"], cev) + _compare(sp, it, d, sp["heads"][r])
         if project.cfg["ship"]["require_pipeline"] and not probs:
-            out += _pipeline(run, st, r, sp["heads"][r], (d.get("pipelines") or [None])[0])
+            out += pipeline_reasons(run, st, r, sp["heads"][r], (d.get("pipelines") or [None])[0])
     return out
 
 

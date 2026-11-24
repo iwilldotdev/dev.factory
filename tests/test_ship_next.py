@@ -36,7 +36,7 @@ class NextTests(ShipCase):
         self.assertEqual(self.nxt()["command"], "factory gate ship")
         self.ok("gate", "ship")
         n = self.nxt()
-        self.assertEqual((n["phase"], n["kind_of_action"]), ("done", "none"))
+        self.assertEqual((n["phase"], n["kind_of_action"]), ("feedback", "command"))
 
     def test_a_mismatch_sends_the_orchestrator_back_to_fix_the_change(self):
         self.ship_plan()
@@ -78,7 +78,7 @@ class AdapterTests(ShipCase):
         self.assertEqual(dump["argv"][-3:], [it["source_branch"], it["source_branch"], self.head()])
         self.assertEqual(json.loads((self.run_dir / "contracts" / "change" / "42.json").read_text(encoding="utf-8"))["source"], "adapter")
         self.assertEqual(self.gate("ship")[0], 0)
-        self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "done")
+        self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "feedback")
 
     def test_an_adapter_failure_is_a_mismatch_not_a_crash(self):
         adapter_scenario(self, stdout="not json")

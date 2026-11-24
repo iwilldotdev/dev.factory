@@ -43,7 +43,7 @@ class BasicTests(IntakeBase):
         self.assertEqual([e["result"] for e in self.events(self.run_dir) if e["type"] == "gate"], ["fail"])
 
     def test_unknown_gates_are_refused_with_the_available_ones(self):
-        self.assertIn("available: intake, plan, reproduce, verify, review, ship", self.fails("gate", "feedback"))
+        self.assertIn("available: intake, plan, reproduce, verify, review, ship, feedback", self.fails("gate", "report"))
 
     @lesson("L-31")
     def test_a_bug_ticket_in_a_feature_run_fails_intake(self):

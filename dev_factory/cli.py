@@ -235,7 +235,7 @@ def cmd_human(args) -> int:
 def cmd_fetch(args) -> int:
     from . import acquire
     proj = _project(args)
-    env = acquire.fetch(_run(args, proj), proj.cfg, proj.dir, args.kind, args.id, args.repo)
+    env = acquire.fetch(_run(args, proj), proj.cfg, proj.dir, args.kind, args.id, args.repo, tag={"refresh": True} if args.refresh else None)
     _out(args, {"contract": env["data"]["id"], "source": env["source"], "raw": env["raw"]},
          f"stored {args.kind} {env['data']['id']} (source adapter, raw sha256 {env['raw']['sha256'][:12]})")
     return 0
@@ -255,7 +255,7 @@ def cmd_ingest(args) -> int:
         data = json.loads(text)
     except ValueError as exc:
         raise FactoryError(f"contract data is not valid JSON: {exc}") from exc
-    env = acquire.ingest(_run(args, proj), proj.cfg, args.kind, Path(args.raw), data)
+    env = acquire.ingest(_run(args, proj), proj.cfg, args.kind, Path(args.raw), data, {"refresh": True} if args.refresh else None)
     _out(args, {"contract": env["data"]["id"], "source": env["source"], "raw": env["raw"]},
          f"stored {args.kind} {env['data']['id']} (source agent, raw sha256 {env['raw']['sha256'][:12]})")
     return 0

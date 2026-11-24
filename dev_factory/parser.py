@@ -9,7 +9,7 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
-    from .cli_proof import cmd_baseline, cmd_confirm, cmd_metrics
+    from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
@@ -87,12 +87,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("kind")
     sp.add_argument("id")
     sp.add_argument("--repo")
+    sp.add_argument("--refresh", action="store_true", help="a change or pipeline read again after the ship gate, for the feedback phase")
     sp = add("ingest", cmd_ingest, "validate a contract the agent wrote, or --check stale raws", [scoped])
     sp.add_argument("kind", nargs="?")
     sp.add_argument("--raw", metavar="FILE")
     sp.add_argument("--contract", metavar="FILE")
     sp.add_argument("--stdin", action="store_true", help="read the contract data from stdin")
     sp.add_argument("--check", action="store_true", help="list raws that changed since they were acquired")
+    sp.add_argument("--refresh", action="store_true", help="a change or pipeline read again after the ship gate, for the feedback phase")
     mp = sub.add_parser("media", help="record ticket media as seen or unseen").add_subparsers(dest="sub", required=True)
     sp = mp.add_parser("seen", parents=[scoped])
     sp.set_defaults(func=cmd_media)
@@ -123,6 +125,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--check", metavar="ID")
     sp.add_argument("--repo")
     sp.add_argument("--fresh", action="store_true", help="take the baseline again")
+    sp = add("feedback", cmd_feedback, "turn unresolved change threads and failed pipeline jobs into findings", [scoped])
+    sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this feedback round from the loop budget, once")
+    sp.add_argument("--no-fetch", action="store_true", help="read the contracts already ingested; do not call the adapters")
     sp = add("metrics", cmd_metrics, "time per phase, loops, blocked hours and gate failures of a run", [scoped])
     sp.add_argument("run_id", nargs="?")
     sp.add_argument("--all", action="store_true", help="aggregate every run of the project")

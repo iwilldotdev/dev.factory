@@ -94,11 +94,11 @@ def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: s
     return store(run, cfg, kind, payload["contract"], raw, ".json", "adapter", adapter, tag=tag)
 
 
-def ingest(run: Run, cfg: dict, kind: str, raw_file: Path, data: dict) -> dict:
+def ingest(run: Run, cfg: dict, kind: str, raw_file: Path, data: dict, tag: dict | None = None) -> dict:
     """Agent route: the agent saved the raw and wrote the contract data; validate and record `source: agent`."""
     if not raw_file.is_file():
         raise FactoryError(f"raw file not found: {fwd(raw_file)}")
-    return store(run, cfg, kind, data, raw_file.read_bytes(), raw_file.suffix or ".json", "agent", None, raw_src=raw_file)
+    return store(run, cfg, kind, data, raw_file.read_bytes(), raw_file.suffix or ".json", "agent", None, raw_src=raw_file, tag=tag)
 
 
 def load(run: Run, kind: str, ident: str) -> tuple[dict | None, list[str]]:

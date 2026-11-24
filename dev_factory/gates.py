@@ -4,14 +4,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import acquire, designflow, dryrun, env as envmod, evidence, git, human, localhttp, lock, media, plan as planmod, plancheck, review, ship
+from . import acquire, designflow, dryrun, env as envmod, evidence, feedback, git, human, localhttp, lock, media, plan as planmod, plancheck, review, ship
 from .checks import RUNTIME
 from .run import Run
 from .util import FactoryError, fwd, sha256_file
 
 # Run kind -> the ticket `type` it requires; epic and review runs do not derive from a single ticket type.
 KIND_TYPE = {"feature": "feature", "bug": "bug", "hotfix": "bug"}
-NAMES = ("intake", "plan", "reproduce", "verify", "review", "ship")
+NAMES = ("intake", "plan", "reproduce", "verify", "review", "ship", "feedback")
 SECTIONS = ("Root cause", "Evidence", "Ruled out")
 
 
@@ -202,7 +202,9 @@ def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     """What a later gate adds on top of verify; callers know that verify holds."""
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
     out = review.reasons(st, plan, lk) + designflow.review_reasons(run, st, plan)
-    return out + ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan) if name == "ship" and not out else out
+    if name in ("ship", "feedback") and not out:
+        out = ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan)
+    return out + feedback.reasons(run, project, st) if name == "feedback" and not out else out
 
 
 def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
@@ -224,7 +226,7 @@ def passed(run: Run, project, st: dict, name: str, chain: bool = True) -> bool:
         return False
     if name == "intake":
         return intake_passed(run, project.cfg, st)
-    if name in ("review", "ship") and g["at"] < max(st["review_at"], st["ship_at"] if name == "ship" else -1):
+    if name in ("review", "ship", "feedback") and g["at"] < max(st["review_at"], st["ship_at"] if name != "review" else -1):
         return False
     return not (reasons_for(run, project, st, name) if chain else extra_reasons(run, project, st, name))
 

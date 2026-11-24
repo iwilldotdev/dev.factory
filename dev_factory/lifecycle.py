@@ -152,7 +152,9 @@ def describe(ev: dict) -> str:
             "gate": ("name", "result", "reasons"), "worktree": ("repo", "path", "branch", "setup"),
             "plan_locked": ("seq",), "loop": ("kind", "decision", "counts"),
             "evidence": ("check", "mode", "result", "sha"), "env": ("repo", "action", "kind", "reason"),
-            "design_review": ("frame",), "design_refresh": ("frame", "changed"), "closed": ("reason",)}.get(t, ())
+            "design_review": ("frame",), "design_refresh": ("frame", "changed"), "closed": ("reason",),
+            "baseline": ("check", "runs"), "confirm": ("check", "contract"), "tokens": ("session", "input", "output"),
+            "review": ("kind", "round", "verdict")}.get(t, ())
     return " ".join(f"{k}={ev[k]!r}" if isinstance(ev.get(k), str) and " " in ev[k] else f"{k}={ev[k]}"
                     for k in keys if ev.get(k) not in (None, [], ""))
 

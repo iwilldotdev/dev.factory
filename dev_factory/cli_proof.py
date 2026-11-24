@@ -1,4 +1,4 @@
-"""Handlers of `factory baseline`, `confirm`, `waive` and `metrics`; the work lives in quality.py, human.py and metrics.py."""
+"""Handlers of `factory baseline`, `confirm`, `waive`, `feedback` and `metrics`; the work lives in quality.py, human.py, feedback.py and metrics.py."""
 from __future__ import annotations
 
 from .util import FactoryError
@@ -58,4 +58,12 @@ def cmd_metrics(args) -> int:
         return 0
     m = metrics.compute(run.read(), gates.is_bug(run, run.state()))
     cli._out(args, {"run": run.id, **m}, metrics.render(run.id, m))
+    return 0
+
+
+def cmd_feedback(args) -> int:
+    from . import cli, feedback
+    proj = cli._project(args)
+    res = feedback.ingest(cli._run(args, proj), proj, args.decision, not args.no_fetch, args.actor)
+    cli._out(args, res, feedback.render(res))
     return 0

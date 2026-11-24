@@ -71,6 +71,12 @@ More proof (plans may use these checks):
   `factory verify --scoped` is a cheap run on the changed files that never satisfies a gate; `--estimate` lists what would run and how long.
 - A plan with `risk` medium or high needs `notes/design.md`; high risk needs two different reviewers. A `guideline` rule of a repo is cited by the code review.
 
+Feedback (after the ship gate):
+- `factory next` asks you to read each change and its pipeline back: `factory feedback` through the adapters, or `factory ingest ... --refresh`
+  and then `factory feedback --no-fetch`. Unresolved threads and failed jobs become findings, the run returns to build, and the fix ships as an update.
+- `factory gate feedback` passes with no unresolved thread and a green pipeline for the pushed head, or the user's waiver of that pipeline.
+- `factory metrics [--all --since DATE]` shows time per phase, loops, blocked and idle hours; `--tokens --session <id>` records tokens.
+
 Rules the CLI enforces:
 - Only `verify` and `reproduce` write evidence; a gate passes on records, never on a claim.
 - A decision needs the user's own words in `--user-said`, and one recorded decision unblocks once.

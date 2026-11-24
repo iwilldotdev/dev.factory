@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import acquire, gates, git, human, lock, media, plan as planmod, quality, review as rv, ship, shipbody
+from . import acquire, feedback, gates, git, human, lock, media, plan as planmod, quality, review as rv, ship, shipbody
 from .project import Project
 from .run import Run
 from .util import fwd, safe_id
@@ -34,7 +34,12 @@ def phase(run: Run, project: Project, st: dict) -> str:
         return "build"
     if not gates.passed(run, project, st, "review", chain=False):
         return "review"
-    return "ship" if not gates.passed(run, project, st, "ship", chain=False) else "done"
+    if not gates.passed(run, project, st, "ship", chain=False):
+        return "ship"
+    if gates.passed(run, project, st, "feedback", chain=False):
+        return "done"
+    heads = rv.heads_of(st, planmod.load_plan(run)[0]["repos"])
+    return "build" if feedback.open_round(st, heads) else "feedback"
 
 
 def _repeated_env_failure(st: dict) -> dict | None:
@@ -57,6 +62,8 @@ def compute(project: Project, run: Run) -> dict:
         reasons = gates.extra_reasons(run, project, st, "review")  # verify holds in this phase
     elif ph == "ship":
         stage, reasons = ship.stage(run, project, st)
+    elif ph == "feedback":
+        stage, reasons = feedback.stage(run, project, st)
 
     def set_(action, kind, command=None, files=(), role="orchestrator"):
         out.update(action=action, kind_of_action=kind, command=command, files=[fwd(f) for f in files], role=role)
@@ -92,6 +99,10 @@ def compute(project: Project, run: Run) -> dict:
         elif reasons:
             set_("build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
                  "repo from a clean worktree, and the gate lists what is still missing", "command", f"factory verify{flag}", trees, "builder")
+        elif (fb := feedback.open_round(st, rv.heads_of(st, planmod.load_plan(run)[0]["repos"]))):
+            set_(f"feedback round {fb['round']} from the change: fix each finding in the worktree(s), commit, then run verify; review and ship "
+                 "the update follow (the same changes get an update intent): " + "; ".join(f"{f['source']} {f['text']}" for f in fb["findings"][:6]),
+                 "command", f"factory verify{flag}", trees, "builder")
         else:
             set_("every check passes at HEAD; run the verify gate", "command", f"factory gate verify{flag}")
     elif ph == "review":
@@ -100,9 +111,11 @@ def compute(project: Project, run: Run) -> dict:
         _ship_action(project, run, st, stage, set_, flag)
         if st["ships"] and stage != "plan":
             out["briefing"] = shipbody.briefing(ship.load(run), ship.load(run)["rows"], st)
+    elif ph == "feedback":
+        _feedback_action(project, run, stage, set_, flag)
     else:
-        set_("the ship gate passed: the draft change is verified. Tell the user what was shipped (changes, AC x evidence, follow-ups); "
-             "the feedback phase is not available in this build", "none")
+        set_("the feedback gate passed: no unresolved thread and a green or waived pipeline. Tell the user what was shipped (changes, AC x evidence, "
+             "follow-ups, human checks); ready and merge stay with them", "none")
     if ph in ("review", "ship") and (uat := _uat(run, st)):
         out["uat"] = uat
     out["gate"] = {"build": "verify"}.get(ph, ph)
@@ -209,6 +222,27 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
              "command", f'factory review record --kind {kind} --file "{fwd(path)}"{flag}', [path], "reviewer")
     else:
         set_("both reviews are APPROVE at HEAD; run the review gate", "command", f"factory gate review{flag}")
+
+
+def _feedback_action(project: Project, run: Run, stage: str, set_, flag: str) -> None:
+    sp, adapter = ship.load(run), bool(project.cfg["providers"].get("change", {}).get("fetch"))
+    if stage == "gate":
+        set_("no unresolved thread and the latest pipeline is green or waived: run the feedback gate", "command", f"factory gate feedback{flag}")
+    elif stage == "refresh" and adapter:
+        set_("the changes are shipped: once the reviewers and the CI had their turn, read each change and its pipeline back through the adapters; "
+             "unresolved threads and failed jobs become findings and the run returns to build", "command", f"factory feedback{flag}")
+    elif stage == "refresh":
+        repo = next(iter(sp["heads"]))
+        raw, data = feedback.action_paths(run, repo)
+        set_("the changes are shipped: once the reviewers and the CI had their turn, save each change as the provider reports it (with threads and "
+             "pipelines newest first) and each pipeline, load them with factory ingest --refresh, then run the feedback command with --no-fetch",
+             "command", f'factory ingest change --raw "{raw}" --contract "{data}" --refresh{flag}', [Path(raw), Path(data)], "orchestrator")
+    elif stage == "ingest":
+        set_("the change has unresolved threads or failed jobs that are not recorded yet: record them as findings (the run returns to build)",
+             "command", f"factory feedback --no-fetch{flag}")
+    else:
+        set_("the feedback is not settled (see the reasons): wait for the pipeline, resolve the threads, or ask the user; only the user may waive a "
+             "red pipeline (factory waive pipeline:<id> --user-said ...). Refresh when something changed", "user", f"factory feedback{flag}")
 
 
 def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: str) -> None:

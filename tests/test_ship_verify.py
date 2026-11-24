@@ -26,7 +26,7 @@ class ReadbackTests(ShipCase):
         self.assertEqual((res["result"], res["mismatches"], res["recorded"]), ("pass", [], True))
         self.assertEqual(self.gate("ship")[0], 0)
         n = json.loads(self.ok("next", "--json"))
-        self.assertEqual((n["phase"], n["kind_of_action"]), ("done", "none"))
+        self.assertEqual((n["phase"], n["kind_of_action"]), ("feedback", "command"))
         self.assertEqual(self.ship_events("ship_verified")[-1]["heads"], {"web": self.head()})
 
     @lesson("L-21")
@@ -115,7 +115,7 @@ class ReadbackTests(ShipCase):
         self.confirmed()
         self.ship_verify()
         self.ok("gate", "ship")
-        self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "done")
+        self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "feedback")
         path = self.run_dir / "ship" / "plan.json"
         path.write_text(path.read_text(encoding="utf-8").replace('"draft": true', '"draft": false'), encoding="utf-8")
         self.assertIn("edited after it was planned", self.failing("ship"))

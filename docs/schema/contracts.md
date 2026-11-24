@@ -210,7 +210,7 @@ Common fields on every event:
 | `run_started` | `ticket`, `kind`, `repos` |
 | `retype` | `kind`, `previous`: the run kind changed, so `gate intake` has to pass again [L-32] |
 | `repos` | `repos`: the affected repos were (re)declared |
-| `contract` | `kind`, `id`, `path`, `source`, `raw_sha256`; `refresh: true` on a design re-acquisition |
+| `contract` | `kind`, `id`, `path`, `source`, `raw_sha256`; `refresh: true` on a design re-acquisition, and on a `change` or `pipeline` read again after the ship gate for the feedback phase (`fetch` or `ingest` with `--refresh`) |
 | `media` | `attachment`, `state` (`seen` or `unseen`), `file` or `question` |
 | `question` | `id` (`Q-n`), `text`, `ref` |
 | `answer` | `question`, `user_said`, `decision` (id, consumable once) [L-126] |
@@ -219,11 +219,11 @@ Common fields on every event:
 | `worktree` | `repo`, `path`, `branch`, `branch_point`, `throwaway` (bool), `setup` (`pass`, `fail` or `none`), and on failure `setup_exit`, `setup_tail`. A repeated event for the same repo means the setup ran again |
 | `gate` | `name`, `result` (`pass` or `fail`), `reasons` (list); a passing `reproduce` adds `diagnosis` (sha256 of `diagnosis.md`) |
 | `plan_locked` | lock fields from `plan-json.md`, `seq` (1 = initial lock) |
-| `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135]. A `review` loop adds `heads`, `round` and `review` (the kind): one fix round spends one loop however many reviewers found it. A loop that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
+| `loop` | `kind` (`amend`, `review` or `feedback`), `decision` or null, `counts` (bool) [L-134, L-135]. A `review` loop adds `heads`, `round` and `review` (the kind): one fix round spends one loop however many reviewers found it. A loop that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
 | `env` | `repo`, `action` (`up`, `down`, `restart` or `fail`), `pid`, `create_time`, `group`, `cwd`, `sha`, `run`; a `fail` adds `kind` (`files`, `lock`, `port`, `start`, `health`, `warmup`, `data`, `login` or `restore`) and a redacted `reason` |
 | `evidence` | evidence record, §6 |
 | `baseline` | `check`, `repo`, `spec_hash`, `branch_point`, `runs` (1 to 3), `stable` and `quarantined` (sorted failure ids) of a `quality` check at the branch point [L-61] |
-| `review` | review record, §7 |
+| `review` | review record, §7; `kind: feedback` is written by `factory feedback`, §7b |
 | `blocker` | `id`, `kind` (`question`, `decision`, `infra` or `tooling`), `reason` [L-140, L-152] |
 | `unblock` | `blocker`, `decision` |
 | `ship_planned` | `plan_sha256` (of `ship/plan.json`), `body_sha256`, `heads`, `update` (bool), `decision` (the consumed `--allow-behind` decision, or null) |
@@ -312,6 +312,20 @@ Refusals [L-23]:
 - a `code` review that does not cite every guideline rule of the planned repos in `guidelines` (`[{id, followed, note}]`, ids are `<repo>:<rule id>`), and APPROVE with `followed: false`
 
 With `risk: high` the latest `code` and `qa` reviews must name two different reviewers, or `gate review` fails.
+
+## 7b. Feedback review (`type: review`, `kind: feedback`)
+
+`factory feedback` appends one record per round, after the ship gate passed and the change and pipeline contracts were read again (`--refresh`):
+
+| Field | Value |
+|---|---|
+| `kind`, `round`, `verdict` | `feedback`, counted per kind, always `CHANGES` |
+| `reviewer` | `factory feedback` |
+| `repos` | the shipped heads (`{repo: full SHA}`) |
+| `findings` | `{id, severity, file, text, repo, source}`: `source` is `thread:<id>` (an unresolved thread, `major`), `job:<pipeline id>/<job name>` (a failed job, `major`, or `minor` when `allow_failure`) or `pipeline:<id>` (failed with no job detail) |
+| `completeness`, `bound`, `lock_seq`, `independent_of`, `hash` | as in section 7; `bound` is empty because no plan hash applies |
+
+A finding whose `source` is already in a feedback record for the same heads is not new. A round with a `blocker` or `major` finding spends one loop (`loop` kind `feedback`). It does not move `review_at`, so the review and ship gates that passed stay valid until a commit moves HEAD; while the round is open (same heads, nothing read back since), the run is in build. `gate feedback` passes when the ship gate holds, every change was read back after it, no thread is unresolved, and the newest pipeline for the pushed head is `success` or waived by id. A `merged` change needs no thread fix. The ship gate does not compare a `refresh` readback with the plan.
 
 ## 8. Ship plan (`ship/plan.json`, written by `factory ship plan`)
 

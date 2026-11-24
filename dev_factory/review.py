@@ -215,7 +215,7 @@ def reasons(st: dict, plan: dict, lk: dict) -> list[str]:
 def open_minors(st: dict) -> list[dict]:
     """Unresolved minor findings from every round of both kinds, de-duplicated, in first-seen order [L-146, L-147]."""
     out, seen = [], set()
-    for kind in BOUND:
+    for kind in (*BOUND, "feedback"):
         rounds = [e for e in st["reviews"] if e.get("kind") == kind]
         cleared: set[tuple[int, str]] = set()
         for e in rounds:

@@ -157,7 +157,8 @@ def derive(events: list[dict]) -> dict:
             st["baselines"].append(ev)
         elif t == "review":
             st["reviews"].append({**ev, "at": i})
-            st["review_at"] = i
+            if ev.get("kind") != "feedback":  # findings from the change after ship do not unpass the review and ship gates
+                st["review_at"] = i
         elif t == "confirm":
             st["confirms"].append({**ev, "at": i})
         elif t == "waiver":

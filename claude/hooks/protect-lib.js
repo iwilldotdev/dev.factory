@@ -160,7 +160,9 @@ const SUSPICIOUS_TAIL = /(?:^|[\\/])(?:run\.json|metrics\.json|ship-plan\.json|a
 function wordProtected(word, ctx, ancestor = false) {
   if (!word) return false;
   const p = normPath(word, ctx.cwd);
-  if (ancestor ? isProtectedOrAncestor(p, ctx.home) : isProtected(p, ctx.home)) return true;
+  // The default home (~/.factory) stays protected even when FACTORY_HOME points elsewhere: a command can name either.
+  const homes = [ctx.home, normPath('~/.factory')];
+  if (homes.some((h) => (ancestor ? isProtectedOrAncestor(p, h) : isProtected(p, h)))) return true;
   const expanded = expandVars(word);
   return UNRESOLVED_VAR.test(expanded) && SUSPICIOUS_TAIL.test(expanded.replace(/['"]/g, ''));
 }
@@ -242,7 +244,9 @@ const WRAPPERS = new Set(['sudo', 'env', 'command', 'nice', 'nohup', 'time', 'ex
 const DESTRUCTIVE = new Set(['rm', 'rmdir', 'del', 'erase', 'rd', 'unlink', 'shred', 'remove-item', 'ri',
   'mv', 'move', 'move-item', 'mi', 'ren', 'rename', 'rename-item', 'rni', 'truncate']);
 const WRITERS = new Set(['tee', 'sponge', 'touch', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'new-item', 'ni',
-  'clear-content', 'clc', 'ln', 'mklink', 'chmod', 'chown', 'export-csv', 'export-clixml']);
+  'clear-content', 'clc', 'ln', 'mklink', 'chmod', 'chown', 'export-csv', 'export-clixml', 'mkdir', 'md']);
+const EDITORS = new Set(['vi', 'vim', 'nvim', 'nano', 'emacs', 'notepad', 'notepad++', 'code', 'ed', 'ex', 'micro', 'subl', 'gedit', 'pico']);
+const GIT_WRITES = new Set(['checkout', 'restore', 'rm', 'mv', 'clean', 'reset', 'stash', 'apply', 'switch']);
 const COPIERS = new Set(['cp', 'copy', 'copy-item', 'cpi', 'xcopy', 'install', 'rsync', 'scp']);
 const CHDIR = new Set(['cd', 'pushd', 'set-location', 'sl', 'chdir']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'cmd', 'powershell', 'pwsh']);
@@ -337,7 +341,7 @@ function inlineInterpreter(words) {
 }
 
 // Any write call in a code blob: the "writes files" signature (combined with a protected name below).
-const SCRIPT_WRITE = /\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
+const SCRIPT_WRITE = /(?<!std(?:out|err)(?:\.buffer)?)\.write\w*\(|write_text|write_bytes|writeFile|appendFile|json\.dump\(|\bopen\w*\([^)]*,\s*(?:mode\s*=\s*)?['"](?:[wax][bt]?\+?|r\+)['"]|Set-Content|Out-File|Add-Content|\bunlink|rmtree|rmSync|os\.(?:remove|rename|replace|rmdir|truncate)\(|\.rename\(|\.replace\(\s*(?:Path|pathlib|os\.path|[\w.]*(?:path|dst|dest|target|run)\w*\s*\))|shutil\.(?:copy|move|rmtree)|fs\.(?:write|append|rm|unlink|rename|copy|truncate)|\.truncate\(|\bremove-item|\bmove-item|\bcopy-item|\brename-item|\[io\.file\]::|createWriteStream|subprocess\.\w+\([^)]*>/i;
 const PROTECTED_NAME = /run\.json|metrics\.json|ship-plan\.json|review-report|acs\.json|diagnosis\.md|\.pid\b|\.storage\.json|[\/]runs[\/]|\b(?:evidence|reviews|baseline|checks|figma)\b/i;
 // The factory home itself: lets code assemble a protected path piecewise ('ev'+'idence').
 const HOME_NAME = /factory_home|(?:^|[^\w.-])\.factory(?![\w-])/i;
@@ -373,9 +377,47 @@ function readScript(file, ctx) {
   }
 }
 
+// Commands whose write destination bashWriteReason() reads from the arguments (its per-command rules).
+// Mentioning a run path as a SOURCE or other argument of one of these is not a write; only the destination counts.
+const TARGET_AWARE = new Set([...DESTRUCTIVE, ...WRITERS, ...COPIERS, ...SHELLS, ...EDITORS,
+  'git', 'find', 'xargs', 'robocopy', 'dd', 'sort', 'diff', 'uniq', 'xxd']);
+const ASSIGNMENT = /(?:^|[\s;&|(])(?:export\s+|set\s+|local\s+)?\$?[A-Za-z_]\w*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s;&|]+)/g;
+const EVAL_CMDS = new Set(['eval', 'iex', 'invoke-expression']);
+
+function inPlaceEditor(cmd, args) {
+  return (cmd === 'sed' || cmd === 'perl' || cmd === 'awk' || cmd === 'gawk')
+    && args.some((a) => /^-[a-z]*i/i.test(a) || a.startsWith('--in-place'));
+}
+
+/** True when a variable is assigned a run path: a later `$var` may then hide a protected destination. */
+function taintedByAssignment(command, ctx) {
+  return (command.match(ASSIGNMENT) || []).some((m) => runsMention(m, ctx.home) || textMentionsProtected(m, ctx));
+}
+
+/**
+ * Coarse net for commands whose destination is not modelled: one segment that mentions a run path AND carries a
+ * write-capable verb. Skipped: factory CLI segments, read-only commands, inline interpreter code (judged by
+ * scriptWritesRun) and TARGET_AWARE commands (judged by their destination in bashWriteReason).
+ */
+function verbMentionReason(command, ctx) {
+  const tainted = taintedByAssignment(command, ctx);
+  for (const seg of segments(tokenize(command))) {
+    const w = stripPrefix(seg.words);
+    if (!w.length || isFactory(w) || readOnlySegment(seg.words) || inlineInterpreter(seg.words)) continue;
+    const cmd = baseName(w[0]);
+    const text = seg.words.join(' ');
+    if (!(runsMention(text, ctx.home) || (tainted && /[$%]/.test(text)))) continue;
+    if (EVAL_CMDS.has(cmd)) return 'eval of command text mentioning run files';
+    if (TARGET_AWARE.has(cmd) || inPlaceEditor(cmd, w.slice(1))) continue;
+    if (WRITE_VERBS.test(text)) return 'command mentions run files together with a write-capable verb';
+  }
+  return '';
+}
+
 /**
  * Coarse checks over the whole command text, skipping `factory ...` segments and read-only commands:
- *  1. a non-read-only segment mentions a run path together with ANY write-capable verb or flag;
+ *  1. a segment mentions a run path together with a write-capable verb, unless its command is one whose
+ *     destination is analysed precisely (verbMentionReason);
  *  2. runs a script interpreter on stdin / -c / -e / a script file while the command references
  *     FACTORY_HOME or .factory, and the code writes a run file (a line with a write call that names
  *     run.json/evidence/...). Scripts that only read are allowed. A script file is inspected only inside the
@@ -386,10 +428,8 @@ function broadReason(command, ctx) {
     const w = stripPrefix(seg.words);
     return !(w.length && isFactory(w));
   });
-  const text = segs.filter((s) => !readOnlySegment(s.words) && !inlineInterpreter(s.words)).map((s) => s.words.join(' ')).join('\n');
-  if (runsMention(text, ctx.home) && WRITE_VERBS.test(text)) {
-    return 'command mentions run files together with a write-capable verb';
-  }
+  const verb = verbMentionReason(command, ctx);
+  if (verb) return verb;
   const all = segs.map((s) => s.words.join(' ')).join('\n');
   const refs = INTERP_REFS.test(all);
   const piped = /<<|\|\s*(?:python3?|py|node|deno|bun|ruby|perl)\b/i.test(command);
@@ -468,9 +508,13 @@ function bashWriteReason(command, ctxIn, depth = 0) {
   if (depth === 0) {
     const broad = broadReason(command, ctx);
     if (broad) return broad;
+  } else {
+    const verb = verbMentionReason(command, ctx);
+    if (verb) return verb;
   }
   const segs = segments(tokenize(flat));
   const mentions = textMentionsProtected(flat, ctx);
+  const tainted = taintedByAssignment(command, ctx);
   for (const seg of segs) {
     for (const target of seg.redirs) {
       if (wordProtected(target, ctx)) return `shell redirection into ${target}`;
@@ -479,15 +523,19 @@ function bashWriteReason(command, ctxIn, depth = 0) {
     if (!words.length || isFactory(words)) continue;
     const cmd = baseName(words[0]);
     const args = words.slice(1);
+    // A destination that cannot be resolved (variable, command substitution) in a segment that touches run files.
+    const segMention = tainted || textMentionsProtected(seg.words.join(' '), ctx);
+    const undecidable = (a) => segMention && (a === 'SUBST' || UNRESOLVED_VAR.test(expandVars(a)));
     if (CHDIR.has(cmd)) {
       const dir = args.find((a) => !a.startsWith('-'));
       if (dir) ctx = { ...ctx, cwd: normPath(dir, ctx.cwd) };
       continue;
     }
     if (cmd === 'xargs') {
-      const inner = args.filter((a) => !a.startsWith('-'));
-      if (inner.length && (DESTRUCTIVE.has(baseName(inner[0])) || WRITERS.has(baseName(inner[0]))
-        || COPIERS.has(baseName(inner[0]))) && mentions) return `xargs ${inner[0]} over run files`;
+      const inner = args.filter((a) => !a.startsWith('-')).map(baseName);
+      const risky = inner.find((c) => DESTRUCTIVE.has(c) || WRITERS.has(c) || COPIERS.has(c) || SHELLS.has(c)
+        || INTERPRETERS.has(c) || EVAL_CMDS.has(c) || EDITORS.has(c));
+      if (risky && mentions) return `xargs ${risky} over run files`;
       continue;
     }
     if (cmd === 'find' && args.some((a) => FIND_WRITES.test(a))) {
@@ -502,16 +550,22 @@ function bashWriteReason(command, ctxIn, depth = 0) {
       }
       continue;
     }
+    if (inPlaceEditor(cmd, args)) {
+      // sed -i / perl -i / awk -i inplace: the file operands are written in place.
+      if (args.some((a) => !a.startsWith('-') && (wordProtected(a, ctx) || undecidable(a)))) return `${cmd} -i on run files`;
+      continue;
+    }
+    if (EDITORS.has(cmd)) {
+      const hit = args.find((a) => !a.startsWith('-') && (wordProtected(a, ctx) || undecidable(a)));
+      if (hit) return `${cmd} on ${hit}`;
+      continue;
+    }
     if (INTERPRETERS.has(cmd)) {
       const i = args.findIndex((a) => a === '-c' || a === '-e' || a === '--eval' || a === '-p');
       if (i >= 0) {
         const code = args.slice(i + 1).join(' ');
         if (scriptWritesRun(code)) return `${cmd} inline code writing run files`;
       }
-      continue;
-    }
-    if ((cmd === 'sed' || cmd === 'perl') && args.some((a) => /^-[a-z]*i/i.test(a) || a.startsWith('--in-place'))) {
-      if (args.some((a) => !a.startsWith('-') && wordProtected(a, ctx))) return `${cmd} -i on run files`;
       continue;
     }
     if (cmd === 'sort') {
@@ -545,16 +599,24 @@ function bashWriteReason(command, ctxIn, depth = 0) {
       if (of && wordProtected(of.slice(3), ctx)) return 'dd into run files';
       continue;
     }
-    if (cmd === 'git' && args.some((a) => a === 'checkout' || a === 'restore' || a === 'rm' || a === 'mv')) {
-      if (args.some((a) => !a.startsWith('-') && wordProtected(a, ctx, true))) return `git ${args[0]} on run files`;
+    if (cmd === 'git') {
+      // The worktree git changes is the cwd, `-C <dir>` or a path operand: only one inside the protected tree counts.
+      const verb = args.find((a) => GIT_WRITES.has(a));
+      if (verb) {
+        const inside = (ctx.cwd && wordProtected(ctx.cwd, ctx, true))
+          || args.some((a) => !a.startsWith('-') && (wordProtected(a, ctx, true) || undecidable(a)));
+        if (inside) return `git ${verb} on run files`;
+      }
       continue;
     }
     const positional = args.filter((a) => !/^-/.test(a) && !/^\/[a-z]$/i.test(a));
     if (DESTRUCTIVE.has(cmd)) {
-      const hit = positional.find((a) => wordProtected(a, ctx, true));
+      const hit = positional.find((a) => wordProtected(a, ctx, true) || undecidable(a));
       if (hit) return `${cmd} on ${hit}`;
+      // `Get-ChildItem <run folder> | Remove-Item`: the operand arrives on the pipeline, so it cannot be seen.
+      if (!positional.length && mentions) return `${cmd} fed by a pipeline over run files`;
     } else if (WRITERS.has(cmd)) {
-      const hit = positional.find((a) => wordProtected(a, ctx));
+      const hit = positional.find((a) => wordProtected(a, ctx) || undecidable(a));
       if (hit) return `${cmd} into ${hit}`;
     } else if (COPIERS.has(cmd)) {
       const targets = [];
@@ -563,10 +625,15 @@ function bashWriteReason(command, ctxIn, depth = 0) {
         if (/^--target-directory=/.test(a)) targets.push(a.split('=')[1]);
       });
       if (positional.length > 1) targets.push(positional[positional.length - 1]);
-      const hit = targets.find((a) => wordProtected(a, ctx));
+      // `install -d dir` has a single operand that is the target; rsync may delete the source files it copies.
+      if (cmd === 'install' && positional.length === 1) targets.push(positional[0]);
+      if (cmd === 'rsync' && args.some((a) => /^--(?:remove-source-files|delete\w*)$/.test(a))) targets.push(...positional);
+      const hit = targets.find((a) => a && (wordProtected(a, ctx) || undecidable(a)));
       if (hit) return `${cmd} into ${hit}`;
-    } else if (cmd === 'robocopy' && positional[1] && wordProtected(positional[1], ctx)) {
-      return `robocopy into ${positional[1]}`;
+    } else if (cmd === 'robocopy') {
+      const moves = args.some((a) => /^\/(?:mov|move|mir|purge)$/i.test(a));
+      const hit = moves ? positional.find((a) => wordProtected(a, ctx, true)) : positional[1] && (wordProtected(positional[1], ctx) || undecidable(positional[1])) ? positional[1] : '';
+      if (hit) return `robocopy into ${hit}`;
     }
   }
   return '';

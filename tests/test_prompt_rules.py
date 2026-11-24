@@ -31,5 +31,19 @@ class ReproductionScenarioTests(unittest.TestCase):
         self.assertIn("every deviation is stated with its reason", author)
 
 
+class ProductBehaviourVsChecksTests(unittest.TestCase):
+    def test_builder_never_changes_product_behaviour_for_a_check(self):
+        text = read(AGENTS / "factory-builder.md")
+        self.assertIn("Never change product behaviour to fit a check", text)
+        for needle in ("durations", "timeouts", "retry counts", "check problem"):
+            self.assertIn(needle, text)
+
+    def test_auditor_looks_for_changed_values(self):
+        text = read(AGENTS / "factory-auditor.md")
+        self.assertIn("changed values", text)
+        for needle in ("durations, timeouts, delays", "retry counts", "whether the ticket or the root cause requires it"):
+            self.assertIn(needle, text)
+
+
 if __name__ == "__main__":
     unittest.main()

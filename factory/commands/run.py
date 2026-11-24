@@ -855,7 +855,8 @@ def cmd_rewind(args) -> int:
     key = args.phase  # the loop of the phase the rewind goes back to (build or prove)
     if decision is None:  # blocks past max_build_loops
         limit = integrity.locked_autonomy(run).get("max_build_loops", 3)
-        if loops.get(key, 0) - loops.get(key + "_approved", 0) + 1 > limit:
+        spent = sum(loops.get(k, 0) - loops.get(k + "_approved", 0) for k in ("build", "prove"))  # one budget for both
+        if spent + 1 > limit:
             _cap_block(run, f"max_build_loops ({limit}) reached by rewinds without a user decision", current)
     loops[key] = loops.get(key, 0) + 1
     if decision is not None:  # counted, but not against the cap

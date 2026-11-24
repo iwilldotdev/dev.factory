@@ -78,6 +78,24 @@ class RewindLoopTests(IntegrityCase):
         loops = core.run_load(self.rid)["loops"]
         self.assertEqual((loops.get("prove"), loops.get("prove_approved")), (1, 1))
 
+    def test_build_and_prove_rewinds_share_the_build_loop_cap(self):
+        self.reviewed()
+        run = core.run_load(self.rid)
+        run["loops"].update({"build": 2, "prove": 1})  # 3 loops spent, default max_build_loops is 3
+        core.run_save(run)
+        rc, out = cli("run", "rewind", self.rid, "prove", "again")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("max_build_loops (3)", out)
+        self.assertEqual(core.run_load(self.rid)["loops"].get("prove"), 1)
+
+    def test_approved_loops_do_not_count_toward_the_shared_cap(self):
+        self.reviewed()
+        run = core.run_load(self.rid)
+        run["loops"].update({"build": 2, "prove": 1, "prove_approved": 1})
+        core.run_save(run)
+        self.ok("run", "rewind", self.rid, "prove", "again")
+        self.assertEqual(core.run_load(self.rid)["loops"]["prove"], 2)
+
 
 if __name__ == "__main__":
     import unittest

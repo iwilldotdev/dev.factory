@@ -969,7 +969,7 @@ def event_summary(e: dict) -> str:
     if kind == "review":
         return f"{d.get('review_kind')} review round {d.get('round')}: {d.get('verdict')} ({d.get('findings')} findings)"
     if kind == "human":
-        return f"human intervention [{d.get('type') or 'other'}]: {d.get('note')}"
+        return f"human intervention{' [' + d['type'] + ']' if d.get('type') else ''}: {d.get('note')}"
     if kind == "block":
         return f"blocker #{d.get('n')} [{d.get('blocker_kind')}] {d.get('text')}"
     if kind == "phase":

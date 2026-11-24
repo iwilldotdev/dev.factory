@@ -67,12 +67,12 @@ class CommitAfterProveTests(IntegrityCase):
 
     def test_rewind_to_prove_records_loop(self):
         self.reviewed()
-        before = core.run_load(self.rid)["loops"]["build"]
+        before = core.run_load(self.rid)["loops"].get("prove", 0)
         rc, out = cli("run", "rewind", self.rid, "prove", "rebased on main")
         self.assertEqual(rc, 0, out)
         run = core.run_load(self.rid)
         self.assertEqual(run["phase"], "prove")
-        self.assertEqual(run["loops"]["build"], before + 1)
+        self.assertEqual(run["loops"]["prove"], before + 1)  # the loop of the phase it goes back to
         ev = next(e for e in reversed(run["events"]) if e["kind"] == "rewind")
         self.assertEqual((ev["data"]["from"], ev["data"]["to"], ev["data"]["reason"]), ("ship", "prove", "rebased on main"))
         self.assertEqual(cli("run", "rewind", self.rid, "prove", "again")[0], 2)  # not backwards

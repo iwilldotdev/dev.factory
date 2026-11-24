@@ -121,7 +121,7 @@ class TestIntegrationFlow(RealCase):
             "kind": "code", "recorded": "2026-01-02T00:00:00+00:00",
             "findings": [{"id": "F1", "severity": "major", "text": "x"}]})
         m = json.loads(self.ok("--json", "metrics", rid))
-        self.assertEqual(m["escaped_findings"], {"count": 1, "by_severity": {"major": 1}})
+        self.assertEqual(m["escaped_findings"], {"count": 1, "by_severity": {"major": 1}, "all_findings": 1})
 
     def test_per_target_branch_used_by_ship_plan(self):
         self.ws["ship"]["targets"] = ["main", "homolog"]

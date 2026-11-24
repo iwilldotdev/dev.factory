@@ -35,7 +35,7 @@ class ProductBehaviourVsChecksTests(unittest.TestCase):
     def test_builder_never_changes_product_behaviour_for_a_check(self):
         text = read(AGENTS / "factory-builder.md")
         self.assertIn("Never change product behaviour to fit a check", text)
-        for needle in ("durations", "timeouts", "retry counts", "check problem"):
+        for needle in ("Durations", "timeouts", "retry counts", "check problem"):
             self.assertIn(needle, text)
 
     def test_auditor_looks_for_changed_values(self):

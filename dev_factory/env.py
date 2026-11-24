@@ -53,6 +53,9 @@ def target(project, st: dict, name: str, override: Path | None = None) -> tuple[
     w = git.current(st, name) if name in st["repos"] else None
     if w and Path(w["path"]).is_dir():
         return Path(w["path"]), False
+    from . import epic  # a dependency this run does not declare comes from a sibling child of the epic [L-88]
+    if (sib := epic.sibling_tree(project, st, name)):
+        return sib, False
     return Path(repo_of(project, name)["path"]), True
 
 

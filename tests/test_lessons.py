@@ -29,7 +29,7 @@ M4_COVERED = {
 # and L-155, which stay in their first milestone.
 M5_COVERED = {"L-24", "L-60", "L-61", "L-62", "L-176", "L-183", "L-189"}
 # Lessons that M6 (hotfix mirror and the same-diff gate, epics, review runs, claims, slots) covers.
-M6_COVERED = {"L-41", "L-93", "L-95", "L-96", "L-97", "L-98", "L-99", "L-100"}
+M6_COVERED = {"L-41", "L-88", "L-91", "L-92", "L-93", "L-95", "L-96", "L-97", "L-98", "L-99", "L-100", "L-184", "L-185"}
 
 
 def rows() -> dict[str, str]:

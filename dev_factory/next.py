@@ -24,14 +24,22 @@ def _flag(project: Project) -> str:
 def phase(run: Run, project: Project, st: dict) -> str:
     if st["closed"]:
         return "closed"
+    if st["kind"] == "epic":
+        from . import epic
+        return epic.phase(project, st)
     if not gates.intake_passed(run, project.cfg, st):
         return "intake"
     if not gates.passed(run, project, st, "plan"):
         return "plan"
     if gates.is_bug(run, st) and not gates.passed(run, project, st, "reproduce"):
         return "reproduce"
+    review_run = st["kind"] == "review"  # intake, plan, verify, review, report: it ships nothing
     if not gates.passed(run, project, st, "verify"):
-        return "build"
+        return "verify" if review_run else "build"
+    if review_run:
+        from . import review_run as rr
+        heads = rv.heads_of(st, st["repos"])
+        return "review" if not rr.reviewed(st, heads) else "done" if rr.reported(st, heads) else "report"
     if not gates.passed(run, project, st, "review", chain=False):
         return "review"
     if not gates.passed(run, project, st, "ship", chain=False):
@@ -49,11 +57,15 @@ def _repeated_env_failure(st: dict) -> dict | None:
     return None
 
 
-def compute(project: Project, run: Run) -> dict:
+def compute(project: Project, run: Run, session: str | None = None) -> dict:
     st = run.state()
+    if st["kind"] == "epic" and not st["closed"]:
+        from . import epic
+        return epic.compute(project, run, session)
     flag, tid = _flag(project), st["ticket"]
-    ph = phase(run, project, st)
-    out: dict = {"run": run.id, "ticket": tid, "kind": gates.effective_kind(run, st), "phase": ph,
+    ph = shown = phase(run, project, st)
+    ph = "build" if ph == "verify" else ph  # a review run's verify phase is the build step without the building
+    out: dict = {"run": run.id, "ticket": tid, "kind": gates.effective_kind(run, st), "phase": shown,
                  "action": None, "kind_of_action": None, "command": None, "files": [], "reasons": [], "role": "orchestrator",
                  "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]], "refused": []}
     reasons = gates.reasons_for(run, project, st, {"build": "verify"}.get(ph, ph)) if ph in ("intake", "plan", "reproduce", "build") else []
@@ -97,8 +109,9 @@ def compute(project: Project, run: Run) -> dict:
             set_("the commits are verified; only the user's confirmation is missing (ask them, show what they confirm, record their own words): "
                  + "; ".join(r.split(": ", 1)[1].split(" [")[0] for r in waiting), "user", f'factory confirm {first} --user-said "<their words>"{flag}')
         elif reasons:
-            set_("build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
-                 "repo from a clean worktree, and the gate lists what is still missing", "command", f"factory verify{flag}", trees, "builder")
+            set_(("run the checks at the change head: a review run builds nothing, and its worktree is the change, detached" if shown == "verify" else
+                  "build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
+                  "repo from a clean worktree, and the gate lists what is still missing"), "command", f"factory verify{flag}", trees, "builder")
         elif (fb := feedback.open_round(st, rv.heads_of(st, planmod.load_plan(run)[0]["repos"]))):
             set_(f"feedback round {fb['round']} from the change: fix each finding in the worktree(s), commit, then run verify; review and ship "
                  "the update follow (the same changes get an update intent): " + "; ".join(f"{f['source']} {f['text']}" for f in fb["findings"][:6]),
@@ -113,6 +126,13 @@ def compute(project: Project, run: Run) -> dict:
             out["briefing"] = shipbody.briefing(ship.load(run), ship.load(run)["rows"], st)
     elif ph == "feedback":
         _feedback_action(project, run, stage, set_, flag)
+    elif ph == "report":
+        set_("write the review report: verdict ok, not-ok or incomplete, a summary, the findings and the comment to post; its intents (comment, approve, "
+             "ticket comment) are neutral and none of them runs without the user", "command", f'factory review report --file "{fwd(run.dir / "report.json")}"{flag}',
+             [run.dir / "report.json"], "reviewer")
+    elif st["kind"] == "review":
+        set_("the report is recorded (report/plan.json): tell the user the verdict and offer its intents; nothing is posted without them. "
+             "To fix the change yourself: factory review fix", "none")
     else:
         set_("the feedback gate passed: no unresolved thread and a green or waived pipeline. Tell the user what was shipped (changes, AC x evidence, "
              "follow-ups, human checks); ready and merge stay with them", "none")

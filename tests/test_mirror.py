@@ -24,11 +24,10 @@ class MirrorTests(HotfixCase):
         self.assertIn("already mirrored", self.fails("mirror", "web", "--to", "old"))
 
     def test_a_mirror_needs_the_review_gate_and_a_known_target(self):
-        self.hotfix(review=False)
-        self.assertIn("review gate has to pass", self.fails("mirror", "web", "--to", "old"))
-        self.approve_both()
-        self.ok("gate", "review")
+        self.hotfix()
         self.assertIn("no mirror target 'nope'", self.fails("mirror", "web", "--to", "nope"))
+        self.commit("notes.txt", "later" + chr(10), "chore: later")  # a new commit makes both reviews stale
+        self.assertIn("review gate has to pass", self.fails("mirror", "web", "--to", "old"))
 
     def test_a_cherry_pick_conflict_is_a_tooling_blocker_and_the_mirror_resumes_after_the_fix(self):
         self.hotfix()
@@ -54,7 +53,7 @@ class MirrorTests(HotfixCase):
     @lesson("L-100")
     def test_each_mirror_change_is_titled_with_its_own_target_ticket_key(self):
         """L-100: the ship plan holds one change per mirror, titled with that target's ticket key, not the first ticket's."""
-        self.hotfix(("old", "older"))
+        self.hotfix(("old", "older"), runtime=True)
         self.ok("mirror", "web", "--to", "old", "--ticket", "ABC-11")
         self.ok("mirror", "web", "--to", "older", "--ticket", "ABC-12")
         self.ok("ship", "plan")

@@ -110,7 +110,7 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 | `font_size_px` | number | `2` | font size tolerance |
 | `max_diff_ratio` | number | `0.10` | `visual` ceiling |
 
-## `[providers.<kind>]` (kind = `ticket`, `change`, `pipeline`, `design_frame` or `design_image`; all optional)
+## `[providers.<kind>]` (kind = `ticket`, `change`, `change_list` (the review queue; `{id}` is `queue`), `pipeline`, `design_frame` or `design_image`; all optional)
 
 | Key | Type | Default | Notes |
 |---|---|---|---|

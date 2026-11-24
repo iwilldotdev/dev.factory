@@ -71,7 +71,7 @@ Contracts live in `contracts/<kind>/<safe-id>.json`. The CLI writes them through
 
 | Field | Type | Req |
 |---|---|---|
-| `items` | list of `{id, url, repo, title, author, draft, ticket?}` | yes; `review queue` drops drafts, the user's own changes, and changes the user already approved |
+| `items` | list of `{id, url, repo, title, author, draft, ticket?, own?, approved?}`: `draft`, `own` (the user wrote it) and `approved` (the user approved it already) are computed by the adapter | yes; `review queue` drops the drafts, the own and the approved changes |
 
 ### `pipeline/1`
 
@@ -207,7 +207,7 @@ Common fields on every event:
 
 | `type` | Extra fields |
 |---|---|
-| `run_started` | `ticket`, `kind`, `repos` |
+| `run_started` | `ticket`, `kind`, `repos`, and `parent` (the epic run id) for a child run |
 | `retype` | `kind`, `previous`: the run kind changed, so `gate intake` has to pass again [L-32] |
 | `repos` | `repos`: the affected repos were (re)declared |
 | `contract` | `kind`, `id`, `path`, `source`, `raw_sha256`; `refresh: true` on a design re-acquisition, and on a `change` or `pipeline` read again after the ship gate for the feedback phase (`fetch` or `ingest` with `--refresh`) |
@@ -233,6 +233,8 @@ Common fields on every event:
 | `confirm` | `check` or `contract` (`<kind>:<id>`), `user_said`, `heads` (human checks and user-confirmed facts). A contract confirmation covers only the ingest before it. A check confirmation is followed by its `evidence` record (§6) [L-21, L-24] |
 | `waiver` | `pipeline` (an id), `user_said`: covers that pipeline only, never a newer one [L-20] |
 | `claim` | `session`, `takeover` (bool) [L-184] |
+| `epic_planned` | `children` (`ticket`, `kind`, `repos`, `depends_on`), `waves` (lists of tickets), `batch` (true for a review batch, whose children depend on nothing and end at their report) [L-185] |
+| `review_report` | `verdict` (`ok`, `not-ok` or `incomplete`), `summary`, `findings`, `heads`, `actions` (the intent names written to `report/plan.json`; none runs by itself) [L-185] |
 | `tokens` | `session`, `input`, `output` [L-183] |
 | `mirror` | `repo`, `target`, `branch`, `path`, `branch_point` (the target tip), `target_branch`, `ticket`, `commits`, `result` (`applied` or `conflict`) [L-93, L-95]. `result: accepted` adds `decision`, `files` (the divergent files the user's decision names) and `heads` (`base`, `mirror`): it covers those commits only. The mirror tree is not a `worktree` event, so the base worktree stays the run's |
 | `closed` | `reason` [L-103] |

@@ -8,7 +8,7 @@ from .util import FactoryError
 
 SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 TS = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$")
-SCHEMAS = {"ticket": "ticket/1", "change": "change/1", "pipeline": "pipeline/1", "design_frame": "design_frame/1", "design_image": "design_image/1"}
+SCHEMAS = {"ticket": "ticket/1", "change": "change/1", "change_list": "change_list/1", "pipeline": "pipeline/1", "design_frame": "design_frame/1", "design_image": "design_image/1"}
 PROOF_GRADE = ("change", "pipeline")  # must come from an adapter or a user confirmation [L-21]
 MEDIA_TYPES = ("image/", "video/", "audio/")
 MEDIA_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
@@ -30,7 +30,9 @@ CHANGE = {"id": ("s", 1), "url": ("s", 1), "repo": ("s", 1), "title": ("s", 1), 
 PIPELINE = {"id": ("s", 1), "sha": ("sha", 1), "created_at": ("ts", 1), "url": ("s", 0),
             "status": (("e", "pending", "running", "success", "failed", "canceled", "skipped"), 1),
             "jobs": (("L", {"name": ("s", 1), "status": ("s", 1), "allow_failure": ("b", 1)}), 0)}
-SPECS = {"ticket": TICKET, "change": CHANGE, "pipeline": PIPELINE}
+CHANGE_LIST = {"items": (("L", {"id": ("s", 1), "url": ("s", 1), "repo": ("s", 1), "title": ("s", 1), "author": ("s", 1), "draft": ("b", 1),
+                                "ticket": ("s", 0), "own": ("b", 0), "approved": ("b", 0)}), 1)}
+SPECS = {"ticket": TICKET, "change": CHANGE, "pipeline": PIPELINE, "change_list": CHANGE_LIST}
 
 
 def _check(value, typ, path: str, errs: list[str]) -> None:

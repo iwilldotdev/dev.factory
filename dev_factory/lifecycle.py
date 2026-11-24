@@ -38,7 +38,7 @@ def writable(project: Project, name: str | None) -> Run:
     return run
 
 
-def start(project: Project, ticket: str, kind: str | None, repos: list[str] | None, actor: str | None) -> Run:
+def start(project: Project, ticket: str, kind: str | None, repos: list[str] | None, actor: str | None, parent: str | None = None) -> Run:
     if kind is not None and kind not in KINDS:
         raise FactoryError(f"invalid kind {kind!r}; valid kinds: {', '.join(KINDS)}")
     rid = safe_id(ticket)
@@ -53,8 +53,26 @@ def start(project: Project, ticket: str, kind: str | None, repos: list[str] | No
     unknown = [r for r in repos if r not in names]
     if unknown:
         raise FactoryError(f"unknown repo {', '.join(unknown)} (repos: {', '.join(names)})")
-    run.append({"type": "run_started", "ticket": ticket, "kind": kind, "repos": repos}, actor)
+    run.append({"type": "run_started", "ticket": ticket, "kind": kind, "repos": repos, **({"parent": parent} if parent else {})}, actor)
     return run
+
+
+def claim(run: Run, session: str, takeover: bool, actor: str | None) -> dict:
+    """Record the session that works on a run; another session needs `takeover` [L-184]."""
+    def build(evs):
+        owner = derive(evs)["owner"]
+        if owner and owner != session and not takeover:
+            raise FactoryError(f"run {run.id} is claimed by session {owner!r}: use another run, or take it over with --takeover [L-184]")
+        return None if owner == session else {"type": "claim", "session": session, "takeover": bool(owner)}
+    return run.append(build, actor)
+
+
+def guard(run: Run, session: str | None, takeover: bool, actor: str | None) -> None:
+    """`next` from a session other than the owner refuses unless it takes the run over [L-184]."""
+    if (owner := run.state()["owner"]) and owner != (session or ""):
+        if not (takeover and session):
+            raise FactoryError(f"run {run.id} is claimed by session {owner!r}; pass --session <yours> --takeover to take it over [L-184]")
+        claim(run, session, True, actor)
 
 
 def retype(run: Run, kind: str, actor: str | None) -> dict:
@@ -96,7 +114,7 @@ def delete(run: Run, confirmed: bool) -> list[str]:
     return trees
 
 
-def branch(project: Project, run: Run, names: list[str] | None, actor: str | None) -> list[dict]:
+def branch(project: Project, run: Run, names: list[str] | None, actor: str | None, from_run: str | None = None) -> list[dict]:
     """Create the run worktree of each repo (default: the declared repos); a repo that already has a good one is left alone."""
     st = run.state()
     if not gates.intake_passed(run, project.cfg, st):
@@ -106,13 +124,19 @@ def branch(project: Project, run: Run, names: list[str] | None, actor: str | Non
     unknown = [n for n in names if n not in by_name]
     if unknown:
         raise FactoryError(f"unknown repo {', '.join(unknown)} (repos: {', '.join(by_name)})")
-    title = acquire.load(run, "ticket", st["ticket"])[0]["data"]["title"]
+    kind = gates.effective_kind(run, st) or "feature"
+    title = acquire.load(run, "ticket", st["ticket"])[0]["data"]["title"] if kind != "review" else ""
     out = []
     for n in names:
         have = git.current(st, n)
         if have and Path(have["path"]).is_dir() and have.get("setup") != "fail":
             continue
-        out.append(git.add_worktree(project, run, by_name[n], gates.effective_kind(run, st) or "feature", title, actor))
+        if kind == "review":
+            from . import review_run
+            out.append(review_run.add_worktree(project, run, by_name[n], actor))
+            continue
+        from . import epic  # a stacked branch starts at its dependency's head [L-91, L-92]
+        out.append(git.add_worktree(project, run, by_name[n], kind, title, actor, epic.base_ref(project, run, st, n, from_run)))
     return out
 
 

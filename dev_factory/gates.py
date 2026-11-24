@@ -11,7 +11,7 @@ from .util import FactoryError, fwd, sha256_file
 
 # Run kind -> the ticket `type` it requires; epic and review runs do not derive from a single ticket type.
 KIND_TYPE = {"feature": "feature", "bug": "bug", "hotfix": "bug"}
-NAMES = ("intake", "plan", "reproduce", "verify", "review", "ship", "feedback")
+NAMES = ("intake", "plan", "reproduce", "verify", "review", "ship", "feedback", "report")
 SECTIONS = ("Root cause", "Evidence", "Ruled out")
 
 
@@ -29,6 +29,9 @@ def is_bug(run: Run, st: dict) -> bool:
 
 def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
     """Every reason `gate intake` would fail now (empty when it would pass)."""
+    if st["kind"] == "review":
+        from . import review_run
+        return review_run.intake_reasons(run, cfg, st)
     out: list[str] = []
     env, problems = acquire.load(run, "ticket", st["ticket"])
     out += problems
@@ -215,6 +218,9 @@ def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> 
         return plan_reasons(run, project, st) if intake_passed(run, project.cfg, st) else ["gate intake has not passed"]
     if name == "reproduce":
         return sum(reproduce_reasons(run, project, st, strict), [])
+    if name == "report":
+        from . import review_run
+        return review_run.report_reasons(run, project, st)
     out = verify_reasons(run, project, st)
     return out if name == "verify" or out else extra_reasons(run, project, st, name)
 

@@ -8,7 +8,7 @@ from collections import namedtuple
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 REPO_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 SECRET_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
-KINDS = ("ticket", "change", "pipeline", "design_frame", "design_image")
+KINDS = ("ticket", "change", "change_list", "pipeline", "design_frame", "design_image")
 
 # A leaf is a type (str, or a tuple starting with e/r/nr) or T(type, default). Types: s str, c non-empty str,
 # i int, n number, b bool, ls list[str], lc list of non-empty str, ms str->str table, re regex, re+ list of

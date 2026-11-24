@@ -86,6 +86,9 @@ def cmd_status(args) -> int:
         _out(args, rows, _rows(rows) + ("\npass a run id to see one" if rows else "\nstart one with: factory run start <ticket-id>"))
         return 0
     s = lifecycle.status(proj, _run(args, proj, writable=False))
+    if s["kind"] == "epic":
+        from . import epic
+        s["children"] = epic.children(proj, proj.run(s["run"]).state(), True)
     text = [f"run {s['run']}: ticket {s['ticket']} kind {s['kind']} phase {s['phase']}" + (f" (closed: {s['closed']})" if s["closed"] else ""),
             f"repos: {', '.join(s['repos']) or 'none declared'}", f"events: {s['events']}  updated {s['updated']}",
             f"gates: {', '.join(f'{k}={v}' for k, v in s['gates'].items()) or 'none run'}",
@@ -93,7 +96,7 @@ def cmd_status(args) -> int:
     for key in ("open_questions", "open_blockers", "unconsumed_decisions"):
         if s[key]:
             text.append(f"{key.replace('_', ' ')}: {', '.join(s[key])}")
-    _out(args, s, "\n".join(text + s["problems"]))
+    _out(args, s, "\n".join(text + s["problems"] + ([epic.render(s["children"])] if s["kind"] == "epic" else [])))
     return 0
 
 
@@ -113,9 +116,13 @@ def cmd_log(args) -> int:
 
 
 def cmd_next(args) -> int:
-    from . import next as nxt
+    from . import lifecycle, next as nxt
     proj = _project(args)
-    n = nxt.compute(proj, _run(args, proj, writable=False))
+    run = _run(args, proj, writable=False)
+    session = args.session or os.environ.get("FACTORY_SESSION")
+    if not run.state()["closed"]:
+        lifecycle.guard(run, session, args.takeover, args.actor)
+    n = nxt.compute(proj, run, session)
     text = [f"run {n['run']} (kind {n['kind'] or 'not set'}): phase {n['phase']}", f"action: {n['action']}"]
     if n["command"]:
         text.append(f"command: {n['command']}")
@@ -128,6 +135,7 @@ def cmd_next(args) -> int:
     if n.get("decisions_note"):
         text.append(n["decisions_note"])
     text += [f"do not run: {c}" for c in n["refused"]]
+    text += [f"child {c['run']} ({c['phase']}){' ready' if c['ready'] else ''}" for c in n.get("children", [])]
     _out(args, n, "\n".join(text))
     return 0
 
@@ -145,7 +153,7 @@ def cmd_run(args) -> int:
         lifecycle.set_repos(proj, _run(args, proj), args.names.split(","), args.actor)
         print(f"affected repos: {args.names}")
     elif args.sub == "branch":
-        evs = lifecycle.branch(proj, _run(args, proj), args.repos.split(",") if args.repos else None, args.actor)
+        evs = lifecycle.branch(proj, _run(args, proj), args.repos.split(",") if args.repos else None, args.actor, args.from_run)
         text = [f"worktree {e['repo']}: {e['path']} (branch {e['branch']}, branch point {e['branch_point'][:7]}, setup {e['setup']})" for e in evs]
         _out(args, evs, "\n".join(text) or "every repo already has its worktree")
         bad = [e for e in evs if e["setup"] == "fail"]
@@ -279,6 +287,9 @@ def cmd_review(args) -> int:
     if args.sub == "example":
         print(json.dumps(review.EXAMPLE, indent=2))
         return 0
+    if args.sub != "record":
+        from .cli_composite import cmd_review_run
+        return cmd_review_run(args)
     proj = _project(args)
     ev = review.record(_run(args, proj), proj, args.kind, review.load_file(Path(args.file)), args.decision, args.actor)
     _out(args, ev, f"recorded {ev['kind']} review round {ev['round']}: {ev['verdict']} ({len(ev['findings'])} finding(s)) bound to "

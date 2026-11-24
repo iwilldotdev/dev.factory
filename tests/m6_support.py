@@ -34,12 +34,12 @@ class HotfixCase(M4Case, ShipCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def hotfix(self, targets: tuple[str, ...] = ("old",), runtime: bool = False, review: bool = True) -> Path:
+    def hotfix(self, targets: tuple[str, ...] = ("old",), runtime: bool = False) -> Path:
         self.run_dir = self.proj / ".factory" / "runs" / "ABC-1"
-        self.cached("hotfix", lambda: self._hotfix(targets, runtime, review), targets, runtime, review)
+        self.cached("hotfix", lambda: self._hotfix(targets, runtime), targets, runtime)
         return self.run_dir
 
-    def _hotfix(self, targets, runtime: bool, review: bool) -> None:
+    def _hotfix(self, targets, runtime: bool) -> None:
         self.configure(repo_extra="".join(f'\n[[repo.mirror]]\nname = "{t}"\nbranch = "rel-{t}"\n' for t in targets))
         for t in targets:
             git("branch", f"rel-{t}", cwd=self.proj)
@@ -61,9 +61,8 @@ class HotfixCase(M4Case, ShipCase):
         self.fix()
         self.ok("verify", "--actor", "builder-1")
         self.ok("gate", "verify")
-        if review:
-            self.approve_both()
-            self.ok("gate", "review")
+        self.approve_both()
+        self.ok("gate", "review")
 
     def mirror_event(self, target: str = "old") -> dict:
         return [e for e in self.events(self.run_dir) if e["type"] == "mirror" and e["target"] == target][-1]

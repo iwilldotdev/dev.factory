@@ -10,7 +10,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
     from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics
-    from .cli_composite import cmd_mirror
+    from .cli_composite import cmd_claim, cmd_epic, cmd_mirror, cmd_review_run
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
@@ -44,8 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("log", cmd_log, "events of a run", [scoped])
     sp.add_argument("run_id", nargs="?")
     sp.add_argument("--tail", type=int, metavar="N")
-    sp = add("next", cmd_next, "print the next required action", [scoped])
+    sp = add("next", cmd_next, "print the next required action (of an epic: the ready children)", [scoped])
     sp.add_argument("run_id", nargs="?")
+    sp.add_argument("--session", help="your session hint: a run claimed by another session refuses")
+    sp.add_argument("--takeover", action="store_true", help="take over a run claimed by another session")
+    sp = add("claim", cmd_claim, "record the session that works on a run", [scoped])
+    sp.add_argument("run_id", nargs="?")
+    sp.add_argument("--session", help="your session hint (default: $FACTORY_SESSION)")
+    sp.add_argument("--takeover", action="store_true", help="take over a run claimed by another session")
 
     rp = sub.add_parser("run", help="start, retype, close or delete a run").add_subparsers(dest="sub", required=True)
     for name, helptext in (("start", "open a run for a ticket"), ("retype", "change the run kind"), ("repos", "declare affected repos"),
@@ -62,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
             sp.add_argument("names", help="comma separated repo names")
         elif name == "branch":
             sp.add_argument("--repos", help="repos to branch (default: the declared repos)")
+            sp.add_argument("--from-run", metavar="RUN", help="start the branch at the head of this run's worktree (a stacked branch)")
         elif name == "close":
             sp.add_argument("--reason", required=True)
         else:
@@ -139,6 +146,19 @@ def build_parser() -> argparse.ArgumentParser:
     rv = sub.add_parser("review", help="record a review, or print an example").add_subparsers(dest="sub", required=True)
     sp = rv.add_parser("example", parents=[common])
     sp.set_defaults(func=cmd_review)
+    sp = rv.add_parser("queue", parents=[common], help="changes waiting for the user's review")
+    sp.set_defaults(func=cmd_review_run)
+    sp.add_argument("--file", metavar="FILE", help="the change_list data as JSON, instead of the adapter")
+    sp = rv.add_parser("start", parents=[common], help="start a review run per change (a parent for several)")
+    sp.set_defaults(func=cmd_review_run)
+    sp.add_argument("changes", nargs="+", metavar="CHANGE")
+    sp.add_argument("--repo")
+    sp.add_argument("--ticket", help="the linked ticket key (default: review-<change id>)")
+    sp = rv.add_parser("report", parents=[scoped], help="record the verdict and the neutral intents of a review run")
+    sp.set_defaults(func=cmd_review_run)
+    sp.add_argument("--file", required=True, metavar="FILE", help="verdict (ok, not-ok, incomplete), summary, findings, comment_md")
+    sp = rv.add_parser("fix", parents=[scoped], help="turn the review run into a ticket run on the change branch")
+    sp.set_defaults(func=cmd_review_run)
     sp = rv.add_parser("record", parents=[scoped])
     sp.set_defaults(func=cmd_review)
     sp.add_argument("--kind", required=True, help="code (bound to the plan without checks) or qa (bound to the full plan)")
@@ -154,6 +174,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pipeline", action="store_true", help="also plan a pipeline readback (always planned with require_pipeline)")
     sp = sh.add_parser("verify", parents=[scoped])
     sp.set_defaults(func=cmd_ship)
+    ep_ = sub.add_parser("epic", help="plan an epic, list its ready children, plan its ship").add_subparsers(dest="sub", required=True)
+    for name in ("plan", "status", "ship"):
+        sp = ep_.add_parser(name, parents=[scoped])
+        sp.set_defaults(func=cmd_epic)
+        if name == "ship":
+            sp.add_argument("ship", choices=("plan", "verify"))
     sp = add("confirm", cmd_confirm, "record the user's confirmation of a human check or of an agent-written change or pipeline contract", [scoped])
     sp.add_argument("target", help="a human check id (CHK-3) or <kind>:<id>, e.g. change:42")
     sp.add_argument("--user-said", required=True)

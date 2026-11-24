@@ -18,10 +18,20 @@ SERVER = (HERE / "fake_server.py").as_posix()
 RUNNER = (HERE / "fake_runner.py").as_posix()
 
 
+_NEXT = [20000 + (os.getpid() * 7919) % 30000]
+
+
 def free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """A free port from a window chosen by the process id, so test modules that run at the same time never draw the same port."""
+    for _ in range(300):
+        port, _NEXT[0] = _NEXT[0], 20000 + (_NEXT[0] - 20000 + 1) % 30000
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise OSError("no free port found")
 
 
 _PORTS: dict[str, int] = {}

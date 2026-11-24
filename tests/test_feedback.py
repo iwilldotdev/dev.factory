@@ -174,6 +174,31 @@ class BudgetTests(FeedbackCase):
         self.assertEqual(json.loads(self.ok("metrics", "--json"))["escaped_findings"], 1)
 
 
+class DismissTests(FeedbackCase):
+    def test_a_thread_is_dismissed_only_by_a_recorded_user_decision_and_then_stops_counting(self):
+        self.shipped()
+        self.refresh(threads=[T1], pipe=self.pipeline())
+        self.ok("feedback", "--no-fetch")
+        self.assertIn("needs --decision", self.fails("feedback", "--dismiss", "F1"))
+        self.assertIn("not recorded", self.fails("feedback", "--dismiss", "F1", "--decision", "D-1"))
+        self.ok("decide", "--user-said", "the reviewer's remark is a preference, leave it")
+        self.assertIn("not a thread finding", self.fails("feedback", "--dismiss", "job:P9/lint", "--decision", "D-1"))
+        self.assertEqual(self.nxt()["phase"], "build")
+        self.ok("feedback", "--dismiss", "F1", "--decision", "D-1")
+        self.assertEqual([(e["source"], e["decision"]) for e in self.events(self.run_dir) if e["type"] == "dismiss"], [("thread:T1", "D-1")])
+        self.assertIn("already consumed", self.fails("feedback", "--dismiss", "thread:T1", "--decision", "D-1"))
+        self.assertEqual(self.feedback_gate()[0], 0)
+        self.assertEqual(self.nxt()["phase"], "done")
+
+    def test_ignore_authors_skips_those_threads_and_by_default_every_unresolved_thread_counts(self):
+        self.shipped("\n[feedback]\nignore_authors = ['ana']\n")
+        self.refresh(threads=[T1, {**T1, "id": "T3", "author": "bo"}], pipe=self.pipeline())
+        self.assertIn("thread:T3 is unresolved", self.feedback_gate()[1])
+        self.assertNotIn("thread:T1", self.feedback_gate()[1])
+        self.ok("feedback", "--no-fetch")
+        self.assertEqual([f["source"] for f in self.rounds()[0]["findings"]], ["thread:T3"])
+
+
 class AdapterTests(FeedbackCase):
     def test_the_configured_adapter_refreshes_the_change_so_feedback_needs_no_ingest_or_confirmation(self):
         template = adapter_scenario(self, stdout="{}")

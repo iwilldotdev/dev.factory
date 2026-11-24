@@ -64,6 +64,10 @@ def cmd_metrics(args) -> int:
 def cmd_feedback(args) -> int:
     from . import cli, feedback
     proj = cli._project(args)
+    if args.dismiss:
+        ev = feedback.dismiss(cli._run(args, proj), args.dismiss, args.decision, args.actor)
+        print(f"dismissed {ev['source']} on the user's decision {ev['decision']}")
+        return 0
     res = feedback.ingest(cli._run(args, proj), proj, args.decision, not args.no_fetch, args.actor)
     cli._out(args, res, feedback.render(res))
     return 0

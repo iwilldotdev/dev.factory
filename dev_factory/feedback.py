@@ -38,7 +38,12 @@ def newest_pipeline(run: Run, st: dict, listed: str | None, head: str) -> dict |
     return ours[-1] if ours else None
 
 
-def findings(run: Run, st: dict, heads: dict[str, str]) -> list[dict]:
+def counts(st: dict, cfg: dict, thread: dict) -> bool:
+    """An unresolved thread counts unless the user dismissed it or its author is in `[feedback] ignore_authors` (empty by default) [L-20]."""
+    return not thread["resolved"] and thread["author"] not in cfg["feedback"]["ignore_authors"] and f"thread:{thread['id']}" not in {d["source"] for d in st["dismissals"]}
+
+
+def findings(run: Run, st: dict, heads: dict[str, str], cfg: dict) -> list[dict]:
     """One finding per unresolved thread (`thread:<id>`) and per failed job of the newest pipeline (`job:<pipeline>/<name>`) [L-20]."""
     out = []
     for repo, head in heads.items():
@@ -47,7 +52,7 @@ def findings(run: Run, st: dict, heads: dict[str, str]) -> list[dict]:
             continue
         d = got[1]["data"]
         for t in d.get("threads", []):
-            if not t["resolved"]:
+            if counts(st, cfg, t):
                 loc = t.get("file", "") + (f":{t['line']}" if t.get("file") and t.get("line") else "")
                 out.append({"severity": "major", "file": loc, "text": _excerpt(f"{t['author']}: {t['body_md'].strip()}", 600), "repo": repo,
                             "source": f"thread:{t['id']}"})
@@ -68,9 +73,9 @@ def seen(st: dict, heads: dict) -> set[str]:
 
 
 def open_round(st: dict, heads: dict) -> dict | None:
-    """The latest feedback round while its findings wait for a fix: same commits, and nothing read back since."""
-    rounds = [e for e in st["reviews"] if e.get("kind") == "feedback"]
-    if not rounds or rounds[-1]["repos"] != heads or not any(f["severity"] in BLOCKING for f in rounds[-1]["findings"]):
+    """The latest feedback round while its findings wait for a fix: same commits, and nothing read back since. A dismissed thread waits for nothing."""
+    rounds, gone = [e for e in st["reviews"] if e.get("kind") == "feedback"], {d["source"] for d in st["dismissals"]}
+    if not rounds or rounds[-1]["repos"] != heads or not any(f["severity"] in BLOCKING and f["source"] not in gone for f in rounds[-1]["findings"]):
         return None
     late = any(ev["kind"] in ("change", "pipeline") and ev["at"] > rounds[-1]["at"] for ev in st["contracts"].values())
     return None if late else rounds[-1]
@@ -98,7 +103,7 @@ def reasons(run: Run, project, st: dict) -> list[str]:
         if d["head_sha"] != head:
             out.append(f"{repo}: the change is at {d['head_sha'][:7]}, the shipped commit is {head[:7]}: push the branch, read the change back again, or plan an update")
         out += [f"{repo}: thread:{t['id']} is unresolved ({_excerpt(t['author'] + ': ' + t['body_md'])}): fix it, reply and resolve it, then read the change back [L-20]"
-                for t in d.get("threads", []) if not t["resolved"]]
+                for t in d.get("threads", []) if counts(st, project.cfg, t)]
         listed = (d.get("pipelines") or [None])[0]
         if listed or project.cfg["ship"]["require_pipeline"]:
             out += ship.pipeline_reasons(run, st, repo, head, listed)
@@ -117,7 +122,7 @@ def stage(run: Run, project, st: dict) -> tuple[str, list[str]]:
     sp = ship.load(run)
     if any("was not read back" in w for w in why):
         return "refresh", why
-    if [f for f in findings(run, st, sp["heads"]) if f["source"] not in seen(st, sp["heads"])]:
+    if [f for f in findings(run, st, sp["heads"], project.cfg) if f["source"] not in seen(st, sp["heads"])]:
         return "ingest", why
     return "wait", why
 
@@ -150,7 +155,7 @@ def ingest(run: Run, project, decision: str | None, fetch: bool, actor: str | No
     refreshed_now = _refresh(run, project, st, sp) if fetch else []
     st = run.state()
     heads = sp["heads"]
-    live = findings(run, st, heads)
+    live = findings(run, st, heads, project.cfg)
     fresh = [f for f in live if f["source"] not in seen(st, heads)]
     if not fresh:
         return {"round": None, "findings": [], "refreshed": refreshed_now, "unresolved": len(live)}
@@ -165,6 +170,20 @@ def ingest(run: Run, project, decision: str | None, fetch: bool, actor: str | No
     rec["hash"] = sha256_bytes(canonical(rec).encode("utf-8"))
     run.append(rec, actor)
     return {"round": rn, "findings": rec["findings"], "refreshed": refreshed_now, "unresolved": len(live)}
+
+
+def dismiss(run: Run, finding: str, decision: str | None, actor: str | None) -> dict:
+    """The user decided that one review thread needs no change: it stops counting. Only a recorded decision does it, and only for a thread;
+    a red pipeline is waived with its own command [L-20, L-126]."""
+    st = run.state()
+    if decision is None:
+        raise FactoryError("--dismiss needs --decision <Q-n|D-n>: the user's recorded decision that this finding needs no change")
+    lock.check_decision(st, decision)
+    known = [f for e in st["reviews"] if e.get("kind") == "feedback" for f in e["findings"]]
+    hit = next((f for f in reversed(known) if finding in (f["id"], f["source"])), None)
+    if hit is None or not hit["source"].startswith("thread:"):
+        raise FactoryError(f"{finding!r} is not a thread finding of a feedback round (a failed job or pipeline is waived: factory waive pipeline:<id>)")
+    return run.append({"type": "dismiss", "source": hit["source"], "finding": hit["id"], "decision": decision, "user_said": st["decisions"][decision]["user_said"]}, actor)
 
 
 def render(res: dict) -> str:

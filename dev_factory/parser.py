@@ -137,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("feedback", cmd_feedback, "turn unresolved change threads and failed pipeline jobs into findings", [scoped])
     sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this feedback round from the loop budget, once")
     sp.add_argument("--no-fetch", action="store_true", help="read the contracts already ingested; do not call the adapters")
+    sp.add_argument("--dismiss", metavar="FINDING", help="a thread finding (F1 or thread:<id>) the user decided needs no change; needs --decision")
     sp = add("metrics", cmd_metrics, "time per phase, loops, blocked hours and gate failures of a run", [scoped])
     sp.add_argument("run_id", nargs="?")
     sp.add_argument("--all", action="store_true", help="aggregate every run of the project")

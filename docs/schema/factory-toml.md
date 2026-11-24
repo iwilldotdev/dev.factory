@@ -142,6 +142,12 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 |---|---|---|---|
 | `max_parallel` | int | `1` | ready epic or review children that `next <parent>` hands out at once [L-184] |
 
+## `[feedback]`
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `ignore_authors` | list of SCM usernames | `[]` | unresolved threads by these authors never become findings or gate reasons. Empty by default: every unresolved thread counts [L-20] |
+
 ## `[metrics]`
 
 | Key | Type | Default | Notes |

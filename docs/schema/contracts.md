@@ -233,6 +233,7 @@ Common fields on every event:
 | `confirm` | `check` or `contract` (`<kind>:<id>`), `user_said`, `heads` (human checks and user-confirmed facts). A contract confirmation covers only the ingest before it. A check confirmation is followed by its `evidence` record (§6) [L-21, L-24] |
 | `waiver` | `pipeline` (an id), `user_said`: covers that pipeline only, never a newer one [L-20] |
 | `claim` | `session`, `takeover` (bool) [L-184] |
+| `dismiss` | `source` (`thread:<id>`), `finding`, `decision` (consumed), `user_said`: the user decided the thread needs no change, so it no longer counts [L-20, L-126] |
 | `epic_planned` | `children` (`ticket`, `kind`, `repos`, `depends_on`), `waves` (lists of tickets), `batch` (true for a review batch, whose children depend on nothing and end at their report) [L-185] |
 | `review_report` | `verdict` (`ok`, `not-ok` or `incomplete`), `summary`, `findings`, `heads`, `actions` (the intent names written to `report/plan.json`; none runs by itself) [L-185] |
 | `tokens` | `session`, `input`, `output` [L-183] |

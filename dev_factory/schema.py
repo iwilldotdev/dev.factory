@@ -38,6 +38,7 @@ SPEC = {
              "reviewers": [{"scm": "c", "tracker": "c"}], "require_pipeline": T("b", False)},
     "autonomy": {"max_loops": T(("r", 0, 10), 3), "ship": T(("e", "ask", "draft-auto"), "ask")},
     "orchestration": {"max_parallel": T("i", 1)},
+    "feedback": {"ignore_authors": T("ls", [])},
     "metrics": {"tokens": "c", "idle_minutes": T("i", 30)},
     "hotfix": {"targets": [{"name": "c", "branch": "c"}]},
     "secrets": {"keys": T("key", [])},

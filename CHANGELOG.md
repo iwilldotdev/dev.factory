@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix: a metrics refresh (`run close`, final gates) on a run with no registered session keeps the token fields of the existing `metrics.json` and sets `tokens_note`. Found by the independent review of the intake-skill-metrics branch (`t2.py`): the refresh overwrote real token numbers with nothing. Test: `tests/test_metrics_timing.py`.
 - fix: ticket media detection and manifest files. Found by the independent review of the intake-skill-metrics branch (`probe_media.py`): `Image/PNG` and `application/octet-stream` attachments were skipped, `manifest.json` could be an entry's file and two entries could share one file. Test: `tests/test_media_intake.py`.
 - fix: `seen: false` media needs a question blocker (answered or open) whose text contains `attachment:<id>` (name only without id). Found by the independent review of the intake-skill-metrics branch (`probe_media.py`): any resolved question that contained the filename passed. Test: `tests/test_media_intake.py`.
 - fix: ticket media is matched by attachment id and saved as `<id>-<name>`. Found by the independent review of the intake-skill-metrics branch (`probe_media.py`): two attachments with the same filename shared one manifest entry and one save path. Test: `tests/test_media_intake.py`.

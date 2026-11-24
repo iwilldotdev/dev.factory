@@ -84,5 +84,25 @@ class TimingMetricsTests(FactoryCase):
         self.assertEqual(batch.last_prove(run), "final 54/0/0 31m")
 
 
+class KeptTokensTests(FactoryCase):
+    TOK = {"main": {"output": 7}, "subagents": {"output": 3}, "total": {"output": 10}}
+
+    def test_refresh_without_a_session_keeps_the_token_numbers(self):
+        self.make_run("ws-dev-1", sessions=[])
+        self.write("runs/ws-dev-1/metrics.json", {"schemaVersion": 1, "run": "ws-dev-1", "tokens": self.TOK})
+        m = metrics.compute("ws-dev-1")
+        self.assertEqual(m["tokens"], self.TOK)
+        self.assertEqual(m["tokens_note"], metrics.TOKENS_KEPT_NOTE)
+        from factory.core import run_dir
+        self.assertEqual(json.loads((run_dir("ws-dev-1") / "metrics.json").read_text(encoding="utf-8"))["tokens"], self.TOK)
+        self.assertEqual(metrics._out_tokens(m), 10)
+
+    def test_without_previous_numbers_nothing_is_invented(self):
+        self.make_run("ws-dev-1", sessions=[])
+        m = metrics.compute("ws-dev-1")
+        self.assertNotIn("tokens_note", m)
+        self.assertFalse(any((m["tokens"] or {}).get("total", {}).values()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -336,6 +336,24 @@ def _parent_attribution(run: dict) -> tuple[dict | None, str | None, list[str]]:
     return None, f"shared with parent {pid}", []
 
 
+TOKENS_KEPT_NOTE = "kept from the previous report: no session is registered on the run now"
+
+
+def _kept_tokens(run: dict, rd: Path) -> dict | None:
+    """A run with no registered session cannot recompute tokens; a report that already holds token numbers keeps them
+    (a refresh at `done` or `close` must not wipe them)."""
+    if [s for s in run.get("sessions") or [] if (s.get("session") if isinstance(s, dict) else s)]:
+        return None
+    try:
+        old = read_json(rd / "metrics.json")
+    except Exception:
+        return None
+    tok = old.get("tokens") if isinstance(old, dict) else None
+    if isinstance(tok, dict) and any((tok.get("total") or {}).values()):
+        return tok
+    return None
+
+
 def compute(run_id: str) -> dict:
     run = run_load(run_id)
     rd = run_dir(run_id)
@@ -392,6 +410,9 @@ def compute(run_id: str) -> dict:
             tokens_block = {"main": attributed, "subagents": {}, "total": attributed}
             tokens_note = f"attributed from parent {run['parent']} transcripts"
             transcripts = [Path(u) for u in used]
+    kept = _kept_tokens(run, rd) if not transcripts and not tokens_block else None
+    if kept:
+        tokens_block, tokens_note = kept, TOKENS_KEPT_NOTE
     total = Counter()
     total.update(tokens)
     total.update(sub_tokens)

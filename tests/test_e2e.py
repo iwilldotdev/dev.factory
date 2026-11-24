@@ -113,7 +113,7 @@ class FeatureTests(E2E):
         self.assertEqual((n["phase"], n["kind_of_action"]), ("done", "none"))
         self.assertIn("phase done", self.ok("status"))
         m = json.loads(self.ok("metrics", "--json"))
-        self.assertEqual(m["loops"], {"amend": 0, "review": 1, "exempt": 0})
+        self.assertEqual(m["loops"], {"amend": 0, "review": 1, "feedback": 0, "exempt": 0})
         self.assertTrue({"build", "review", "ship"} <= set(m["phases_s"]))
 
     def test_a_run_without_a_changes_round_takes_the_shortest_path(self):

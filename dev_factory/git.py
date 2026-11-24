@@ -258,3 +258,8 @@ def commit_problems(path: Path, bp: str, base: str, pattern: str | None, forbidd
                 problems.append(f"{sha[:7]}: carries the forbidden trailer {key}")
     return problems
 
+
+def changed_files(path: Path, bp: str) -> list[str]:
+    """Files added, copied, modified or renamed in `branch_point..HEAD` that still exist: what a scoped quality run scans [L-60]."""
+    out = git(path, "diff", "--name-only", "--diff-filter=ACMR", bp, "HEAD").out
+    return sorted(ln for ln in out.splitlines() if ln.strip())

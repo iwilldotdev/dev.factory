@@ -5,19 +5,20 @@ import json
 import re
 from pathlib import Path
 
-from . import git, lock, plan as planmod
+from . import git, lock, plan as planmod, quality
 from .run import Run
 from .util import FactoryError, canonical, sha256_bytes
 
 BOUND = {"code": "core_hash", "qa": "plan_hash"}  # a code review survives a checks-only amend [L-137]
 SEVERITIES, VERDICTS, CAP = ("blocker", "major", "minor"), ("APPROVE", "CHANGES"), 20
 HEX = re.compile(r"^[0-9a-fA-F]{7,64}$")
-KEYS = {"verdict", "reviewer", "repos", "findings", "resolved", "completeness", "exercises", "changed_values"}
+KEYS = {"verdict", "reviewer", "repos", "findings", "resolved", "completeness", "exercises", "changed_values", "guidelines"}
 EXAMPLE = {"verdict": "APPROVE", "reviewer": "fresh-reviewer-1", "repos": {"web": "3f9c2ab"},
            "findings": [{"id": "F1", "severity": "minor", "file": "src/app.py:42", "text": "name the constant", "ac": "AC-1"}],
            "resolved": ["1:F2"], "completeness": {"done": 5, "gap": 0, "not_checked": 0},
            "exercises": [{"ac": "AC-1", "exercises": True, "note": "CHK-1 asserts the exact value"}],
-           "changed_values": [{"file": "src/ui/toast.ts:12", "what": "duration 5s -> 20s", "why": "the ticket asks for it"}]}
+           "changed_values": [{"file": "src/ui/toast.ts:12", "what": "duration 5s -> 20s", "why": "the ticket asks for it"}],
+           "guidelines": [{"id": "web:no-raw-sql", "followed": True, "note": "queries go through the repository layer"}]}
 REPOS_HINT = 'repos must be an object of repo name to commit id (7 or more hex characters), e.g. {"web": "3f9c2ab"}'
 
 
@@ -29,8 +30,9 @@ def _strs(obj, keys: tuple[str, ...], where: str, errs: list[str]) -> None:
     errs += [f"{where}.{k}: must be a non-empty string" for k in keys if not (isinstance(obj.get(k), str) and obj[k].strip())]
 
 
-def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict]) -> tuple[dict, list[str]]:
-    """The normalized review input and every problem with it [L-22, L-23, L-39, L-107, L-147]."""
+def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict], rules: tuple[str, ...] = ()) -> tuple[dict, list[str]]:
+    """The normalized review input and every problem with it [L-22, L-23, L-39, L-107, L-147]. `rules` are the guideline ids the
+    code review has to cite, each with whether the diff follows it."""
     if not isinstance(data, dict):
         return {}, ["the review file must be a JSON object (factory review example prints one)"]
     errs = [f"unknown key {k!r}" for k in sorted(set(data) - KEYS)]
@@ -75,8 +77,13 @@ def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict]) -> tu
                                                and set(c) == {"file", "what", "why"} for c in cv):
             errs.append("changed_values: a code review lists every duration, timeout, retry, flag or copy value changed in the diff as "
                         '{"file", "what", "why"}; an explicit [] says none [L-39]')
+    gl = data.get("guidelines")
+    if (kind == "code" and rules) or gl is not None:
+        errs += _guidelines(gl, rules, kind == "code")
     sev = [f.get("severity") for f in findings]
     if data.get("verdict") == "APPROVE":
+        if isinstance(gl, list) and any(isinstance(g, dict) and g.get("followed") is False for g in gl):
+            errs.append("APPROVE with a guideline that the diff does not follow is refused: list it as a finding")
         if comp["gap"] or comp["not_checked"]:
             errs.append("APPROVE with completeness gap or not_checked above 0 is refused [L-23]")
         if "blocker" in sev or "major" in sev:
@@ -86,6 +93,17 @@ def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict]) -> tu
     elif data.get("verdict") == "CHANGES" and not findings:
         errs.append("CHANGES needs at least one finding")
     return data, errs
+
+
+def _guidelines(gl, rules: tuple[str, ...], required: bool) -> list[str]:
+    gl = [] if gl is None and required else gl
+    ok = isinstance(gl, list) and all(isinstance(g, dict) and isinstance(g.get("id"), str) and isinstance(g.get("followed"), bool)
+                                      and set(g) <= {"id", "followed", "note"} for g in gl)
+    if not ok:
+        return ['guidelines: a list with one {"id", "followed": true|false, "note"} per guideline rule of the repos: ' + (", ".join(rules) or "none")]
+    got = [g["id"] for g in gl]
+    out = [f"guidelines: {r} has no entry: the code review cites every guideline rule" for r in rules if required and r not in got]
+    return out + [f"guidelines: {g!r} is not a guideline of this plan's repos or is listed twice" for g in got if g not in rules or got.count(g) > 1]
 
 
 def _exercises(ex, acs: set[str], required: bool) -> list[str]:
@@ -130,7 +148,8 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
     earlier = [e for e in st["reviews"] if e.get("kind") == kind]
     round_no = len(earlier) + 1
-    data, errs = parse(data, kind, plan, round_no, earlier)
+    rules = tuple(g["id"] for g in quality.guidelines(project.cfg, plan))
+    data, errs = parse(data, kind, plan, round_no, earlier, rules)
     if errs:
         raise FactoryError("review rejected (nothing recorded):\n" + "\n".join(f"  - {e}" for e in errs))
     heads, repos = heads_of(st, plan["repos"]), {}
@@ -154,7 +173,7 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
            "findings": findings, "resolved": ["%d:%s" % _full(i, round_no) for i in data.get("resolved", [])],
            "completeness": data["completeness"], "bound": {BOUND[kind]: lk[BOUND[kind]]}, "lock_seq": lk["seq"],
            "independent_of": sorted(st["builders"])}
-    for key in ("exercises", "changed_values"):
+    for key in ("exercises", "changed_values", "guidelines"):
         if key in data:
             rec[key] = data[key]
     rec["hash"] = sha256_bytes(canonical(rec).encode("utf-8"))
@@ -187,6 +206,9 @@ def reasons(st: dict, plan: dict, lk: dict) -> list[str]:
             blocking = [f"{f['id']} ({f['severity']}) {f['text']}" for f in rv["findings"] if f["severity"] != "minor"]
             out.append(f"the {kind} review (round {rv['round']}) asked for changes: " + ("; ".join(blocking) or "see its findings")
                        + ". Fix, commit and run verify, then record a new review")
+    code, qa = latest(st, "code"), latest(st, "qa")
+    if plan.get("risk") == "high" and code and qa and norm(code["reviewer"]) == norm(qa["reviewer"]) and not out:
+        out.append(f"risk is high: the code and qa reviews must come from two different reviewers, both {code['reviewer']!r} now; record one of them again with another reviewer")
     return out
 
 

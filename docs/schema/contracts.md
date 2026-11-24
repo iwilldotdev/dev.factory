@@ -222,6 +222,7 @@ Common fields on every event:
 | `loop` | `kind` (`amend` or `review`), `decision` or null, `counts` (bool) [L-134, L-135]. A `review` loop adds `heads`, `round` and `review` (the kind): one fix round spends one loop however many reviewers found it. A loop that spends a recorded decision also closes the open `loop budget exhausted` blocker with an `unblock` event |
 | `env` | `repo`, `action` (`up`, `down`, `restart` or `fail`), `pid`, `create_time`, `group`, `cwd`, `sha`, `run`; a `fail` adds `kind` (`files`, `lock`, `port`, `start`, `health`, `warmup`, `data`, `login` or `restore`) and a redacted `reason` |
 | `evidence` | evidence record, §6 |
+| `baseline` | `check`, `repo`, `spec_hash`, `branch_point`, `runs` (1 to 3), `stable` and `quarantined` (sorted failure ids) of a `quality` check at the branch point [L-61] |
 | `review` | review record, §7 |
 | `blocker` | `id`, `kind` (`question`, `decision`, `infra` or `tooling`), `reason` [L-140, L-152] |
 | `unblock` | `blocker`, `decision` |
@@ -229,7 +230,7 @@ Common fields on every event:
 | `ship_verified` | `result`, `heads`, `mismatches`, `plan_sha256`; an identical state is not recorded twice [L-151] |
 | `design_review` | `frame`, `frame_hash` (raw hash plus contract data), `user_said`: one per approx frame version, needed by `gate review` [L-186] |
 | `design_refresh` | `frame`, `version`, `raw_sha256`, `changed` (bool), `user_said` when no adapter re-acquired it: an exact frame checked after the last lock, needed by `gate ship` [L-09, L-122] |
-| `confirm` | `check` or `contract` (`<kind>:<id>`), `user_said`, `heads` (human checks and user-confirmed facts). A contract confirmation covers only the ingest before it [L-21, L-24] |
+| `confirm` | `check` or `contract` (`<kind>:<id>`), `user_said`, `heads` (human checks and user-confirmed facts). A contract confirmation covers only the ingest before it. A check confirmation is followed by its `evidence` record (§6) [L-21, L-24] |
 | `waiver` | `pipeline` (an id), `user_said`: covers that pipeline only, never a newer one [L-20] |
 | `claim` | `session`, `takeover` (bool) [L-184] |
 | `tokens` | `session`, `input`, `output` [L-183] |
@@ -267,6 +268,8 @@ Common fields on every event:
 - `heads` and `served` are present only for runtime checks [L-12, L-69]; `warnings` lists dependencies served from a main path [L-71]. A runtime check that finds its env stale restarts it once, then ends `error` with kind `stale`; after an `env` result the repo's other runtime checks are `skipped` [L-46]. `verify` exits 3 for any of these.
 - `visual` records add `details {diff_ratio, max_diff_ratio, crop, size: [w, h], masks (with their reasons), fidelity, scale (only with fit), reason (size or diff)}`, with artifacts `app.png`, `design.png` (the crop) and `diff.png` [L-55, L-56].
 - `style` records add `details {fidelity, results: [{selector, property, expected, actual, ok, note}]}`.
+- `quality` records add `details {scope (full or scoped), new (up to 50 ids), total, baseline_stable, quarantined}`. A `scoped` record (`verify --scoped`) is evidence of the run but never satisfies a gate [L-60].
+- A `human` record is written by `factory confirm <check>`, not by `verify`: `cmd` is `human: <text>`, `output` is the user's words, and it adds `human_heads` (the HEAD of every planned repo) and `user_said`. It counts only while those heads are current [L-24].
 - `tail`: the last `tail_lines` lines, at most 4 KB, with secrets redacted. Full output goes to `artifacts/`.
 
 ## 7. Review record (`type: review`)
@@ -306,6 +309,9 @@ Refusals [L-23]:
 - SHAs that are not the current HEADs
 - a run whose verify does not hold or whose plan lock drifted, and a reviewer name or `--actor` that is also a builder hint
 - CHANGES with no finding; a `resolved` entry that names no finding of an earlier round
+- a `code` review that does not cite every guideline rule of the planned repos in `guidelines` (`[{id, followed, note}]`, ids are `<repo>:<rule id>`), and APPROVE with `followed: false`
+
+With `risk: high` the latest `code` and `qa` reviews must name two different reviewers, or `gate review` fails.
 
 ## 8. Ship plan (`ship/plan.json`, written by `factory ship plan`)
 

@@ -4,10 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-TYPES = ("cmd", "http", "browser", "visual", "style", "screenshot")  # runnable plan check types; `commits` is the implicit commit-format check
+TYPES = ("cmd", "quality", "human", "http", "browser", "visual", "style", "screenshot")  # plan check types; `commits` is the implicit commit-format check
 RUNTIME = ("http", "browser", "visual", "style", "screenshot")  # types that call a served env
 RUNNER = ("browser", "visual", "style", "screenshot")  # types that run in the bundled browser runner (and can share one browser)
-RANK = {"commits": 0, "cmd": 1, "http": 2, "screenshot": 3, "browser": 3, "style": 4, "visual": 5}  # cheapest first [L-11]
+RANK = {"commits": 0, "cmd": 1, "quality": 2, "http": 2, "screenshot": 3, "browser": 3, "style": 4, "visual": 5, "human": 9}  # cheapest first [L-11]
 
 
 @dataclass
@@ -25,12 +25,14 @@ class Ctx:
     session: dict | None = None  # headers of an `http` check with `session`; in memory only [L-52]
     user: str | None = None  # plan login_user
     tmp: Path | None = None  # scratch directory of this attempt; its files become artifacts
+    scoped: bool = False  # `verify --scoped`: a quality check runs its scoped template [L-60]
+    baseline: dict | None = None  # the recorded baseline of a quality check [L-61]
 
 
 def run(check: dict, ctx: Ctx) -> dict:
-    from . import browser, cmd, commits, http, screenshot, style, visual
+    from . import browser, cmd, commits, http, quality, screenshot, style, visual
     return {"cmd": cmd, "commits": commits, "http": http, "browser": browser, "visual": visual, "style": style,
-            "screenshot": screenshot}[check["type"]].run_check(check, ctx)
+            "screenshot": screenshot, "quality": quality}[check["type"]].run_check(check, ctx)
 
 
 def build_args(check: dict, ctx: Ctx) -> list[str]:

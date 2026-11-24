@@ -25,6 +25,9 @@ M4_COVERED = {
     "L-12", "L-13", "L-37", "L-40", "L-46", "L-49", "L-50", "L-51", "L-52", "L-54", "L-55", "L-56", "L-57", "L-59", "L-64", "L-65", "L-66", "L-68", "L-69",
     "L-70", "L-71", "L-73", "L-74", "L-79", "L-81", "L-82", "L-83", "L-85", "L-86", "L-175", "L-186", "L-187", "L-188", "L-190",
 }
+# Lessons that M5 (human checks, quality baseline, the design note, estimates, token metrics) covers; the feedback tests also touch L-20, L-135, L-136
+# and L-155, which stay in their first milestone.
+M5_COVERED = {"L-24", "L-60", "L-61", "L-62", "L-176", "L-183", "L-189"}
 
 
 def rows() -> dict[str, str]:
@@ -67,10 +70,11 @@ class LessonTests(unittest.TestCase):
                     bad.append(f"{file}::{name}: docstring does not cite {lid}")
         self.assertEqual(bad, [])
 
-    def test_the_m1_to_m4_lessons_are_all_covered_by_a_tagged_test(self):
+    def test_the_m1_to_m5_lessons_are_all_covered_by_a_tagged_test(self):
         tagged = {lid for _, _, ids, _ in tags() for lid in ids}
-        covered = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED
-        self.assertEqual((M1_COVERED & M2_COVERED) | (M3_COVERED & (M1_COVERED | M2_COVERED)) | (M4_COVERED & (M2_COVERED | M3_COVERED)), set())
+        covered = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED | M5_COVERED
+        earlier = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED
+        self.assertEqual((M1_COVERED & M2_COVERED) | (M3_COVERED & (M1_COVERED | M2_COVERED)) | (M4_COVERED & (M2_COVERED | M3_COVERED)) | (M5_COVERED & earlier), set())
         self.assertEqual(sorted(covered - tagged), [])
         self.assertEqual(sorted(tagged - covered), [], "add new tagged lessons to the milestone set so they cannot silently disappear")
 

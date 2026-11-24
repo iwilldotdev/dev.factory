@@ -1,8 +1,13 @@
 """User input and blockers as typed events: ask/answer/decide/human/block/unblock [L-126, L-140, L-152, L-177]."""
 from __future__ import annotations
 
+from pathlib import Path
+
+from . import evidence
 from .run import Run, derive, next_id
 from .util import FactoryError
+
+WAITING = "waits for the user's confirmation"
 
 BLOCKER_KINDS = {
     "question": "the run needs an answer from the user before it can continue",
@@ -72,6 +77,34 @@ def confirm(run: Run, target: str, said: str, heads: dict, actor: str | None) ->
     said = _said(said)
     kind, ident = _contract_ref(run, target, "confirm")
     return run.append({"type": "confirm", "contract": f"{kind}:{ident}", "user_said": said, "heads": heads}, actor)
+
+
+def confirmation(st: dict, check: dict, spec: str, sha: str, heads: dict) -> dict | None:
+    """The user's confirmation of a human check, valid only while every planned repo still has the commits it was given at [L-24]."""
+    rec = evidence.last(st, check["id"], "verify", spec, sha)
+    return rec if rec and rec["result"] == "pass" and rec.get("human_heads") == heads else None
+
+
+def confirm_check(run: Run, project, check_id: str, said: str, actor: str | None) -> dict:
+    """`factory confirm CHK-n --user-said`: a `human` evidence record bound to the current HEADs. A new commit asks again [L-24]."""
+    from . import git, lock, plan as planmod, review
+    said = _said(said)
+    st = run.state()
+    problems = lock.problems(run, project.cfg, st, strict=False)
+    if problems:
+        raise FactoryError("cannot confirm: " + "; ".join(problems))
+    plan, lk = planmod.load_plan(run)[0], lock.current(st)
+    check = next((c for c in planmod.effective_checks(plan, project.cfg) if c["id"] == check_id), None)
+    if check is None or check["type"] != "human":
+        raise FactoryError(f"{check_id} is not a human check of this plan: confirm takes a human check id (CHK-3) or <kind>:<id> of a change or pipeline contract, e.g. change:42")
+    w = git.current(st, check["repo"])
+    if w is None or git.dirty(Path(w["path"])):
+        raise FactoryError(f"repo {check['repo']}: commit the worktree first; a confirmation is bound to the commit the user saw [L-24]")
+    heads = review.heads_of(st, plan["repos"])
+    run.append({"type": "confirm", "check": check_id, "user_said": said, "heads": heads}, actor)
+    out = {"cmd": f"human: {check['text']}", "exit": None, "duration_s": 0.0, "output": said, "result": "pass", "kind": None, "reason": ""}
+    return evidence.append(run, check, lk["spec_hashes"][check_id], "verify", heads[check["repo"]], Path(w["path"]), True, out,
+                           project.cfg["checks"]["tail_lines"], {"human_heads": heads, "user_said": said}, actor)
 
 
 def waive(run: Run, target: str, said: str, actor: str | None) -> dict:

@@ -102,7 +102,7 @@ def derive(events: list[dict]) -> dict:
     """Everything a command needs to know about a run, computed from its events."""
     st: dict = {"ticket": None, "kind": None, "repos": [], "closed": None, "questions": {}, "decisions": {},
                 "blockers": {}, "contracts": {}, "media": {}, "gates": {}, "worktrees": [], "env_failures": [],
-                "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "confirms": [], "waivers": [], "ships": [],
+                "human": [], "diagnosis": None, "locks": [], "loops": [], "evidence": [], "reviews": [], "confirms": [], "waivers": [], "ships": [], "baselines": [],
                 "shipped": [], "design_reviews": [], "design_refreshes": [], "lock_at": -1, "builders": set(), "review_at": -1, "ship_at": -1, "retype_at": -1, "contract_at": -1, "first_ts": None, "last_ts": None, "count": len(events)}
     consumed: set[str] = set()
     for i, ev in enumerate(events):
@@ -153,8 +153,10 @@ def derive(events: list[dict]) -> dict:
             st["evidence"].append(ev)
             if ev.get("actor"):
                 st["builders"].add(ev["actor"].strip().lower())
+        elif t == "baseline":
+            st["baselines"].append(ev)
         elif t == "review":
-            st["reviews"].append(ev)
+            st["reviews"].append({**ev, "at": i})
             st["review_at"] = i
         elif t == "confirm":
             st["confirms"].append({**ev, "at": i})

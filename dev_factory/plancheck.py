@@ -10,8 +10,9 @@ METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE")
 ACTION_KEYS = ("goto", "click", "fill", "wait", "press", "expect_visible", "expect_text", "expect_url")
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
 NEW_KEYS = {"method", "path", "headers", "body", "expect_status", "expect_json", "session", "spec", "expect_timeout_ms", "frame", "node", "url",
-            "viewport", "state_spec", "wait_for", "selector", "max_diff_ratio", "masks", "fit", "settle_ms", "actions", "map"}
-FIELDS = {"http": ("method", "path", "headers", "body", "expect_status", "expect_json", "session"),
+            "viewport", "state_spec", "wait_for", "selector", "max_diff_ratio", "masks", "fit", "settle_ms", "actions", "map", "parse", "scoped", "text", "reason"}
+FIELDS = {"quality": ("run", "cwd", "parse", "scoped"), "human": ("text", "reason"),
+          "http": ("method", "path", "headers", "body", "expect_status", "expect_json", "session"),
           "browser": ("spec", "expect_timeout_ms"),
           "visual": ("frame", "node", "url", "viewport", "state_spec", "wait_for", "selector", "max_diff_ratio", "masks", "fit", "settle_ms", "actions"),
           "style": ("frame", "url", "viewport", "state_spec", "wait_for", "map", "settle_ms", "actions"),
@@ -57,7 +58,14 @@ def type_problems(c: dict, here: str, run_dir: Path) -> list[str]:
     kind, errs = c.get("type"), []
     allowed = set(FIELDS.get(kind, ())) | {"files"}
     errs += [f"{here}.{k}: does not belong to a {kind} check" for k in sorted(set(c) & NEW_KEYS - allowed)]
-    if kind == "http":
+    if kind == "human":
+        if not (isinstance(c.get("text"), str) and c["text"].strip()):
+            errs.append(f"{here}.text: required, what the user is asked to confirm (it is shown with their answer in the change body)")
+        if c.get("reason") is not None and not isinstance(c["reason"], str):
+            errs.append(f"{here}.reason: must be a string (why a command cannot check it)")
+        if c.get("reproduce") or c.get("red_green"):
+            errs.append(f"{here}: a human check cannot reproduce a bug [L-24]")
+    elif kind == "http":
         if c.get("method") not in METHODS:
             errs.append(f"{here}.method: must be one of {', '.join(METHODS)}")
         path = c.get("path")
@@ -106,6 +114,26 @@ def type_problems(c: dict, here: str, run_dir: Path) -> list[str]:
             if "fit" in c and not isinstance(c["fit"], bool):
                 errs.append(f"{here}.fit: must be true or false")
     return errs
+
+
+NOTE_SECTIONS = ("Approach", "Complexity", "Reuse", "Architecture risks")
+
+
+def note_problems(plan: dict, run_dir: Path) -> list[str]:
+    """`risk` medium or high needs notes/design.md with the four sections, written before the plan locks [L-176]."""
+    if plan.get("risk", "low") not in ("medium", "high"):
+        return []
+    path = run_dir / "notes" / "design.md"
+    if not path.is_file():
+        return [f"risk is {plan['risk']}: write {path.as_posix()} with ## " + ", ## ".join(NOTE_SECTIONS) + " (N+1 queries, loops over lists and the layers touched) [L-176]"]
+    secs, title = {}, None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            title = line[3:].strip().lower()
+            secs[title] = ""
+        elif title is not None:
+            secs[title] += line
+    return [f"notes/design.md: ## {s} is missing or empty [L-176]" for s in NOTE_SECTIONS if not secs.get(s.lower(), "").strip()]
 
 
 def env_problems(plan: dict, cfg: dict) -> list[str]:

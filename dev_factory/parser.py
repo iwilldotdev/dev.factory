@@ -7,8 +7,9 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from .cli import (cmd_check, cmd_confirm, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
+    from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
+    from .cli_proof import cmd_baseline, cmd_confirm, cmd_metrics
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
@@ -116,8 +117,18 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--fresh", action="store_true", help="ignore reuse and run everything selected")
         if name == "verify":
             sp.add_argument("--no-retry", action="store_true", help="do not retry an assertion failure once")
+            sp.add_argument("--scoped", action="store_true", help="quality checks run their scoped template on the changed files (never satisfies a gate)")
+            sp.add_argument("--estimate", action="store_true", help="print reuse or run, with the median duration, per check; runs nothing")
+    sp = add("baseline", cmd_baseline, "record the baseline of the quality checks at the branch point", [scoped])
+    sp.add_argument("--check", metavar="ID")
+    sp.add_argument("--repo")
+    sp.add_argument("--fresh", action="store_true", help="take the baseline again")
     sp = add("metrics", cmd_metrics, "time per phase, loops, blocked hours and gate failures of a run", [scoped])
     sp.add_argument("run_id", nargs="?")
+    sp.add_argument("--all", action="store_true", help="aggregate every run of the project")
+    sp.add_argument("--since", metavar="DATE", help="with --all: runs started on or after this date (YYYY-MM-DD)")
+    sp.add_argument("--tokens", action="store_true", help="record the tokens of --session through the [metrics] tokens adapter")
+    sp.add_argument("--session", help="the harness session id given to the tokens adapter")
     rv = sub.add_parser("review", help="record a review, or print an example").add_subparsers(dest="sub", required=True)
     sp = rv.add_parser("example", parents=[common])
     sp.set_defaults(func=cmd_review)
@@ -136,8 +147,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pipeline", action="store_true", help="also plan a pipeline readback (always planned with require_pipeline)")
     sp = sh.add_parser("verify", parents=[scoped])
     sp.set_defaults(func=cmd_ship)
-    sp = add("confirm", cmd_confirm, "record the user's confirmation of an agent-written change or pipeline contract", [scoped])
-    sp.add_argument("target", help="<kind>:<id>, e.g. change:42")
+    sp = add("confirm", cmd_confirm, "record the user's confirmation of a human check or of an agent-written change or pipeline contract", [scoped])
+    sp.add_argument("target", help="a human check id (CHK-3) or <kind>:<id>, e.g. change:42")
     sp.add_argument("--user-said", required=True)
     sp = add("waive", cmd_confirm, "record the user's waiver of one pipeline", [scoped])
     sp.add_argument("target", help="pipeline:<id>")

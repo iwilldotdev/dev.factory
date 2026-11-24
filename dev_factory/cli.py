@@ -187,7 +187,13 @@ def cmd_plan(args) -> int:
 def _batch(args, fn) -> int:
     from . import verify
     proj = _project(args)
-    s = fn(proj, _run(args, proj), verify.Opts(args.check, args.repo, args.fresh, not getattr(args, "no_retry", False), args.actor))
+    opts = verify.Opts(args.check, args.repo, args.fresh, not getattr(args, "no_retry", False), args.actor, getattr(args, "scoped", False))
+    if getattr(args, "estimate", False):
+        from . import estimate
+        s = estimate.compute(proj, _run(args, proj, writable=False), opts)
+        _out(args, s, estimate.render(s))
+        return 0
+    s = fn(proj, _run(args, proj), opts)
     _out(args, s, verify.render(s))
     return s["exit"]
 
@@ -200,14 +206,6 @@ def cmd_verify(args) -> int:
 def cmd_reproduce(args) -> int:
     from . import verify
     return _batch(args, verify.reproduce)
-
-
-def cmd_metrics(args) -> int:
-    from . import gates, metrics
-    run = _run(args, _project(args), writable=False)
-    m = metrics.compute(run.read(), gates.is_bug(run, run.state()))
-    _out(args, {"run": run.id, **m}, metrics.render(run.id, m))
-    return 0
 
 
 def cmd_human(args) -> int:
@@ -303,20 +301,6 @@ def cmd_ship(args) -> int:
     note = "" if res["recorded"] else " (same state as the last verification, nothing new recorded)"
     _out(args, res, f"ship verify: {res['result']}{note}" + "".join(f"\n  - {m}" for m in res["mismatches"]))
     return 0 if res["result"] == "pass" else 1
-
-
-def cmd_confirm(args) -> int:
-    from . import human, review
-    proj = _project(args)
-    run = _run(args, proj)
-    if args.cmd == "waive":
-        ev = human.waive(run, args.target, args.user_said, args.actor)
-        print(f"waived pipeline {ev['pipeline']}; a newer pipeline is not covered")
-    else:
-        st = run.state()
-        ev = human.confirm(run, args.target, args.user_said, review.heads_of(st, st["repos"]), args.actor)
-        print(f"recorded the user's confirmation of {ev['contract']}")
-    return 0
 
 
 def cmd_gate(args) -> int:

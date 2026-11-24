@@ -65,6 +65,12 @@ Ship (after the review gate). The CLI never pushes or calls a remote; you run th
 - `factory ship verify` compares the readback with the plan, and `factory gate ship` ends the run's ship phase. Ready and merge
   are never automatic; `factory next` prints the briefing for the user.
 
+More proof (plans may use these checks):
+- A `human` check waits for the user: show what it asks, then `factory confirm CHK-n --user-said "<their words>"`. A new commit asks again.
+- A `quality` check fails only on failure ids that the baseline at the branch point lacks (`factory baseline` takes it; `verify` does it once).
+  `factory verify --scoped` is a cheap run on the changed files that never satisfies a gate; `--estimate` lists what would run and how long.
+- A plan with `risk` medium or high needs `notes/design.md`; high risk needs two different reviewers. A `guideline` rule of a repo is cited by the code review.
+
 Rules the CLI enforces:
 - Only `verify` and `reproduce` write evidence; a gate passes on records, never on a claim.
 - A decision needs the user's own words in `--user-said`, and one recorded decision unblocks once.

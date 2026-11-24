@@ -67,6 +67,14 @@ A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit sta
 
 These run for every run that affects the repo. They are ordinary `cmd` checks with id `<repo>:<id>` [L-63]. Keys are the `cmd` check keys from `plan-json.md` (`id`, `run`, `cwd`, `expect_exit`, `expect_pattern`, `timeout_s`), minus `ac`.
 
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `type` | `cmd` or `quality` | `cmd` | a `quality` check compares failure ids with a baseline at `branch_point` (`plan-json.md`) [L-60 to L-62] |
+| `parse` | `lines`, `json:<path>` or `regex:<failure id regex>` | `lines` | `quality` only: how failure ids are read from the output |
+| `scoped` | command template with `{changed_files}` | none | `quality` only: run by `verify --scoped` on the files changed in `branch_point..HEAD` [L-60] |
+| `kind` | `check` or `guideline` | `check` | a `guideline` has `id` and `text` and no `run`; it is not a check, and the `code` review must cite it |
+| `text` | string | none | the guideline text shown to the reviewer |
+
 ## `[checks]` (defaults)
 
 | Key | Type | Default | Level | Notes |
@@ -138,7 +146,8 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `tokens` | command template: `{run}`, `{session}` | none | optional; prints `{session, input, output}` JSON [L-183] |
+| `tokens` | command template: `{run}`, `{session}` | none | optional; prints `{session, input, output}` JSON; `factory metrics --tokens --session <id>` records it [L-183] |
+| `idle_minutes` | int | `30` | a gap longer than this with no open blocker is `idle_hours`, not phase time |
 
 ## `[hotfix]`
 

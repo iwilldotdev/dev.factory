@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import checks as chk, config, env as envmod, envdata, evidence, git, lock, plan as planmod
+from . import checks as chk, config, env as envmod, envdata, evidence, git, human, lock, plan as planmod, quality, review
 from .checks import runner, ui
 from .run import Run
 from .util import FactoryError, fwd, safe_id, write_atomic
@@ -25,6 +25,7 @@ class Opts:
     fresh: bool = False
     retry: bool = True
     actor: str | None = None
+    scoped: bool = False  # quality checks run their scoped template (cheap feedback, never satisfies a gate) [L-60]
 
 
 class Batch:
@@ -65,7 +66,9 @@ class Batch:
         return self.lock["spec_hashes"][c["id"]]
 
     def ctx(self, c: dict, mode: str, tree: Path, bound: dict | None) -> chk.Ctx:
-        return build_ctx(self.project, self.run, self.plan, c, mode, tree, bound, self.lock["branch_points"].get(c["repo"], ""), self.secrets, self.sessions)
+        ctx = build_ctx(self.project, self.run, self.plan, c, mode, tree, bound, self.lock["branch_points"].get(c["repo"], ""), self.secrets, self.sessions)
+        ctx.scoped = self.opts.scoped and mode == "verify"
+        return ctx
 
     def bind(self, c: dict, tree: Path, mode: str) -> tuple[dict | None, dict | None]:
         """(binding, failure outcome) of a runtime check: the env serves this tree at its HEAD, else one restart, else an error
@@ -99,11 +102,16 @@ class Batch:
     def run_one(self, c: dict, mode: str, tree: Path, sha: str, clean: bool, extra: dict | None = None, first: dict | None = None) -> dict:
         """Run one check and append its record. A pass right after the failed `first` attempt is recorded as `flaky` [L-14, L-139]."""
         bound, out = self.bind(c, tree, mode) if c["type"] in chk.RUNTIME else (None, None)
+        base = None
+        if c["type"] == "quality":
+            base, out = quality.baseline_for(self, c)  # taken once at the branch point and recorded [L-61]
         meta = {}
         if bound is not None:
             meta = {"heads": bound["heads"], "served": bound["served"], **({"warnings": bound["warnings"]} if bound["warnings"] else {})}
         if out is None:
-            out = self.pre.pop(c["id"], None) or chk.run(c, self.ctx(c, mode, tree, bound))
+            ctx = self.ctx(c, mode, tree, bound)
+            ctx.baseline = base
+            out = self.pre.pop(c["id"], None) or chk.run(c, ctx)
             if out["result"] == "env":
                 self.env_failed[c["repo"]] = out["reason"]
         if first and out["result"] == "pass":
@@ -180,12 +188,19 @@ class Batch:
             self.stopped = f"stopped after two identical failures in a row ({c['id']}: {rec['reason']}); fix the cause before running the rest [L-47]"
         return not stop
 
+    def note_human(self, c: dict, sha: str) -> None:
+        """A human check is never run: it passes while the user's confirmation covers the current commits, else it is pending [L-24]."""
+        now = review.heads_of(self.st, self.plan["repos"])
+        done = human.confirmation(self.st, c, self.spec(c), sha, now)
+        self.results.append({"check": c["id"], "mode": "verify", "reused": bool(done), "result": "pass" if done else "pending", "kind": None, "attempt": None,
+                             "reason": "confirmed by the user [L-24]" if done else f"{human.WAITING}: factory confirm {c['id']} --user-said \"<their words>\" ({c['text']})"})
+
     def summary(self, mode: str) -> dict:
         done = {r["check"] for r in self.results}
         rest = [{"check": c["id"], "mode": mode, "result": "not_run", "kind": None, "reused": False, "attempt": None,
                  "reason": self.stopped} for c in self.chosen() if c["id"] not in done and self.stopped]
         results = self.results + rest
-        ok = bool(results) and all(r["result"] in OK for r in results) and not self.env_problem
+        ok = bool(results) and all(r["result"] in OK or r["result"] == "pending" for r in results) and not self.env_problem
         env = bool(self.env_problem) or any(r["result"] in ("env", "skipped") or (r["result"] == "error" and r["kind"] == "stale") for r in results)
         return {"mode": mode, "results": results, "stopped": self.stopped, "ok": ok, "exit": 0 if ok else 3 if env else 1,
                 **({"env_problem": self.env_problem} if self.env_problem else {})}
@@ -240,10 +255,13 @@ def verify(project, run: Run, opts: Opts) -> dict:
             path = b.tree(c["repo"])
             heads[c["repo"]] = (path, git.head(path), bool(git.dirty(path)))
         path, sha, dirty = heads[c["repo"]]
-        reuse[c["id"]] = not opts.fresh and not dirty and evidence.satisfied(b.st, c["id"], "verify", b.spec(c), sha, None, current_heads(project, b.st, c))
-    b.prefetch([c for c in ordered if not reuse[c["id"]]], heads)
+        reuse[c["id"]] = c["type"] != "human" and not opts.fresh and not dirty and evidence.satisfied(b.st, c["id"], "verify", b.spec(c), sha, None, current_heads(project, b.st, c))
+    b.prefetch([c for c in ordered if not reuse[c["id"]] and c["type"] != "human"], heads)
     for c in ordered:
         path, sha, dirty = heads[c["repo"]]
+        if c["type"] == "human":
+            b.note_human(c, sha)
+            continue
         if reuse[c["id"]]:
             b.note(c, None, reused=True)
             continue

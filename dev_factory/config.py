@@ -134,6 +134,7 @@ def _local_url(url: str) -> bool:
 
 def semantic(cfg: dict) -> list[str]:
     """Rules a type check cannot see: required keys after composition, uniqueness, loopback origins."""
+    from . import quality
     errs: list[str] = []
     name = cfg.get("project", {}).get("name")
     if not name:
@@ -151,10 +152,17 @@ def semantic(cfg: dict) -> list[str]:
             errs.append(f"{here}.name: duplicate repo name")
         ids = [c.get("id") for c in r.get("check", [])]
         for c in r.get("check", []):
-            if not c.get("id") or not c.get("run"):
+            if c.get("kind") == "guideline":
+                if not c.get("id") or not c.get("text") or c.get("run"):
+                    errs.append(f"{here}.check: a guideline needs id and text and has no run (its text goes into the code review)")
+            elif not c.get("id") or not c.get("run"):
                 errs.append(f"{here}.check: every check needs id and run")
             elif ids.count(c["id"]) > 1:
                 errs.append(f"{here}.check: duplicate id {c['id']}")
+            elif c.get("type") == "quality":
+                errs += quality.problems(c, f"{here}.check[{c['id']}]")
+            elif c.get("parse") or c.get("scoped"):
+                errs.append(f"{here}.check[{c['id']}]: parse and scoped belong to type = \"quality\"")
         for m in r.get("mirror", []):
             if not (m.get("name") and m.get("branch")):
                 errs.append(f"{here}.mirror: every entry needs name and branch")

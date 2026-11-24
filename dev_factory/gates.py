@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import acquire, designflow, dryrun, env as envmod, evidence, git, localhttp, lock, media, plan as planmod, plancheck, review, ship
+from . import acquire, designflow, dryrun, env as envmod, evidence, git, human, localhttp, lock, media, plan as planmod, plancheck, review, ship
 from .checks import RUNTIME
 from .run import Run
 from .util import FactoryError, fwd, sha256_file
@@ -64,7 +64,7 @@ def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[st
         return out
     out = planmod.validate(plan, cfg, run.dir, effective_kind(run, st))
     if not out:
-        out += plancheck.env_problems(plan, cfg) + designflow.plan_problems(run, project, st, plan) + _env_health(project, plan)
+        out += plancheck.note_problems(plan, run.dir) + plancheck.env_problems(plan, cfg) + designflow.plan_problems(run, project, st, plan) + _env_health(project, plan)
     out += [f"question {q['id']} is still open: the user answers before the plan locks" for q in st["questions"].values() if q["answered"] is None]
     for r in plan["repos"] if isinstance(plan.get("repos"), list) else []:
         w = git.current(st, r)
@@ -146,16 +146,27 @@ def verify_reasons(run: Run, project, st: dict) -> list[str]:
         if git.ahead(path, w["branch_point"]) == 0:
             out.append(f"repo {r}: no commit past the branch point {w['branch_point'][:7]} [L-87]")
     passing: set[str] = set()
+    by_human: set[str] = set()  # ACs backed by a confirmed human check
+    asked: set[str] = set()  # ACs waiting for the user: the reason names the check, not the AC
+    now = {r: v[1] for r, v in heads.items()}
     for c in checks:
         if c["repo"] not in heads:
             continue
         path, sha, bp = heads[c["repo"]]
+        if c["type"] == "human":
+            if human.confirmation(st, c, lk["spec_hashes"][c["id"]], sha, now):
+                by_human |= {*c["ac"]}
+            else:
+                asked |= {*c["ac"]}
+                out.append(f"{c['id']}: {human.WAITING}: factory confirm {c['id']} --user-said \"<their words>\" ({c['text']}) [L-24]")
+            continue
         rheads = envmod.heads_of(project, st, c["repo"]) if c["type"] in RUNTIME else None
         rec = evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha, None, rheads)
         if rec is None and rheads is not None and evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha):
             out.append(f"{c['id']}: the record was made when a served repo had another HEAD ({', '.join(f'{r}@{h[:7]}' for r, h in rheads.items())} now): run factory verify [L-12]")
         elif rec is None:
-            out.append(f"{c['id']}: no verify record at {sha[:7]} for the locked spec: run factory verify [L-08, L-09]")
+            out.append(f"{c['id']}: no verify record at {sha[:7]} for the locked spec: run factory verify"
+                       + (" (without --scoped: only the full run counts before the review gate)" if c["type"] == "quality" else "") + " [L-08, L-09, L-60]")
         elif rheads is not None and any(v["sha"] != rec["heads"].get(r) for r, v in rec.get("served", {}).items()):
             out.append(f"{c['id']}: the served process was started at another commit than the one it was checked at [L-13, L-85]")
         elif rec["result"] != "pass":
@@ -164,7 +175,13 @@ def verify_reasons(run: Run, project, st: dict) -> list[str]:
             passing |= {*c["ac"]}
         if c.get("red_green") and rec is not None:
             out += _red_green_reasons(st, c, lk, plan, path, bp)
-    out += [f"{a['id']}: no passing check backs this AC [L-01]" for a in plan["acs"] if a["id"] not in passing]
+    for a in plan["acs"]:
+        if a["id"] in passing:
+            continue
+        if a["id"] in by_human and (plan["kind"] == "bug" or a.get("design")):
+            out.append(f"{a['id']}: only a human check backs this {'bug' if plan['kind'] == 'bug' else 'design'} AC; add a check a command or the app can fail [L-24]")
+        elif a["id"] not in by_human and a["id"] not in asked:
+            out.append(f"{a['id']}: no passing check backs this AC [L-01]")
     return out
 
 

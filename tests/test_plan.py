@@ -48,7 +48,7 @@ class PlanGateTests(M2Case):
             p["checks"].append({"id": "CHK-1", "type": "quality", "repo": "api", "ac": ["AC-9"]})
             p["risk"] = "extreme"
         text = self.edit(bad)
-        for part in ("unknown key 'bogus'", "duplicate id CHK-1", "quality checks arrive in a later milestone", "'api' is not in plan.repos",
+        for part in ("unknown key 'bogus'", "duplicate id CHK-1", ".run: must be a non-empty command", "'api' is not in plan.repos",
                      "AC-9 is not an AC", "plan.risk"):
             self.assertIn(part, text)
 

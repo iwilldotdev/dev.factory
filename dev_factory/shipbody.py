@@ -61,6 +61,9 @@ def body(st: dict, ticket: dict, plan: dict, lk: dict, rs: list[dict], heads: di
     changed = (review.latest(st, "code") or {}).get("changed_values") or []
     if changed:
         out += ["## Changed values (code review)", *[f"- {c['file']}: {c['what']} ({c['why']})" for c in changed], ""]
+    asked = humans(st, heads)
+    if asked:
+        out += ["## Human checks (confirmed by the user)", *[f"- {k}: {_cell(e['cmd'].removeprefix('human: '), 120)}; the user said: {_cell(e['user_said'], 120)}" for k, e in asked.items()], ""]
     minors = review.open_minors(st)
     if minors:
         out += [f"## Follow-ups: {len(minors)} unresolved minor finding(s)"]
@@ -85,6 +88,11 @@ def body(st: dict, ticket: dict, plan: dict, lk: dict, rs: list[dict], heads: di
     return text
 
 
+def humans(st: dict, heads: dict) -> dict[str, dict]:
+    """The user's confirmations of human checks at the current commits, newest per check [L-24]."""
+    return {e["check"]: e for e in st["evidence"] if e.get("human_heads") and e["sha"] == heads.get(e["repo"])}
+
+
 def briefing(sp: dict, rs: list[dict], st: dict) -> list[str]:
     """What the user sees before approving ship: changes, AC x evidence, follow-ups and ticket intents."""
     lines = [f"Gate S briefing for {sp['ticket']}: {sp['title']} (draft: {sp['draft']}, mode {sp['mode']})"]
@@ -96,6 +104,7 @@ def briefing(sp: dict, rs: list[dict], st: dict) -> list[str]:
     lines += [f"  ticket: {i['intent']} (needs the user)" for i in sp["intents"] if i["intent"].startswith("issue_")] or ["  ticket: no comment or transition"]
     lines.append(f"  approximate design frames: {', '.join(sorted({r['frame'] for r in st['design_reviews']})) or 'none'}; "
                  f"screenshots: {sum(1 for e in st['evidence'] if e['mode'] == 'verify' and e['result'] == 'pass' and any(a.endswith('.png') for a in e['artifacts']))} record(s) with images")
-    lines.append("  human checks: none in this build")
+    asked = humans(st, sp["heads"])
+    lines += [f"  human check {k}: the user confirmed ({_cell(e['user_said'], 80)})" for k, e in asked.items()] or ["  human checks: none"]
     return lines
 

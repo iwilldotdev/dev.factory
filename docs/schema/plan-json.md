@@ -16,14 +16,32 @@ The agent writes `.factory/runs/<run-id>/plan.json` during the plan phase. `gate
 | `login_user` | string slug | no | selects the `<KEY>_<slug>` secrets and a login state per user [L-81] |
 | `evidence` | `{ "screenshots": bool }` | no | `true` (set from an answered question) requires a `screenshot` check per touched UI repo [L-56, L-190] |
 
-`cmd`, `http`, `browser`, `visual`, `style` and `screenshot` checks run in this build; `quality` and `human` are rejected by `gate plan` with a message saying they arrive in a later milestone. A bug `cmd` check with `reproduce` must carry `red_green`, and `red_green` is only valid together with `reproduce`. Runtime checks (every type but `cmd`) need the repo's `[repo.env]`, a healthy env at `gate plan`, and pass a dry run that does not end in `setup`, `error` or `env` [L-86].
+`cmd`, `quality`, `human`, `http`, `browser`, `visual`, `style` and `screenshot` checks run in this build. A bug `cmd` check with `reproduce` must carry `red_green`, and `red_green` is only valid together with `reproduce`. Runtime checks (every type but `cmd`) need the repo's `[repo.env]`, a healthy env at `gate plan`, and pass a dry run that does not end in `setup`, `error` or `env` [L-86].
 
-### Parity check types (summary; full field tables arrive with their milestone)
+### `quality`
+
+| Key | Type | Req | Default |
+|---|---|---|---|
+| `run` | command string | yes | none |
+| `cwd` | repo-relative path | no | `"."` |
+| `parse` | `lines`, `json:<dotted path to a list in stdout>` or `regex:<failure id regex>` (group 1 when present) | no | `lines` |
+| `scoped` | command template that contains `{changed_files}` | no | none |
+
+A standing `[[repo.check]]` with `type = "quality"` takes the same keys. The failure ids of one run are normalized (colors and the worktree and checkout paths are stripped [L-62]); a failing exit with no id is the id `exit:<code>`. `verify` takes the baseline by itself the first time (`factory baseline` does it on request): the command runs up to 3 times at `branch_point` in a throwaway worktree (two agreeing runs end it), ids in every run are stable and ids in some runs are quarantined [L-61]. The check fails only on ids that are neither stable nor quarantined. A `setup` result (not found, zero tests) is never a baseline. `verify --scoped` runs `scoped` with the files from `branch_point..HEAD`; that record never satisfies a gate, so the full command still runs before `gate review` [L-60].
+
+### `human`
+
+| Key | Type | Req | Notes |
+|---|---|---|---|
+| `text` | string | yes | what the user is asked to confirm; shown in the change body next to their words |
+| `reason` | string | no | why no command can check it |
+
+`verify` never runs it: it is `pending` (exit stays 0) until `factory confirm <id> --user-said "<words>"` records a `human` evidence record bound to the HEAD of every planned repo. A new commit asks again. A bug plan refuses an AC whose only checks are human, and a design AC still needs its `visual` and `style` checks [L-24]. A pending human check blocks the verify gate, so no review can be recorded and no loop is spent [L-138].
+
+### Other types
 
 | `type` | Keys | Rule |
 |---|---|---|
-| `quality` | `run`, `parse` (`lines`, `json:<path>` or `regex:<id regex>`), optional `scoped` (template with `{changed_files}`) | baseline at `branch_point` (`factory baseline`); fails only on new stable failure ids [L-60 to L-62] |
-| `human` | `text`, `reason` | satisfied by `factory confirm <id> --user-said`, bound to the current SHAs; never the only check of a bug or design AC [L-24] |
 | `screenshot` | `url` or `spec`, `viewport`, `state_spec` | artifact only (before on base, after at HEAD); names no AC [L-56] |
 
 Any check may set `mirror: true` (hotfix runs: also run by `verify --mirror` [L-41]). An `http` check may set `session: "<user>"` [L-52].
@@ -46,7 +64,7 @@ Every AC must be named by at least one check's `ac` [L-01]. An AC that cannot be
 | Key | Type | Req | Notes |
 |---|---|---|---|
 | `id` | `^CHK-[0-9]+$` | yes | unique; standing checks use `<repo>:<id>` and come from config |
-| `type` | `"cmd"`, `"http"`, `"browser"`, `"visual"` or `"style"` | yes | |
+| `type` | `"cmd"`, `"quality"`, `"human"`, `"http"`, `"browser"`, `"visual"`, `"style"` or `"screenshot"` | yes | |
 | `repo` | repo name in `repos` | yes | worktree it runs in, or whose env it calls |
 | `ac` | list of AC ids | yes, at least 1 | |
 | `timeout_s` | int | no | default from `[checks]` [L-42] |

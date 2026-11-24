@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import acquire, gates, git, lock, media, plan as planmod, review as rv, ship, shipbody
+from . import acquire, gates, git, human, lock, media, plan as planmod, quality, review as rv, ship, shipbody
 from .project import Project
 from .run import Run
 from .util import fwd, safe_id
@@ -84,7 +84,12 @@ def compute(project: Project, run: Run) -> dict:
         _reproduce_action(project, run, st, reasons, set_, flag)
     elif ph == "build":
         trees = [Path(w["path"]) for r in st["repos"] if (w := git.current(st, r))]
-        if reasons:
+        waiting = [r for r in reasons if human.WAITING in r]
+        if waiting and len(waiting) == len(reasons):
+            first = waiting[0].split(":")[0]
+            set_("the commits are verified; only the user's confirmation is missing (ask them, show what they confirm, record their own words): "
+                 + "; ".join(r.split(": ", 1)[1].split(" [")[0] for r in waiting), "user", f'factory confirm {first} --user-said "<their words>"{flag}')
+        elif reasons:
             set_("build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
                  "repo from a clean worktree, and the gate lists what is still missing", "command", f"factory verify{flag}", trees, "builder")
         else:
@@ -195,9 +200,12 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
     elif reasons:
         kind = "code" if any(r.startswith(("no code", "the code")) for r in reasons) else "qa"
         path = run.dir / "reviews" / f"{kind}.json"
+        rules = quality.guidelines(project.cfg, plan) if kind == "code" else []
+        more = (" The code review also cites every guideline with followed true or false: " + "; ".join(f"{g['id']}: {g['text']}" for g in rules) + "." if rules else "")
+        more += (" The risk is high: the code and qa reviews come from two different reviewers, each the strongest the harness has." if plan.get("risk") == "high" else "")
         set_("start a fresh reviewer (never the builder, with the strongest model the harness has) on the diff from branch point to HEAD in "
              f"every worktree: it writes the {kind} review as JSON (factory review example prints the shape) and records it; the code "
-             "review lists changed_values and the qa review lists one exercises entry per AC; the same reviewer may record both kinds",
+             "review lists changed_values and the qa review lists one exercises entry per AC; the same reviewer may record both kinds" + more,
              "command", f'factory review record --kind {kind} --file "{fwd(path)}"{flag}', [path], "reviewer")
     else:
         set_("both reviews are APPROVE at HEAD; run the review gate", "command", f"factory gate review{flag}")

@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import checks as checks_pkg, plancheck
+from . import checks as checks_pkg, plancheck, quality
 from .util import canonical, read_json, sha256_bytes, sha256_file
 
 AC_ID, CHK_ID = re.compile(r"^AC-[0-9]+$"), re.compile(r"^CHK-[0-9]+$")
@@ -13,7 +13,6 @@ AC_KEYS = {"id", "text", "source", "reproduce", "reason", "design"}
 CHECK_KEYS = {"id", "type", "repo", "ac", "timeout_s", "files", "reproduce", "mirror", "run", "cwd", "expect_exit",
               "expect_pattern", "red_green"} | plancheck.NEW_KEYS
 PLAN_KIND = {"feature": "feature", "bug": "bug", "hotfix": "bug"}  # run kind -> plan kind [L-31]
-LATER = ("quality", "human")
 EXAMPLE = {"schema": 1, "kind": "feature", "repos": ["web"],
            "acs": [{"id": "AC-1", "text": "One verifiable behaviour from the ticket", "source": "ticket:description"}],
            "checks": [{"id": "CHK-1", "type": "cmd", "repo": "web", "ac": ["AC-1"], "run": "<command that fails until AC-1 holds>",
@@ -112,9 +111,7 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
     for c in chks:
         here = f"plan.checks[{c.get('id')}]"
         errs += [f"{here}: unknown key {k!r}" for k in sorted(set(c) - CHECK_KEYS)]
-        if c.get("type") in LATER:
-            errs.append(f"{here}.type: {c['type']} checks arrive in a later milestone; this build runs: {', '.join(checks_pkg.TYPES)}")
-        elif c.get("type") not in checks_pkg.TYPES:
+        if c.get("type") not in checks_pkg.TYPES:
             errs.append(f"{here}.type: must be one of {', '.join(checks_pkg.TYPES)}")
         if c.get("repo") not in repos:
             errs.append(f"{here}.repo: {c.get('repo')!r} is not in plan.repos")
@@ -130,6 +127,9 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
     errs += [f"plan.acs[{i}]: no check names it [L-01]" for i in sorted(ac_ids - covered)]
     if bug:
         for a in acs:
+            kinds = {c.get("type") for c in chks if a.get("id") in (c.get("ac") or [])}
+            if kinds == {"human"}:
+                errs.append(f"plan.acs[{a.get('id')}]: a human check never alone proves a bug AC; add a check that a command or the app can fail [L-24]")
             if a.get("reproduce", True) is True:
                 mine = [c for c in chks if a.get("id") in (c.get("ac") or []) and c.get("reproduce")]
                 if not mine:
@@ -140,16 +140,16 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
 
 
 def _cmd_problems(c: dict, here: str, bug: bool, run_dir: Path) -> list[str]:
-    errs: list[str] = []
-    if c.get("type") == "cmd":
-        if not (isinstance(c.get("run"), str) and c["run"].strip()):
+    errs: list[str] = quality.problems(c, here) if c.get("type") == "quality" else []
+    if c.get("type") in ("cmd", "quality"):
+        if c["type"] == "cmd" and not (isinstance(c.get("run"), str) and c["run"].strip()):
             errs.append(f"{here}.run: must be a non-empty command")
         cwd = c.get("cwd", ".")
         if not isinstance(cwd, str) or Path(cwd).is_absolute() or ".." in Path(cwd).parts:
             errs.append(f"{here}.cwd: must be a path inside the repo")
-        if "expect_exit" in c and not (isinstance(c["expect_exit"], int) and not isinstance(c["expect_exit"], bool)):
+        if c["type"] == "cmd" and "expect_exit" in c and not (isinstance(c["expect_exit"], int) and not isinstance(c["expect_exit"], bool)):
             errs.append(f"{here}.expect_exit: must be an integer")
-        if "expect_pattern" in c and (msg := pattern_problem(c["expect_pattern"], f"{here}.expect_pattern")):
+        if c["type"] == "cmd" and "expect_pattern" in c and (msg := pattern_problem(c["expect_pattern"], f"{here}.expect_pattern")):
             errs.append(msg)
     if "timeout_s" in c and not (isinstance(c["timeout_s"], int) and not isinstance(c["timeout_s"], bool) and c["timeout_s"] > 0):
         errs.append(f"{here}.timeout_s: must be a positive integer")
@@ -179,7 +179,9 @@ def _norm(c: dict, cfg: dict, standing: bool) -> dict:
     kind = c.get("type", "cmd")
     out = {"id": c["id"], "type": kind, "repo": c["repo"], "ac": list(c.get("ac") or []),
            "timeout_s": c.get("timeout_s") or cfg["checks"][plancheck.timeout_key(kind)], "standing": standing}
-    if kind != "cmd":
+    if kind in ("quality", "human"):
+        out.update({k: c[k] for k in plancheck.FIELDS[kind] if k in c}, **({"cwd": c.get("cwd") or ".", "parse": c.get("parse") or "lines"} if kind == "quality" else {}))
+    elif kind != "cmd":
         out.update(plancheck.norm(c, cfg))
     else:
         out.update(run=c["run"], cwd=c.get("cwd") or ".", expect_exit=c.get("expect_exit", 0), expect_pattern=c.get("expect_pattern"))
@@ -199,7 +201,7 @@ def effective_checks(plan: dict, cfg: dict) -> list[dict]:
     by_name = {r["name"]: r for r in cfg["repo"]}
     for name in plan["repos"]:
         repo = by_name[name]
-        out += [_norm({**c, "id": f"{name}:{c['id']}", "repo": name}, cfg, True) for c in repo.get("check", [])]
+        out += [_norm({**c, "id": f"{name}:{c['id']}", "repo": name}, cfg, True) for c in repo.get("check", []) if c.get("kind") != "guideline"]
         if repo.get("commit_pattern") or repo.get("commit_forbidden_trailers"):
             out.append({"id": f"{name}:commits", "type": "commits", "repo": name, "ac": [], "standing": True, "base": repo["base"],
                         "pattern": repo.get("commit_pattern"), "forbidden": repo.get("commit_forbidden_trailers", [])})

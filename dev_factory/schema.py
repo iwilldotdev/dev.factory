@@ -15,7 +15,8 @@ KINDS = ("ticket", "change", "pipeline", "design_frame", "design_image")
 # regexes, key secret-key list, ("e", *choices), ("r", lo, hi) int range, ("nr", lo, hi) number range.
 # A dict is a table; [spec] is an array of tables; the key "*" matches any name.
 T = namedtuple("T", "type default")
-CHECK = {"id": "c", "run": "c", "cwd": "s", "expect_exit": T("i", 0), "expect_pattern": "re", "timeout_s": "i"}
+CHECK = {"id": "c", "run": "c", "cwd": "s", "expect_exit": T("i", 0), "expect_pattern": "re", "timeout_s": "i",
+         "type": ("e", "cmd", "quality"), "parse": "c", "scoped": "c", "kind": ("e", "check", "guideline"), "text": "c"}
 ENV = {"up": "c", "down": "c", "health": T("s", "/"), "base_url": "c", "ready_timeout_s": T("i", 120),
        "depends_on": T("ls", []), "vars": T("ms", {}), "login_spec": "c", "login_secrets": T("key", []),
        "login_http": "c", "seed": "c", "reset": "c", "preflight": T("lc", []), "warmup": T("ls", []),
@@ -37,7 +38,7 @@ SPEC = {
              "reviewers": [{"scm": "c", "tracker": "c"}], "require_pipeline": T("b", False)},
     "autonomy": {"max_loops": T(("r", 0, 10), 3), "ship": T(("e", "ask", "draft-auto"), "ask")},
     "orchestration": {"max_parallel": T("i", 1)},
-    "metrics": {"tokens": "c"},
+    "metrics": {"tokens": "c", "idle_minutes": T("i", 30)},
     "hotfix": {"targets": [{"name": "c", "branch": "c"}]},
     "secrets": {"keys": T("key", [])},
 }

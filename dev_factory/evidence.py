@@ -43,7 +43,8 @@ def last(st: dict, check: str, mode: str, spec_hash: str, sha: str | None, fix: 
     check also needs the same `heads` of every repo it served [L-12]. Dirty records never count [L-07]."""
     for e in reversed(st["evidence"]):
         if (e["check"] == check and e["mode"] == mode and e["spec_hash"] == spec_hash and (sha is None or e["sha"] == sha)
-                and e["clean"] and e.get("fix") == fix and (heads is None or e.get("heads") == heads)):
+                and e["clean"] and e.get("fix") == fix and (heads is None or e.get("heads") == heads)
+                and (e.get("details") or {}).get("scope") != "scoped"):  # a scoped quality run never satisfies a gate [L-60]
             return e
     return None
 

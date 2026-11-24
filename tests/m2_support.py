@@ -32,7 +32,24 @@ child = "import sys, time; time.sleep(2.5); open(sys.argv[1], 'w').write('alive'
 subprocess.Popen([sys.executable, "-c", child, sys.argv[1]])
 time.sleep(60)
 '''
-FILES = {"app.py": "VALUE = 1\n", "check.py": CHECK_PY, "flaky.py": FLAKY_PY, "spawn.py": SPAWN_PY, "README.txt": "fixture\n"}
+LINT_PY = '''import os
+import sys
+files = sys.argv[1:] or sorted(f for f in os.listdir(".") if f.endswith(".txt"))
+if os.environ.get("LINT_ARGS"):
+    print("args: " + " ".join(sys.argv[1:]))
+bad = 0
+for name in files:
+    if os.path.isfile(name) and "BAD" in open(name).read():
+        print(os.path.abspath(name) + ": BAD word")
+        bad += 1
+flag = os.environ.get("LINT_FLAKY")
+if flag and not os.path.exists(flag):
+    open(flag, "w").close()
+    print("timing.txt: BAD flaky")
+    bad += 1
+sys.exit(1 if bad else 0)
+'''
+FILES = {"app.py": "VALUE = 1\n", "check.py": CHECK_PY, "flaky.py": FLAKY_PY, "spawn.py": SPAWN_PY, "lint.py": LINT_PY, "README.txt": "fixture\n"}
 _BASE: list[Path] = []
 
 

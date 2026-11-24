@@ -1,5 +1,6 @@
-// Independent probe corpus from the third-round audit of the protect hook (generators gen.js..gen4.js by the
-// auditor, ported verbatim except the user name, which is a placeholder filled from the home directory).
+// Independent probe corpus from the third- and fourth-round audits of the protect hook (generators gen.js..gen4.js
+// and audit4's p1..p4/x1..x5 by the auditors, ported verbatim except the user name and the scratch folder, which are
+// placeholders filled from the home directory and the temp dir).
 // Each probe is { cmd, write }: write = the command really writes if executed (by construction of the generator).
 // Decision data only: guard-regressions.test.mjs never executes a probe.
 'use strict';
@@ -366,12 +367,116 @@ for (const t of [
 return P;
 }
 
+// Fourth audit (generators audit4/p1..p4, x1..x5, legit; the fake home of the audit becomes this machine's home,
+// its scratch folder the temp dir as @TMP@). The junction, hard-link and repository set-up of x5/p4 is not reproduced
+// here (decision data only): guard-provable.test.mjs builds those on disk.
+function probes5() {
+const H = 'C:/Users/qzuserqz';
+const R = `${H}/.factory/runs/r1`;
+const CR = '/proc/cygdrive/c/Users/qzuserqz/.factory/runs/r1';
+const S = '@TMP@/scratch';
+const ST = `${H}/.factory/env/ws/React.storage.json`;
+const RB = R.replace(/\//g, '\\');
+const bytes = (s) => `bytes([${[...Buffer.from(s)].join(',')}]).decode()`;
+const P = [];
+const W = (c) => P.push({ cmd: c, write: true });
+const L = (c) => P.push({ cmd: c, write: false });
+for (const t of [
+  // p1 / x1: the /proc/cygdrive mount (R1), other mounts, case and non-ASCII letters
+  `rm ${CR}/run.json`, `cp ${S}/forged.json ${CR}/run.json`, `mv ${S}/forged.json ${CR}/run.json`, `rm -rf ${CR}/evidence`, `touch ${CR}/evidence/CHK-9.json`,
+  `sed -i s/orig/forged/ ${CR}/run.json`, `echo x > ${CR}/run.json`, `cat ${S}/forged.json > ${CR}/run.json`, `cd /proc/cygdrive/c/Users/qzuserqz && rm .factory/runs/r1/run.json`,
+  `mkdir ${CR}/reviews/x`, `rm -r ${CR}`, `rm -r /proc/cygdrive/c/Users/qzuserqz/.factory/runs`, `cp -r ${S}/ev ${CR}/evidence`, `rsync -a ${S}/forged.json ${CR}/run.json`,
+  `rm ${CR.replace('/c/', '/C/')}/run.json`, `rm /cygdrive/c/Users/qzuserqz/.factory/runs/r1/run.json`, `rm /c/Users/qzuserqz/.factory/runs/r1/run.json`,
+  `rm /Users/qzuserqz/.factory/runs/r1/run.json`, `rm /proc/self/root/../c/Users/qzuserqz/.factory/runs/r1/run.json`, `rm /proc/self/cwd/run.json`,
+  `rm ${R.toUpperCase()}/RUN.JSON`, `rm ${R.replace('/runs/', '/run\u017f/')}/run.json`, `rm ${R}/run.j\u017fon`, `touch ${R}/ev\u0131dence/CHK-9.json`,
+  `rm ${R}/run\uFF0Ejson`, `mkdir ${R}/ev\u0131dence/x`,
+  `cp ${S}/forged.json ${CR}/run.json && cat ${R}/run.json`, `cd /proc/cygdrive/c/Users/qzuserqz && cp ${S}/x .factory/runs/r1/run.json && cat ${R}/run.json`,
+  // p2: readers with write flags, cp/rsync flags, writers, sed, python, git, variables, cd, pipes
+  `sort -o ${R}/run.json ${S}/forged.json`, `sort -o${R}/run.json ${S}/f`, `sort --output=${R}/run.json ${S}/f`, `sort -mo ${R}/run.json ${S}/f`,
+  `sort -to ${S}/f > ${R}/notes/x`, `diff --to-file=${S}/f ${R}/run.json`, `diff -D X ${S}/f ${R}/run.json`,
+  `gzip -cf ${R}/run.json`, `gzip -d ${R}/evidence/x.gz`, `gzip -cd ${R}/evidence/x.gz -S x`, `gunzip -c -f ${R}/run.json.gz`,
+  `gzip -c --keep ${R}/run.json`, `tee ${R}/run.json`, `cat ${S}/f | tee ${R}/run.json`,
+  `jq . ${R}/run.json > ${R}/run.json`, `jq --in-place . ${R}/run.json`, `grep -r x ${R} > ${R}/notes/n`,
+  `find ${R} -delete`, `xxd -r ${S}/f ${R}/run.json`, `head -c 0 ${R}/run.json > ${R}/run.json`,
+  `echo x >> ${R}/run.json`, `echo x 1>${R}/run.json`, `echo x >| ${R}/run.json`, `echo x 2> ${R}/run.json`, `echo x >"${R}/run.json"`,
+  `Get-Content ${R}/run.json | Set-Content ${R}/run.json`,
+  `cp -t ${R}/evidence ${S}/f`, `cp --target-directory=${R}/evidence ${S}/f`, `cp ${S}/f --target-directory ${R}`, `cp -T ${S}/f ${R}/run.json`,
+  `cp -l ${S}/f ${R}/run.json`, `cp -s ${S}/f ${R}/x`, `cp --backup ${S}/f ${R}/remote/x`, `cp -rf ${S}/ev ${R}/evidence`,
+  `cp ${R}/remote/x ${R}/remote/y`, `cp ${R}/run.json ${R}/remote/run.json`, `cp ${S}/f ${R}/remote`,
+  `cp ${S}/f ${R}`, `cp ${S}/f ${H}/.factory/runs`, `cp ${S}/f ${H}/.factory/env/ws/React.pid`, `cp ${S}/f ${H}/.factory/env/ws/new.txt`,
+  `cp -- ${S}/f ${R}/run.json`, `cp ${S}/f -- ${R}/run.json`, `cp -a ${S}/f ${R}/remote/../run.json`, `cp ${S}/f ${R}/./run.json`,
+  `cp ${S}/f ${R}/remote//../run.json`, `cp ${S}/f ${R}/run.json.`, `cp ${S}/f '${R}/run.json '`, `cp ${S}/f ${R}/run.json::DATA`,
+  `cp ${S}/f "${R}"/run.json`, `cp ${S}/f ${R}/"run.json"`, `cp ${S}/f '${R}/run.json'`, `cp -L ${S}/f ${R}/run.json`,
+  `rsync --delete ${S}/e/ ${R}/remote/`, `rsync --remove-source-files ${R}/run.json ${S}/x`,
+  `rsync --files-from=${S}/l ${S} ${R}`, `rsync --temp-dir=${R}/evidence ${S}/f ${S}/g`, `rsync --log-file=${R}/run.json ${S}/f ${S}/g`,
+  `rsync -n ${S}/f ${R}/run.json`, `rsync ${S}/f ${R}/remote/`,
+  `rm -rf ${R}/remote`, `rm -rf ${R}/remote/..`, `rm -r ${R}/notes ${R}/evidence`, `rm -- ${R}/run.json`, `rm -rf ${H}/.factory/runs`,
+  `rmdir ${R}/reviews`, `rmdir -p ${R}/remote/a`, `mkdir ${R}/evidence2`, `mkdir -p ${R}/evidence/x`, `mkdir ${R}/checks`, `touch ${R}/run.json.tmp`,
+  `touch ${R}/run.json`, `touch -r ${R}/run.json ${S}/f`, `mv ${R}/remote ${R}/evidence`, `mv ${R}/remote/a ${R}/remote/b`, `mv ${R}/evidence ${S}/e`,
+  `mv ${R}/remote ${S}/r`, `mv ${S}/r ${R}/remote`, `mv -t ${R} ${S}/f`, `mv ${S}/f ${R}/remote/run.json`, `mv ${R} ${S}/r1`, `mv ${S}/x ${R}/acs.json`,
+  `mv ${S}/x ${R}/diagnosis.md`, `mkdir ${R}/figma`, `touch ${R}/checks/x`, `mv ${S}/x ${R}/review-report.md`, `mv ${S}/x ${R}/metrics.json`,
+  `rm ${ST}`, `rm -r ${H}/.factory/env`, `rm -r ${H}/.factory/env/ws`, `touch ${H}/.factory/env/ws/x.pid`,
+  `rm -r ${R}/../_inbox`, `rm -r ${H}/.factory/runs/_inbox/s1`, `rm -r ${H}/.factory/runs/_inbox`,
+  `sed -i s/a/b/w${R}/run.json ${S}/f`, `sed -i 's/a/b/w ${R}/run.json' ${S}/f`, `sed -i s,a,b, ${R}/run.json`,
+  `sed -f ${S}/s ${R}/run.json`, `sed s/a/b/ ${R}/run.json -i`, `sed s/a/b/ -i ${R}/run.json`, `sed s/a/b/ ${R}/run.json > ${R}/run.json`,
+  `sed -i s/a/b/ ${S}/f ${R}/run.json`, `sed -i -- s/a/b/ ${R}/run.json`, `sed -z -i s/a/b/ ${R}/run.json`,
+  `sed -i s/a/b/I ${R}/run.json`, `sed -ni s/a/b/ ${R}/run.json`, `sed -in s/a/b/ ${R}/run.json`, `sed -i -n s/a/b/ ${R}/notes/x`,
+  `python -c "open('${R}/run.json','w')"`, `python -c "import json;json.dump(1,open('${R}/run.json'))"`, `python -c "import sys;sys.stdout=open('${R}/run.json')"`,
+  `python -m json.tool ${R}/run.json ${R}/run.json`, `python -m factory run show r1 > ${R}/run.json`,
+  `python3 -c "print(1)" > ${R}/run.json`, `python -c "a=open;a('${R}/run.json','w')"`,
+  `python -c "import json,sys;json.dumps(1)" > ${R}/notes/x`, `python -c "import sys;sys.stdout.write(open('${S}/f').read())" > ${R}/run.json`,
+  `git -C ${S}/repo checkout -- ${R}/run.json`, `git checkout -- ${R}/run.json`, `git -C ${R} checkout .`, `git -C ${H}/.factory checkout .`,
+  `git -c core.worktree=${R} checkout .`, `git log --output=${R}/run.json`, `git log --output ${R}/run.json`, `git diff > ${R}/run.json`, `git show HEAD:x > ${R}/run.json`,
+  `git commit -F ${R}/run.json`, `git restore ${R}/run.json`, `git -C ${S}/repo add ${R}/run.json`,
+  `HOME=${S} rm ~/run.json`, `FACTORY_HOME=${S} factory run show r1; rm ${R}/run.json`, `rm $HOME/.factory/runs/r1/remote/x`, `rm ~/.factory/runs/r1/remote/x`,
+  `cd ${R} && rm run.json`, `cd ${H}/.factory && rm -r runs`, `cd ${H} && rm -r .factory/runs/r1/evidence`, `cd && rm -r .factory/runs/r1`,
+  `Set-Location -Path ${R}; rm run.json`, `sl ${R}; rm run.json`, `cd ${S}; cd ${H}; rm .factory/runs/r1/run.json`,
+  `echo ${R}/run.json | xargs rm`, `factory.cmd run show r1 > ${R}/run.json`, `factory run show r1 | tee ${R}/run.json`,
+  `rm ${S}/a,${R}/run.json`, `rm ${S}/a ${R}/run.json`, `Remove-Item ${R}/run.json`, `ri ${R}/run.json`,
+  // p3: indirection, xargs, junction aliases, escapes, flag-attached values, shells, cwd tracking, heredocs
+  `wipe() { rm -r "$1"; }; wipe ${R}/evidence`, `alias k=rm; k ${R}/run.json`, `alias k='rm -f'; k ${R}/run.json`, `Set-Alias k Remove-Item; k ${R}/run.json`,
+  `nal k mv; k ${S}/f ${R}/run.json`, `set -- cp ${S}/f; "$@" ${R}/run.json`, `f() { "$@"; }; f rm ${R}/run.json`, `function g { Clear-Content $args }; g ${R}/run.json`,
+  `echo run.json | xargs -IZ rm ${R}/Z`, `ls ${S} | xargs -I{} cp ${S}/{} ${R}/evidence/{}`, `echo run.json | xargs -n1 -I_ touch ${R}/_`, `echo x | xargs --replace rm ${R}/run.json`,
+  `rm ${R.replace('.factory', '.fact\\ory')}/run.json`, `rm ${RB}\\run.json`, `rm ${R}/ru\\n.json`, `cp ${S}/f ${R}/evidenc\\e/x`, `rm ${R}/run.js\\\non`,
+  `cp -t${R}/evidence ${S}/f`, `cp --target-directory ${R}/reviews ${S}/f`, `mv --target-directory=${R} ${S}/run.json`, `rm --interactive=never ${R}/run.json`,
+  `Remove-Item -Path:${R}/run.json`, `Copy-Item ${S}/f -Destination:${R}/run.json`, `sort -o${R}/metrics.json ${S}/f`, `touch -d2020-01-01 ${R}/run.json`,
+  `cmd //c del ${RB}\\run.json`, `cmd.exe /C erase ${RB}\\run.json`, `cmd /k "rd /s /q ${RB}\\evidence"`, `powershell -c "rm ${R}/run.json"`, `bash -c "rm ${R}/run.json"`,
+  `sh -c 'mv ${S}/f ${R}/run.json'`, `pushd ${R}; rm run.json`, `Push-Location -LiteralPath ${R}; Remove-Item run.json`, `(cd ${R}; rm run.json)`, `{ cd ${R}; rm run.json; }`,
+  `cd ${R} || rm run.json`, `sl -Path ${R}; ri run.json`, `chdir ${R} && touch evidence/x`,
+  `cat <<'EOF' > ${R}/run.json\n{"h":1}\nEOF`, `tee ${R}/run.json <<'EOF'\nx\nEOF`, `cat <<'EOF' > ${CR}/run.json\n{"h":1}\nEOF`,
+  // x2 / x3 / x4: PowerShell 5.1 re-quoting (R2)
+  `python -c 'print("exec(${bytes(`open(r'${R}/run.json','w').write('{"ps51":1}')`)})")'; cp ${R}/remote/x ${S}/y`,
+  `python -c 'print("getattr(open(${bytes(`${R}/run.json`)},chr(119)),${bytes('write')})(${bytes('{"ps51b":1}')})")'; cp ${R}/remote/x ${S}/y`,
+  `python -c 'print("getattr(open(${bytes(`${R}/run.json`)},chr(119)),${bytes('write')})(${bytes('{"ps51b":1}')})")'; rm -r ${R}/remote`,
+  `sed s/orig/forged/ 'q "q -i" q' ${R}/run.json`, `sed -n s/orig/forged/ 'q "q -i" q' ${R}/run.json`,
+  `sed s/orig/forged/ 'q "q -i" q' ${R}/run.json && cp ${R}/remote/x ${S}/y`,
+  // x5 / p4: TOCTOU through a moved or copied junction (R3), git with a foreign work tree (R4), PowerShell cp -L, factory.cmd
+  `mv ${S}/D ${S}/E && cp ${S}/forged.json ${S}/E/J/run.json && cp ${R}/remote/x ${S}/y`, `mv ${S}/D ${S}/E; cp ${S}/forged.json ${S}/E/J/run.json; cp ${R}/remote/x ${S}/y`,
+  `cp ${S}/forged.json ${S}/D/J/run.json && cp ${R}/remote/x ${S}/y`, `git -C ${S}/repo checkout -f HEAD -- run.json && cp ${R}/remote/x ${S}/y`,
+  `git -C C:/Users/qzuserqz/Code/dev.factory log -1 --output=${R}/run.json`,
+  `cp -r ${S}/A ${S}/B && cp ${S}/forged.json ${S}/B/J/run.json && cat ${R}/run.json`, `cp -a ${S}/A ${S}/B && cat ${S}/forged.json > ${S}/B/J/run.json && cat ${R}/run.json`,
+  `cp -r ${S}/A ${S}/B && cd ${S}/B/J && cat ${S}/forged.json > run.json && cat ${R}/run.json`, `cp ${R}/run.json -L ${S}/forged.json`, `cp -pv ${R}/run.json ${S}/x`,
+  `factory run show r1 'x&echo>${R}/run.json'; cp ${R}/remote/x ${S}/y`, `factory.cmd run show r1 'a" & echo x > ${R}/run.json & "'; cp ${R}/remote/x ${S}/y`,
+]) W(t);
+for (const t of [
+  // legit: what must stay allowed (or is a documented false positive)
+  `cat ${R}/run.json`, `grep -r pass ${R}/evidence`, `jq .status ${R}/evidence/CHK-1.json`, `Get-Content ${R}/run.json`, `cat ~/.factory/runs/r1/run.json`,
+  `cp ${R}/remote/x ${S}/x`, `cp ${ST} ${S}/x.json`, `sed -i 's/a/b/' ${S}/f && cat ${R}/run.json`,
+  `factory run human r1 "delete the spec; rm ${R}/run.json"`, `git -C C:/Users/qzuserqz/Code/dev.factory checkout main; cat ${R}/run.json`,
+  `cp ${R}/run.json ${S}/run.json`, `cat ${R}/run.json | jq .id`, `ls ${R}/evidence && cat ${R}/evidence/CHK-1.json`,
+  `python -c "import json; print(json.load(open('${R}/run.json'))['orig'])"`, `cp -r ${R}/evidence ${S}/ev`, `cp ${S}/n.md ${R}/notes/n.md`,
+  `gzip -c ${R}/run.json > ${S}/x.gz`, `ls -R ${R} > ${S}/l`, `cat $HOME/.factory/runs/r1/run.json > ${S}/x`, `cp $env:USERPROFILE/.factory/runs/r1/run.json ${S}/x`,
+  `cat ${R}/run.json | sed -i s/a/b/ ${S}/f`, `cd ${S} && echo x > run.json && cat ${R}/run.json`, `cp ${R}/remote/x ${S}/y`,
+]) L(t);
+return P;
+}
+
 /** Every probe, with the placeholders filled for `home` (default: this machine's home directory). */
 module.exports = function auditCorpus(home = os.homedir()) {
   const u = path.basename(home);
   const at = (i, c) => u.slice(0, i) + c + u.slice(i);
   const forms = [['@U83@', `${u.toUpperCase().slice(0, 6)}~1`], ['@UCARET@', at(3, '^')], ['@UBS@', at(3, String.fromCharCode(92))],
-    ['@UTICK@', at(2, '`')], ['@UTK3@', at(3, '`')], ['qzuserqz', u], ['QZUSERQZ', u.toUpperCase()]];
+    ['@UTICK@', at(2, '`')], ['@UTK3@', at(3, '`')], ['qzuserqz', u], ['QZUSERQZ', u.toUpperCase()], ['@TMP@', os.tmpdir().replace(/\\/g, '/')]];
   const fill = (s) => forms.reduce((acc, [k, v]) => acc.split(k).join(v), s);
-  return [...probes1(), ...probes2(), ...probes3(), ...probes4()].map((p) => ({ ...p, cmd: fill(p.cmd) }));
+  return [...probes1(), ...probes2(), ...probes3(), ...probes4(), ...probes5()].map((p) => ({ ...p, cmd: fill(p.cmd) }));
 };

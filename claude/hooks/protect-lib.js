@@ -744,8 +744,13 @@ function extraReason(command, ctxIn, depth) {
 // ---------- provably safe: a positive grammar ----------
 //
 // A command the coarse nets deny is allowed only when the WHOLE command parses into this grammar. It does not look
-// for dangers; it accepts a short list of shapes and everything else keeps the coarse verdict. Each rule holds in
-// bash, PowerShell (where cp/rm/mv/cat/ls/sort/diff/echo are aliases of cmdlets) and on Windows paths.
+// for dangers; it accepts a short list of shapes and everything else keeps the coarse verdict:
+//   readers (cat, grep, jq, Get-Content...; sort/diff/gzip with listed flags), with output redirections;
+//   cp [listed flags] SRC... DEST;  sed [-i|-n|-E|-r] s/a/b/[gI0-9] FILE...;  cd /absolute;  the factory CLI (data).
+// A write target (redirection, cp destination, sed -i file) is /dev/null, NUL, or a strict literal whose real path is
+// inside a safe root (the temp dir; the session cwd when it is outside every factory home) and outside the guarded
+// tree, from every cwd the command may be in. Each rule holds in bash, PowerShell 5.1 and later (where cp, cat, ls,
+// sort, diff, echo are cmdlet aliases and native arguments are re-quoted) and on Windows paths.
 
 // Smart quotes and dashes are quotes and parameter dashes to PowerShell: only ASCII, letters and digits pass.
 const LOOKALIKE = /[^\t\n\x20-\x7e\p{L}\p{N}]/u;
@@ -753,10 +758,12 @@ const LOOKALIKE = /[^\t\n\x20-\x7e\p{L}\p{N}]/u;
 const KNOWN_VAR = /^(?:\$HOME|\$\{HOME\}|\$FACTORY_HOME|\$\{FACTORY_HOME\}|\$env:USERPROFILE|\$env:HOME|\$env:FACTORY_HOME|%USERPROFILE%|%FACTORY_HOME%)(?![\w:%}])/i;
 
 /**
- * Strict lexer: per segment, words `{v, raw, quoted, whole, split, odd}` plus output (`outs`) and input (`ins`)
+ * Strict lexer: per segment, words `{v, raw, quoted, whole, split, odd, qbad}` plus output (`outs`) and input (`ins`)
  * redirection words; null on anything outside the grammar (substitutions, globs, braces, parens, comments, `&`,
  * heredocs, process substitution, escapes other than `\x` in a word, unknown variables, `~user`).
  * `whole`: the word is one quoted string. `split`: PowerShell would split it (`"a"/b`). `odd`: a variable, `~` or `\`.
+ * `qbad`: a quoted part is empty, holds whitespace or a quote character, or starts with `-`: PowerShell 5.1 re-quotes
+ * such an argument for a native program without escaping, so the program may see other words or a flag.
  * `mode` is the shell whose reading of an unquoted `\` is used: 'bash' (escapes the next character) or 'ps' (plain).
  */
 function lexStrict(cmd, mode = 'bash') {
@@ -813,13 +820,14 @@ function lexStrict(cmd, mode = 'bash') {
       i += 1;
       continue;
     }
-    if (!w) w = { v: '', raw: '', quoted: false, whole: false, split: false, odd: false };
+    if (!w) w = { v: '', raw: '', quoted: false, whole: false, split: false, odd: false, qbad: false };
     const fresh = w.raw === '';
     if (c === "'" || c === '"') {
       const e = cmd.indexOf(c, i + 1);
       if (e < 0) return null;
       const body = cmd.slice(i + 1, e);
       if (c === '"' && /[$`\\]/.test(body)) return null;
+      if (body === '' || /[\s'"]/.test(body) || body.startsWith('-')) w.qbad = true;
       w.v += body;
       w.raw += cmd.slice(i, e + 1);
       w.quoted = true;
@@ -868,14 +876,14 @@ function lexStrict(cmd, mode = 'bash') {
 }
 
 const ABS = /^(?:[A-Za-z]:\/|\/)/;
-const STRICT_PATH = /^(?:[A-Za-z]:\/)?[\p{L}\p{N}_ .+\/-]+$/u;
+const STRICT_PATH = /^(?:[A-Za-z]:\/)?[A-Za-z0-9_.+\/-]+$/;
 
-/** A literal path with one meaning in bash, PowerShell and Windows: no quoting tricks, variables, `\`, `..`, `//`, streams, short names, trailing dots. */
+/** A literal ASCII path with one meaning in bash, PowerShell and Windows: no quoting tricks, variables, `\`, `..`, `//`, spaces, streams, short names, trailing dots. */
 function strictPath(w) {
-  if (!w || w.odd || w.split || (w.quoted && !w.whole)) return false;
+  if (!w || w.odd || w.split || w.qbad || (w.quoted && !w.whole)) return false;
   const v = w.v;
   if (!STRICT_PATH.test(v) || v.startsWith('-') || v.includes('//')) return false;
-  return v.replace(/^[A-Za-z]:/, '').split('/').every((c) => c === '' || c === '.' || (c !== '..' && !/^ |[ .]$/.test(c)));
+  return v.replace(/^[A-Za-z]:/, '').split('/').every((c) => c === '' || c === '.' || (c !== '..' && !c.endsWith('.')));
 }
 
 /** Real path of an fs path: the nearest existing ancestor resolved through links and junctions, plus the rest; null when unsure. */
@@ -903,17 +911,18 @@ function realOf(p) {
 }
 
 /**
- * Filesystem paths a strict literal may denote from `cwd`. On Windows a `/x/...` path is read every way a shell may:
- * PowerShell (the current drive's root), Git Bash / WSL / Cygwin drives (`/c/`, `/mnt/c/`, `/cygdrive/c/`), Git Bash `/tmp`.
+ * Filesystem paths a strict literal denotes from `cwd`, one per shell reading, or null when a reading is not certain.
+ * On Windows a `/x` path is the root of the current drive (`drive`) in PowerShell and a Git Bash mount: only the drive
+ * mounts (`/c/`) and `/tmp` are mapped; any other mount (`/proc/cygdrive`, `/mnt`, `/cygdrive`, `/dev`...) is unknown.
  */
-function fsForms(v, cwd) {
-  if (!ABS.test(v)) return fsForms(String(cwd || process.cwd()).replace(/\\/g, '/'), null).map((b) => `${b.replace(/\/$/, '')}/${v}`);
+function writeForms(v, cwd, drive) {
+  if (!ABS.test(v)) {
+    const bases = writeForms(String(cwd).replace(/\\/g, '/'), null, drive);
+    return bases && bases.map((b) => `${b.replace(/\/$/, '')}/${v}`);
+  }
   if (process.platform !== 'win32' || !v.startsWith('/')) return [v];
-  const out = [v];
-  const drive = v.match(/^\/(?:mnt\/|cygdrive\/)?([A-Za-z])(\/.*)?$/);
-  if (drive) out.push(`${drive[1]}:${drive[2] || '/'}`);
-  if (/^\/tmp(?:\/|$)/.test(v)) out.push(os.tmpdir() + v.slice(4));
-  return out;
+  const mount = /^\/[A-Za-z](?:\/|$)/.test(v) ? `${v[1]}:/${v.slice(3)}` : /^\/tmp(?:\/|$)/.test(v) ? os.tmpdir() + v.slice(4) : null;
+  return mount && [`${drive}:${v}`, mount];
 }
 
 let homeCache = null;
@@ -930,50 +939,62 @@ function guardedHomes(ctx) {
   return homeCache.homes;
 }
 
-/** A home, an ancestor of one, its env folder, or a protected run path (or the run folder above it). */
-function touchesGuarded(p, homes) {
-  return homes.some((h) => under(h, p) || (under(p, h) && (under(p, `${h}/env`) || isProtectedOrAncestor(p, h))));
+/** A factory home, inside one (any run file, remote/ and notes/ included), or an ancestor of one. */
+function nearHome(p, homes) {
+  return homes.some((h) => under(h, p) || under(p, h));
 }
 
-/** A write target: strict literal that resolves outside the guarded tree, lexically and through links, from every cwd the command may be in. */
-function writeOk(w, cwds, ctx) {
-  if (w && !w.quoted && (w.v === '/dev/null' || /^nul$/i.test(w.v))) return true;
-  if (!strictPath(w)) return false;
-  const homes = guardedHomes(ctx);
-  return (ABS.test(w.v) ? [ctx.cwd] : cwds).every((cwd) => !touchesGuarded(normPath(w.v, cwd), homes)
-    && fsForms(w.v, cwd).every((f) => { const r = realOf(f); return r !== null && !touchesGuarded(normPath(r), homes); }));
+/** Where a write may land: the real temp dir, and the real session cwd when it is outside every guarded home. */
+function safeRoots(ctx, homes) {
+  const inHome = (p) => homes.some((h) => under(p, h));
+  const cwd = ctx.cwd ? realOf(String(ctx.cwd)) : null;
+  const tmp = realOf(os.tmpdir());
+  return [tmp, cwd && !inHome(normPath(ctx.cwd)) && !inHome(normPath(cwd)) ? cwd : null].filter(Boolean).map((r) => normPath(r));
 }
 
-/** The work tree git would change (the repository around cwd, else cwd) lies outside the guarded tree. */
-function gitTreeOk(cwd, ctx) {
+/**
+ * A real path a write may land on: inside a safe root, neither inside nor above a factory home, not an existing folder (a cp
+ * into it would write <dest>/<name>, perhaps an existing link) and not a file with a second name (a hard link).
+ */
+function landsSafe(real, homes, roots) {
+  if (real === null) return false;
+  const p = normPath(real);
+  if (nearHome(p, homes) || !roots.some((r) => under(p, r))) return false;
+  try {
+    const st = fs.lstatSync(real);
+    return !st.isDirectory() && st.nlink <= 1;
+  } catch (e) {
+    return e.code === 'ENOENT';
+  }
+}
+
+/**
+ * The real paths a write target lands on, from every cwd the command may be in and in every shell reading, or null when
+ * the target is not acceptable: not /dev/null or NUL, not a strict literal, naming a run path, or landing outside a safe root.
+ */
+function targetPaths(w, cwds, ctx) {
+  if (w && !w.quoted && (w.v === '/dev/null' || (process.platform === 'win32' && /^nul$/i.test(w.v)))) return [];
+  if (!strictPath(w) || mentions(w, ctx)) return null;
   const homes = guardedHomes(ctx);
-  if (touchesGuarded(normPath(cwd), homes)) return false;
-  return fsForms(String(cwd).replace(/\\/g, '/'), null).every((f) => {
-    const real = realOf(f);
-    if (real === null || touchesGuarded(normPath(real), homes)) return false;
-    for (let d = real; ; d = path.dirname(d)) {
-      if (fs.existsSync(path.join(d, '.git'))) return !touchesGuarded(normPath(d), homes);
-      if (path.dirname(d) === d) return true;
+  const roots = safeRoots(ctx, homes);
+  const drive = (String(ctx.cwd || '').match(/^([A-Za-z]):/) || process.cwd().match(/^([A-Za-z]):/) || ['', 'C'])[1];
+  const out = [];
+  for (const cwd of ABS.test(w.v) ? [ctx.cwd || process.cwd()] : cwds) {
+    if (nearHome(normPath(w.v, cwd), homes)) return null;
+    const forms = writeForms(w.v, cwd, drive);
+    if (!forms) return null;
+    for (const f of forms) {
+      const real = realOf(f);
+      if (!landsSafe(real, homes, roots)) return null;
+      out.push(real);
     }
-  });
+  }
+  return out;
 }
 
 /** The word names a run or env path in any reading (the baseline's mention test, per word and per flag-attached value). */
 function mentions(w, ctx) {
   return [w.v, w.raw, w.v.replace(/\\/g, ''), ...pathCands(w.v)].some((t) => runsMention(t, ctx.home) || textMentionsProtected(t, ctx));
-}
-
-const PY_NAMES = new Set(['import', 'json', 'sys', 'print', 'open', 'load', 'loads', 'dumps', 'stdout', 'write', 'read', 'strip', 'split',
-  'splitlines', 'join', 'get', 'keys', 'values', 'items', 'len', 'str', 'int', 'sorted', 'for', 'in', 'if', 'else', 'not', 'and', 'or', 'is',
-  'None', 'True', 'False', 'indent']);
-
-/** `python -c CODE` that cannot write: ASCII, plain string literals, open() with one literal, names from PY_NAMES or one letter. */
-function pythonReadOnly(code) {
-  if (/[^\n\x20-\x7e]|[\\#`@$]|['"]{3}/.test(code)) return false;
-  let prefixed = false;
-  const rest = code.replace(/'[^'\n]*'|"[^"\n]*"/g, (m, at) => { if (/\w/.test(code[at - 1] || '')) prefixed = true; return ' 0 '; });
-  if (prefixed || /['"]/.test(rest) || /\bopen\b(?!\s*\(\s*0\s*\))/.test(rest)) return false;
-  return (rest.match(/[A-Za-z_]\w*/g) || []).every((n) => PY_NAMES.has(n) || /^[a-z]$/.test(n));
 }
 
 // Readers: every operand is read and no flag of theirs writes or runs a program.
@@ -987,107 +1008,64 @@ const READ_FLAGS = {
   gunzip: /^(?:-[cdfnqv]+|--stdout|--to-stdout)$/,
   zcat: /^-[fqv]+$/,
 };
-// Copiers: positional sources are read, the last positional is the destination. No link, move, delete or target flags.
-const COPY_FLAGS = {
-  cp: /^(?:-[rRafvpPnuLH]+|--(?:recursive|archive|verbose|no-clobber|update|preserve|dereference|force))$/,
-  rsync: /^(?:-[avrzhPnc]+|--(?:archive|verbose|recursive|compress|human-readable|progress|dry-run|stats|checksum|update|times))$/,
-};
-// Writers: every operand is a write target.
-const WRITE_FLAGS = {
-  rm: /^(?:-[rRfiv]+|--(?:recursive|force|verbose))$/, rmdir: /^(?:-[pv]+|--parents)$/, mkdir: /^(?:-[pv]+|--parents)$/,
-  touch: /^-[acm]+$/, mv: /^(?:-[fivn]+|--(?:force|no-clobber|verbose))$/,
-};
-
-const GIT_READ = new Set(['status', 'log', 'diff', 'show', 'branch', 'rev-parse', 'ls-files']);
-const GIT_WRITE = new Set(['checkout', 'switch', 'add', 'commit']);
+// cp flags that mean the same harmless thing to GNU cp and, as Copy-Item parameters, are a switch or a binding error
+// (no -t/-T/-l/-s/-b; no -L, which PowerShell reads as -LiteralPath and so swaps source and destination; no -p, -pv is -PipelineVariable).
+const CP_FLAGS = /^(?:-[rRafvnu]+|--(?:recursive|archive|verbose|no-clobber|update|force))$/;
 const SED_SCRIPT = /^s\/[^\/\\\n]*\/[^\/\\\n]*\/[gI0-9]*$/;
+// cmd.exe reads these in the arguments of factory.cmd however they were quoted (PowerShell re-quotes only on whitespace).
+const CMD_META = /["&|<>^%!]/;
 
-/** Roles of a segment's arguments (`read`, `data`, `write`, `plain`, `flag`) or null when the segment is not in the grammar. */
-function segmentRoles(seg, cwds, ctx, mode) {
-  const { words } = seg;
-  if (!words.length) return [];
-  const head = words[0];
-  if (head.quoted || head.odd || !/^[A-Za-z][\w.-]*$/.test(head.v)) return null;
+/** A segment's kind (`read`, `cp`, `sed`, `factory`) and its words' roles (`read`, `data`, `plain`, `write`, `dest`), or null outside the grammar. */
+function segmentRoles(seg) {
+  const head = seg.words[0];
+  if (!head || head.quoted || head.odd || !/^[A-Za-z][\w.-]*$/.test(head.v)) return null;
   const name = head.v.toLowerCase();
-  const args = words.slice(1);
-  const as = (role) => args.map((w) => ({ w, role }));
+  const args = seg.words.slice(1);
+  const as = (role, ws = args) => ws.map((w) => ({ w, role }));
   const isFlag = (w) => /^-./.test(w.v);
-  if (/^factory(?:\.cmd)?$/.test(name)) return as('data');
-  if (/^(?:python3?|py)$/.test(name)) {
-    if (args.length >= 2 && args[0].v === '-m' && args[1].v === 'factory') return as('data');
-    return args.length === 2 && args[0].v === '-c' && pythonReadOnly(args[1].v) ? as('data') : null;
+  if (/^factory(?:\.cmd)?$/.test(name) || (/^python3?$/.test(name) && args.length >= 2 && args[0].raw === '-m' && args[1].raw === 'factory')) {
+    return args.some((w) => CMD_META.test(w.v)) ? null : { kind: 'factory', roles: as('data') };
   }
-  if (READ_ANY.has(name)) return as('read');
+  if (seg.words.some((w) => w.qbad)) return null;
+  if (READ_ANY.has(name)) return { kind: 'read', roles: as('read') };
   if (READ_FLAGS[name]) {
     const flags = args.filter(isFlag);
     if (!flags.every((w) => READ_FLAGS[name].test(w.v))) return null;
     if (/^g/.test(name) && !flags.some((w) => /^-[^-]*c|^--(?:to-)?stdout$/.test(w.v))) return null;
-    return args.map((w) => ({ w, role: isFlag(w) ? 'flag' : 'read' }));
+    return { kind: 'read', roles: args.map((w) => ({ w, role: isFlag(w) ? 'flag' : 'read' })) };
   }
-  if (CHDIR.has(name)) return as('plain'); // checked in provablySafe
-  if (seg.piped) return null; // PowerShell binds piped objects to the path parameters of cmdlets (`ls R | rm`)
-  if (COPY_FLAGS[name] || WRITE_FLAGS[name]) {
-    const flagRe = COPY_FLAGS[name] || WRITE_FLAGS[name];
-    const out = [];
+  if (name === 'cp' && !seg.piped) { // PowerShell binds piped objects to Copy-Item's path parameters
     const pos = [];
     let opts = true;
     for (const w of args) {
       if (opts && w.v === '--') opts = false;
-      else if (opts && isFlag(w)) { if (!flagRe.test(w.v)) return null; } else { pos.push(w); continue; }
-      out.push({ w, role: 'flag' });
+      else if (opts && isFlag(w)) { if (!CP_FLAGS.test(w.v)) return null; } else if (w.v.includes(',')) return null; // PowerShell: an array
+      else pos.push(w);
     }
-    if (WRITE_FLAGS[name]) return pos.length ? out.concat(pos.map((w) => ({ w, role: 'write' }))) : null;
-    // One operand: rsync lists it and bash's cp fails; PowerShell's cp (Copy-Item) would copy it into the cwd.
-    if (pos.length === 1 && (name === 'rsync' || mode === 'bash')) return out.concat([{ w: pos[0], role: 'read' }]);
     if (pos.length < 2) return null;
-    return out.concat(pos.slice(0, -1).map((w) => ({ w, role: 'read' })), [{ w: pos[pos.length - 1], role: 'write' }]);
+    return { kind: 'cp', roles: [...as('read', pos.slice(0, -1)), { w: pos[pos.length - 1], role: 'dest' }] };
   }
   if (name === 'sed') {
-    const out = [];
     let script = null;
     let inPlace = false;
-    for (let i = 0; i < args.length; i += 1) {
-      const w = args[i];
-      if (isFlag(w) && w.v === '-e' && !script && args[i + 1]) {
-        script = args[i + 1];
-        out.push({ w, role: 'flag' }, { w: script, role: 'plain' });
-        i += 1;
-      } else if (isFlag(w)) {
-        if (w.v === '-i' || w.v === '--in-place') inPlace = true;
-        else if (!/^-[Ern]$/.test(w.v)) return null;
-        out.push({ w, role: 'flag' });
-      } else if (!script) {
-        script = w;
-        out.push({ w, role: 'plain' });
-      } else out.push({ w, role: inPlace ? 'write' : 'read' });
+    const files = [];
+    for (const w of args) {
+      if (isFlag(w)) {
+        if (w.v === '-i') inPlace = true;
+        else if (!/^-[nEr]$/.test(w.v)) return null;
+      } else if (!script) script = w;
+      else files.push(w);
     }
-    return script && SED_SCRIPT.test(script.v) ? out.map((r) => (r.role === 'read' && inPlace ? { ...r, role: 'write' } : r)) : null;
-  }
-  if (name === 'git') {
-    const out = [];
-    let here = cwds;
-    let i = 0;
-    for (; i < args.length && isFlag(args[i]); i += 1) {
-      if (args[i].v === '-C' && strictPath(args[i + 1]) && ABS.test(args[i + 1].v)) {
-        out.push({ w: args[i], role: 'flag' }, { w: args[i + 1], role: 'plain' });
-        here = [args[i + 1].v];
-        i += 1;
-      } else if (args[i].v === '--no-pager') out.push({ w: args[i], role: 'flag' });
-      else return null;
-    }
-    const sub = args[i] ? args[i].v : '';
-    if (!(GIT_READ.has(sub) || GIT_WRITE.has(sub)) || args.slice(i).some((w) => /^--output/.test(w.v))) return null;
-    if (GIT_WRITE.has(sub) && !here.every((c) => gitTreeOk(c, ctx))) return null;
-    return out.concat(args.slice(i).map((w) => ({ w, role: 'plain' })));
+    if (!script || !SED_SCRIPT.test(script.v)) return null;
+    return { kind: 'sed', roles: [{ w: script, role: 'plain' }, ...as(inPlace ? 'write' : 'read', files)] };
   }
   return null;
 }
 
 /**
- * True only when the whole command parses into the grammar: known commands, every word classified, every write target
- * strict and outside the guarded tree (lexically and through links), run paths named only where they are read
- * (reader operands, copier sources, factory CLI and read-only `python -c` arguments) or written into an unguarded
- * part of a run folder by a literal path.
+ * True only when the whole command parses into the grammar in both shells: known command words, every word classified,
+ * run paths named only where they are read (reader operands, cp sources, factory CLI arguments), every write target
+ * landing in a safe root, and no write under a path that an earlier cp of the same command created (a link it copied).
  */
 function provablySafe(command, ctx) {
   return ['bash', 'ps'].every((mode) => safeIn(String(command), ctx, mode));
@@ -1102,24 +1080,36 @@ function safeIn(command, ctx, mode) {
     const name = seg.words.length ? seg.words[0].v.toLowerCase() : '';
     if (!CHDIR.has(name)) continue;
     const args = seg.words.slice(1);
-    if (args.length > 1 || seg.piped || seg.outs.length || seg.ins.length) return false;
-    if (!args.length) {
-      if (name !== 'cd') return false;
-      cwds.push(homeDir());
-    } else if (!strictPath(args[0]) || !ABS.test(args[0].v) || mentions(args[0], ctx)) return false;
-    else cwds.push(args[0].v);
+    if (name !== 'cd' || args.length !== 1 || seg.piped || seg.outs.length || seg.ins.length) return false;
+    if (!strictPath(args[0]) || !ABS.test(args[0].v) || mentions(args[0], ctx)) return false;
+    cwds.push(args[0].v);
   }
+  const writes = [];
   let named = false;
-  for (const seg of segs) {
-    const roles = segmentRoles(seg, cwds, ctx, mode);
-    if (!roles) return false;
-    if (!seg.outs.every((w) => writeOk(w, cwds, ctx))) return false;
-    for (const { w, role } of [...roles, ...seg.ins.map((x) => ({ w: x, role: 'read' }))]) {
+  for (const [i, seg] of segs.entries()) {
+    if (CHDIR.has(seg.words.length ? seg.words[0].v.toLowerCase() : '')) continue;
+    const s = segmentRoles(seg);
+    if (!s || ((seg.outs.length || seg.ins.length) && s.kind !== 'read')) return false;
+    for (const w of seg.outs) {
+      const paths = targetPaths(w, cwds, ctx);
+      if (!paths) return false;
+      writes.push({ i, paths });
+    }
+    for (const { w, role } of [...s.roles, ...seg.ins.map((x) => ({ w: x, role: 'read' }))]) {
       const m = mentions(w, ctx);
       named = named || m;
-      if (role === 'write' ? !writeOk(w, cwds, ctx) : m && role !== 'read' && role !== 'data') return false;
+      if (role === 'write' || role === 'dest') {
+        const paths = targetPaths(w, cwds, ctx);
+        if (!paths) return false;
+        writes.push({ i, paths, cp: role === 'dest' });
+      } else if (m && role !== 'read' && role !== 'data') return false;
     }
-    if (seg.outs.some((w) => mentions(w, ctx))) named = true;
+  }
+  // cp -r/-a copies links as links: a later write at or under an earlier cp destination may go through one.
+  const norm = (ps) => ps.map((p) => normPath(p));
+  for (const d of writes.filter((x) => x.cp)) {
+    const dp = norm(d.paths);
+    if (writes.some((t) => t.i > d.i && norm(t.paths).some((p) => dp.some((q) => under(p, q))))) return false;
   }
   // A run path in the raw text that no single word accounts for was split or spelled in a way the lexer did not see.
   return named || !(runsMention(command, ctx.home) || textMentionsProtected(command, ctx));

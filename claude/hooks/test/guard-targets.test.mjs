@@ -13,15 +13,12 @@ const ALLOW = [
   // observed false positives (runs 9593, 9531 and the scope batch)
   `head -c 300 ${RUN}/evidence/CHK-1.json`,
   `ls ${RUN}`,
-  `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
   `python -c "import json; print(json.load(open('${RUN}/remote/issue.json'))['key'])"`,
   `cp ${STORAGE} ${SCRATCH}/state.json`,
   `cp ${RUN}/run.json ${SCRATCH}/run.json`,
   `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`,
-  `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
   `git checkout main && cat ${STORAGE}`,
   `git -C /other/repo checkout main -- src/a.ts`,
-  `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,
   `factory run human acme-dev-1 "user: delete discover-task.spec.ts; rm -rf x then cp a ${RUN}/run.json"`,
   `factory run human acme-dev-1 "user: said \\"delete the spec\\" and move it" && cat ${RUN}/run.json`,
   `python -m factory run human acme-dev-1 "user: remove it" --note "rm a"`,
@@ -29,7 +26,16 @@ const ALLOW = [
   `cat ${RUN}/run.json | head -3; touch ${SCRATCH}/x`,
 ];
 
+// Documented false positives (once allowed on this branch): python -c, git and a run-folder write target are outside
+// the provably-safe grammar, so the coarse denial stands. Use separate commands or the Edit/Write tools.
+const STILL_DENIED = [
+  `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
+  `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
+  `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,
+];
+
 const DENY = [
+  ...STILL_DENIED,
   // writes through a redirection after a read
   `cat ${RUN}/run.json > ${RUN}/evidence/x.json`,
   `cat ${RUN}/run.json && echo hi > ${RUN}/run.json`,
@@ -116,5 +122,6 @@ test('a factory home with spaces: quoted protected paths are matched, sources st
   assert.ok(denied(protect(`rm "${spaced}/evidence/CHK-1.json"`, '/work', env)));
   assert.ok(denied(protect(`cp x.json "C:\\fh test\\.factory\\runs\\acme-dev-1\\run.json"`, '/work', env)));
   assert.ok(denied(protect(`sed -i s/a/b/ "${spaced}/run.json"`, '/work', env)));
-  assert.ok(!denied(protect(`cp "${spaced}/run.json" ${SCRATCH}/x.json`, '/work', env)));
+  // a quoted word with a space is outside the provably-safe grammar (PowerShell 5.1 re-quoting): a documented false positive
+  assert.ok(denied(protect(`cp "${spaced}/run.json" ${SCRATCH}/x.json`, '/work', env)));
 });

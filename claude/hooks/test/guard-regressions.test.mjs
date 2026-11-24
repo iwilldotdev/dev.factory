@@ -87,6 +87,24 @@ const REGRESSION = [
   // M6: shells whose body the lexer cannot judge; M7: Push-Location; a subshell around a cd
   'cmd /c del @F@', 'cmd /c "del @F@"', 'Push-Location @R@; Remove-Item run.json', 'Push-Location @R@; rm run.json',
   'Push-Location -Path @R@; Clear-Content run.json',
+  // fourth audit (round 3 of the provably-safe grammar). R2: PowerShell 5.1 re-quotes a native argument with spaces
+  // without escaping its inner quotes (sed then sees -i), and strips the inner quotes of python -c code
+  `sed s/orig/forged/ 'q "q -i" q' @F@`, `sed -n s/orig/forged/ 'q "q -i" q' @F@`, `sed s/orig/forged/ "q 'q -i' q" @F@`, `cp '-t' @E@ ${SCRATCH}/x`,
+  `python -c 'print("exec(bytes([111]).decode())")'; cp @R@/remote/x ${SCRATCH}/y`,
+  `python -c 'print("getattr(open(chr(120),chr(119)),chr(119))")'; cp @R@/remote/x ${SCRATCH}/y`,
+  // R3: the real path is checked before an earlier segment moves or copies a folder holding a junction into the run
+  `mv ${SCRATCH}/D ${SCRATCH}/E && cp ${SCRATCH}/forged.json ${SCRATCH}/E/J/run.json && cp @R@/remote/x ${SCRATCH}/y`,
+  `mv ${SCRATCH}/D ${SCRATCH}/E; cp ${SCRATCH}/forged.json ${SCRATCH}/E/J/run.json; cp @R@/remote/x ${SCRATCH}/y`,
+  `cp -r ${SCRATCH}/D ${SCRATCH}/E && cp ${SCRATCH}/forged.json ${SCRATCH}/E/J/run.json && cp @R@/remote/x ${SCRATCH}/y`,
+  `cp -a ${SCRATCH}/D ${SCRATCH}/E && cp ${SCRATCH}/forged.json ${SCRATCH}/E/J/x.json && cp @F@ ${SCRATCH}/y`,
+  // R4: a repository whose core.worktree is the run folder
+  `git -C ${SCRATCH}/repo checkout -f HEAD -- run.json && cp @R@/remote/x ${SCRATCH}/y`, `git -C ${SCRATCH}/repo checkout -f HEAD -- run.json; cp @F@ ${SCRATCH}/y`,
+  // minors: rmdir -p walks up, a bare cd (USERPROFILE vs $HOME), non-ASCII letters in a write target, PowerShell's cp -L
+  // (-LiteralPath swaps source and destination) and -pv, cmd.exe metacharacters in factory.cmd data, the run folder as target
+  'rmdir -p @R@/remote/a', 'cd && cp @R@/remote/x x.json && cat @F@', `cp @R@/remote/x ${SCRATCH}/evıdence && cat @F@`,
+  `cp @F@ -L ${SCRATCH}/x`, `cp -pv @F@ ${SCRATCH}/x`, `factory run show r1 'x&echo>@F@'; cp @R@/remote/x ${SCRATCH}/y`,
+  `factory.cmd run show r1 'a" & echo x > @F@ & "'; cp @R@/remote/x ${SCRATCH}/y`, 'cp /tmp/x @R@/remote/y && cat @F@',
+  'sed -i s/a/b/ @R@/notes/n.md && cat @F@', 'cat @F@ > @R@/remote/copy.json && cp @F@ /tmp/x',
 ];
 // Third audit, spelled with this machine's home: junction aliases (M3), bash escapes in all-backslash paths (M4), odd
 // spellings attached to a flag value (M5), cmd.exe carets and quote loss (M6). The junction rows need the junction.
@@ -103,6 +121,18 @@ const M_HOME = WIN ? [
   `cmd /c del C:\\Users\\${U.slice(0, 3)}^${U.slice(3)}\\.factory\\runs\\r1\\run.json`, `cmd /c del C:\\Users\\${U}\\.fac^tory\\runs\\r1\\run.json`,
   `cmd /c del "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`, `rm C:/Users/${UPPER.slice(0, 6)}~1/.factory/runs/r1/run.json`,
   `rm "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`, `cp /tmp/x "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`,
+  // fourth audit R1: the Git Bash /proc/cygdrive mount is another name of the drive (as the write target of rm, cp, mv,
+  // sed -i, touch, and through a cd). Editors and redirections there were allowed before the grammar too (not covered here).
+  ...['c', 'C'].flatMap((d) => {
+    const C = HOME.replace(/^([A-Za-z]):/, `/proc/cygdrive/${d}`);
+    const F = `${C}/.factory/runs/r1`;
+    return [
+      `rm ${F}/run.json`, `cp /tmp/forged.json ${F}/run.json`, `mv /tmp/forged.json ${F}/run.json`, `sed -i s/orig/forged/ ${F}/run.json`,
+      `touch ${F}/evidence/CHK-9.json`, `rm -rf ${F}/evidence`, `rm -r ${F}`, `cp -r /tmp/ev ${F}/evidence`,
+      `cp /tmp/forged.json ${F}/run.json && cat ~/.factory/runs/r1/run.json`, `cd ${C} && rm .factory/runs/r1/run.json`,
+      `cd ${C} && cp /tmp/x .factory/runs/r1/run.json && cat ~/.factory/runs/r1/run.json`,
+    ];
+  }),
   ...(fs.existsSync('C:/Documents and Settings') ? [
     `rm "C:/Documents and Settings/${U}/.factory/runs/r1/run.json"`, `rm -rf "C:/Documents and Settings/${U}/.factory/runs/r1/evidence"`,
     `cat C:/x && cp /tmp/x "C:/Documents and Settings/${U}/.factory/runs/r1/run.json"`,
@@ -122,12 +152,10 @@ const FIXED_DENY = [
 const STORAGE = `${FH_POSIX}/env/ws/React.storage.json`;
 const ALLOW = [
   `head -c 300 ${RUN}/evidence/CHK-1.json`, `ls ${RUN}`,
-  `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
   `python -c "import json; print(json.load(open('${RUN}/remote/issue.json'))['key'])"`,
   `cp ${STORAGE} ${SCRATCH}/state.json`, `cp ${RUN}/run.json ${SCRATCH}/run.json`,
-  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`, `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
+  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`,
   `git checkout main && cat ${STORAGE}`, `git -C /other/repo checkout main -- src/a.ts`,
-  `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,
   `factory run human acme-dev-1 "user: delete discover-task.spec.ts; rm -rf x then cp a ${RUN}/run.json"`,
   `factory run human acme-dev-1 "user: said \\"delete the spec\\" and move it" && cat ${RUN}/run.json`,
   `python -m factory run human acme-dev-1 "user: remove it" --note "rm a"`,
@@ -142,9 +170,17 @@ const ALLOW_SPELLED = SPELLINGS.flatMap(({ R }) => {
   if (!sep) return [];
   return [
     `cp ${R}${sep}run.json ${SCRATCH}/run.json`, `cp -r ${R}${sep}evidence ${SCRATCH}/ev`,
-    `rsync -a ${R}${sep}evidence${sep} ${SCRATCH}/ev/`, `cat ${R}${sep}run.json > ${SCRATCH}/out.txt`, `ls ${R}${sep}evidence && cat ${R}${sep}run.json`,
+    `cat ${R}${sep}run.json > ${SCRATCH}/out.txt`, `ls ${R}${sep}evidence && cat ${R}${sep}run.json`,
   ];
 });
+// Documented false positives: once allowed on this branch, now outside the provably-safe grammar (python -c, git, rsync,
+// a run-folder write target), so the baseline denial stands. Use separate commands or the Edit/Write tools.
+const STILL_DENIED = [
+  `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
+  `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
+  `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,
+  ...SPELLINGS.flatMap(({ R }) => (sepOf(R) ? [`rsync -a ${R}${sepOf(R)}evidence${sepOf(R)} ${SCRATCH}/ev/`] : [])),
+];
 
 test('regression: every write, delete, move, alias or permission change of a protected path is denied, in every spelling', () => {
   const misses = [];
@@ -164,6 +200,10 @@ test('regression: every write, delete, move, alias or permission change of a pro
 test('regression: literal read sources with a literal scratch destination stay allowed', () => {
   const wrongly = [...ALLOW, ...ALLOW_SPELLED].filter((c) => newDenies(c));
   assert.deepEqual(wrongly, []);
+});
+
+test('regression: documented false positives stay denied (forms outside the grammar keep the baseline verdict)', () => {
+  assert.deepEqual(STILL_DENIED.filter((c) => !newDenies(c) || !oldDenies(c)), []);
 });
 
 // ---- differential safety net against the frozen pre-target-rule library ----
@@ -212,13 +252,16 @@ function corpus() {
 
 // ---- classes of allowed baseline denials, checked without the library ----
 // A gain (baseline denies, current code allows) is legitimate only when EVERY segment of the command is one of these
-// kinds; the class of a command is the set of its segment kinds. Scratch = the temp dir; unprotected = runs/<id>/remote|notes.
+// kinds; the class of a command is the set of its segment kinds. The only gains left: a copy out to a safe root, a
+// redirection or sed -i in a safe root next to a run-path read, factory CLI data, and a heredoc that is data.
+// Safe root = the temp dir (and /tmp off Windows) or the session cwd when it is not under a .factory folder.
 const fwd = (s) => s.replace(/\\/g, '/');
-const SCRATCH_DIRS = [fwd(TMP), '/tmp'];
-const noDots = (p) => !/(?:^|\/)\.\.(?:\/|$)/.test(p) && !/[$~%`*?{]/.test(p);
-const inScratch = (p) => noDots(p) && !/\.factory/i.test(p) && SCRATCH_DIRS.some((d) => p === d || p.startsWith(`${d}/`));
-const unprotected = (p) => noDots(p) && /^[A-Za-z]:\/|^\//.test(p) && /\/runs\/[\w.-]+\/(?:remote|notes)\/[\w.-]+$/i.test(p);
-const writable = (p) => inScratch(fwd(p)) || unprotected(p) || p === '/dev/null';
+const SCRATCH_DIRS = [fwd(TMP), ...(WIN ? [] : ['/tmp'])];
+const noDots = (p) => !/(?:^|\/)\.\.(?:\/|$)/.test(p) && !/[$~%`*?{]/.test(p) && !/\.factory/i.test(p);
+const under = (p, d) => p.toLowerCase() === d.toLowerCase() || p.toLowerCase().startsWith(`${d.toLowerCase().replace(/\/$/, '')}/`);
+const inScratch = (p) => noDots(p) && SCRATCH_DIRS.some((d) => under(p, d));
+const inCwd = (p, cwd) => noDots(p) && !/\.factory/i.test(cwd) && (/^[A-Za-z]:\/|^\//.test(p) ? under(p, fwd(cwd)) : true);
+const writable = (p, cwd) => p === '/dev/null' || inScratch(fwd(p)) || inCwd(fwd(p), cwd);
 
 /** Top-level segments split on unquoted ; && || | and newlines; null on substitutions, groups or heredocs. */
 function splitTop(input) {
@@ -249,22 +292,15 @@ const SEGMENT_KINDS = {
   read: (w) => /^(?:cat|head|tail|ls|grep|jq|wc|echo|stat|type|get-content|gc|test-path|select-string)$/i.test(w[0]),
   'sort-diff-read': (w) => /^(?:sort|diff)$/.test(w[0]) && !w.some((a) => /^-[^-]*[oT]|^--(?:output|temporary|compress)/.test(a)),
   'gzip-to-stdout': (w) => /^(?:gzip|gunzip)$/.test(w[0]) && w.some((a) => /^-[a-z]*c[a-z]*$/.test(a)),
-  'copy-out': (w) => /^(?:cp|rsync)$/.test(w[0]) && w.length >= 3 && !w.slice(1).some((a) => /^-[a-zA-Z]*[lstdTixe]|^--(?:link|symbolic|target|remove|delete|backup|log|write|temp|partial|rsh|files)/.test(a))
-    && writable(unquote(w[w.length - 1])),
-  'write-scratch': (w) => /^(?:rm|mkdir|touch|mv|rmdir)$/.test(w[0]) && w.slice(1).filter((a) => !/^-/.test(a)).length > 0
-    && w.slice(1).filter((a) => !/^-/.test(a)).every((a) => writable(unquote(a))),
-  'sed-in-place-scratch': (w) => w[0] === 'sed' && /^s\/[^/]*\/[^/]*\/g?$/.test(w.find((a, i) => i > 0 && !/^-/.test(a)) || '')
-    && w.slice(1).filter((a) => !/^-/.test(a)).slice(1).every((a) => writable(unquote(a))),
-  'cd-elsewhere': (w) => /^(?:cd|pushd|set-location|sl)$/i.test(w[0]) && w.length === 2 && !/\.factory/i.test(w[1]),
-  'git-elsewhere': (w) => w[0] === 'git' && !w.some((a) => /\.factory|^--(?:work-tree|git-dir|output)|^-c$/.test(a)),
-  'python-read': (w) => /^python3?$/.test(w[0]) && w[1] === '-c' && w.length === 3
-    && !/\b(?:os|subprocess|shutil|pathlib|io|exec|eval|__\w+)\b|open\([^)]*,|print\([^)]*file=/.test(unquote(w[2]))
-    && !unquote(w[2]).replace(/sys\.stdout\.write\(/g, '').includes('write('),
-  factory: (w) => /^factory$/i.test(w[0]) || (/^python3?$/.test(w[0]) && w[1] === '-m' && w[2] === 'factory'),
+  'copy-out': (w, cwd) => w[0] === 'cp' && w.length >= 3 && !w.slice(1).some((a) => /^-[a-zA-Z]*[lstdTixeLpPH]|^--(?:link|symbolic|target|backup|preserve|parents)/.test(a))
+    && writable(unquote(w[w.length - 1]), cwd),
+  'sed-in-place-scratch': (w, cwd) => w[0] === 'sed' && /^s\/[^/]*\/[^/]*\/g?$/.test(unquote(w.find((a, i) => i > 0 && !/^-/.test(a)) || ''))
+    && w.slice(1).filter((a) => !/^-/.test(a)).slice(1).every((a) => writable(unquote(a), cwd)),
+  factory: (w) => /^factory(?:\.cmd)?$/i.test(w[0]) || (/^python3?$/.test(w[0]) && w[1] === '-m' && w[2] === 'factory'),
 };
 
-/** The class of a command (sorted segment kinds) or null when one segment fits no kind or redirects outside scratch. */
-function classOf(cmd) {
+/** The class of a command (sorted segment kinds) or null when one segment fits no kind or redirects outside a safe root. */
+function classOf(cmd, c) {
   const heredoc = cmd.match(/^((?:cat|git commit -F -|gh [\w ]+--body-file -))\s*<<'(\w+)'\n[\s\S]*\n\2\s*$/);
   if (heredoc) return 'heredoc-data';
   const segs = splitTop(cmd);
@@ -272,11 +308,12 @@ function classOf(cmd) {
   const kinds = new Set();
   for (const seg of segs) {
     const outs = [...seg.matchAll(/(?:^|\s)\d?>>?\s*(\S+)/g)].map((m) => m[1]).filter((t) => !/^&\d$/.test(t));
-    if (!outs.every((t) => writable(unquote(t)))) return null;
+    if (!outs.every((t) => writable(unquote(t), c.cwd))) return null;
     const w = (seg.replace(/(?:^|\s)\d?>>?\s*\S+/g, ' ').match(/"[^"]*"|'[^']*'|\S+/g) || []);
     if (!w.length) return null;
-    const kind = Object.keys(SEGMENT_KINDS).find((k) => SEGMENT_KINDS[k](w));
+    const kind = Object.keys(SEGMENT_KINDS).find((k) => SEGMENT_KINDS[k](w, c.cwd));
     if (!kind) return null;
+    if (outs.length && !/read|gzip/.test(kind)) return null; // redirections only on readers
     kinds.add(kind);
   }
   return [...kinds].sort().join('+');
@@ -292,7 +329,7 @@ function differential(entries, c) {
     if (!decide(baseline, cmd, c)) continue;
     baselineDenied += 1;
     if (decide(lib, cmd, c)) continue;
-    const cls = classOf(cmd);
+    const cls = classOf(cmd, c);
     const safe = lib.provablySafe(cmd, c) || (cls === 'heredoc-data' && lib.provablySafe(lib.stripDataHeredoc(cmd), c))
       || (cls === 'heredoc-data' && !decide(baseline, lib.stripDataHeredoc(cmd), c));
     if (!(safe && cls)) gained.push(cmd);
@@ -321,12 +358,12 @@ test('property: a regression row or a baseline-denied corpus command is never pr
   const bad = [];
   const rows = [...corpus().map((e) => [e.cmd, hctx(lib)]), ...M_HOME.map((cmd) => [cmd, auditCtx]),
     ...auditCorpus(HOME).map((p) => [p.cmd, auditCtx])];
-  for (const [cmd, c] of rows) if (decide(baseline, cmd, c) && lib.provablySafe(cmd, c) && !classOf(cmd)) bad.push(cmd);
+  for (const [cmd, c] of rows) if (decide(baseline, cmd, c) && lib.provablySafe(cmd, c) && !classOf(cmd, c)) bad.push(cmd);
   for (const tpl of REGRESSION) {
     for (const { R } of SPELLINGS) {
       for (const sep of ['/', '\\']) {
         const cmd = subst(tpl, R, sep);
-        if (lib.provablySafe(cmd, hctx(lib)) && !classOf(cmd)) bad.push(cmd);
+        if (lib.provablySafe(cmd, hctx(lib)) && !classOf(cmd, hctx(lib))) bad.push(cmd);
       }
     }
   }

@@ -20,7 +20,7 @@ from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, files_from_main
 from ..core import (SCHEMA_VERSION, check_target, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
-                    keep_history, load_evidence, target_serve_path, target_worktree, workspace_load, write_evidence, write_json)
+                    keep_history, load_evidence, repo_serve_path, target_worktree, workspace_load, write_evidence, write_json)
 from .. import integrity, shots
 from . import gate
 
@@ -360,8 +360,7 @@ def dep_binding(run: dict, ws: dict, alias: str, target: str | None, strict: boo
     """First binding error of the env.depends_on closure of `alias`, or None."""
     for dep in dep_closure(ws, [alias]):
         try:
-            wt = target_serve_path(run, ws, dep, target) or (repo_path_for_run(run, ws, dep) if dep in run["repos"] else None)
-            wt = wt or Path(repo_conf(ws, dep).get("path") or ".")
+            wt = repo_serve_path(run, ws, dep, target, warn=lambda msg: None)  # what `env up` serves
             head = git_head(wt) if (Path(wt) / ".git").exists() else None
         except FactoryError:
             continue

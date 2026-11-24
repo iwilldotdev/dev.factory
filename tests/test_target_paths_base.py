@@ -9,6 +9,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -122,6 +123,42 @@ class ServedTests(BasePathCase):
         self.assertTrue(envmod._same_path(envmod.read_record("ws", "API")["cwd"], self.api_main))
         self.assertIsNone(prove.dep_binding(run, no_key, "React", None))
         self.assertIn("serves", prove.dep_binding(run, self.ws, "React", None) or "")  # the key now says: api_base
+
+
+class EpicSiblingTests(BasePathCase):
+    """Epic child hotfix run: a dependency without a worktree here but with one in a dependency run keeps that worktree."""
+
+    def epic_run(self):
+        self.make_run("sib", repos={"API": {"worktree": str(self.api_wt), "branch": "b"}})  # ticket DEV-1
+        repos = {"React": {"worktree": str(self.react), "branch": "b"}}
+        self.make_run("r1", phase="prove", repos=repos, parent="ep", tickets=[{"key": "DEV-2", "depends_on": ["DEV-1"]}],
+                      hotfix={"base": "homolog", "mirror": ["pack"]}, targets=["homolog", "pack"])
+        return core.run_load("r1")
+
+    def test_sibling_worktree_beats_the_base_target_path(self):
+        run = self.epic_run()
+        for target in (None, "homolog"):
+            self.assertIsNone(core.target_serve_path(run, self.ws, "API", target))
+            self.assertEqual(core.repo_serve_path(run, self.ws, "API", target, warn=lambda m: None), self.api_wt)
+
+    def test_sibling_worktree_without_target_paths(self):
+        run = self.epic_run()
+        del self.ws["repos"][1]["target_paths"]
+        for target in (None, "homolog"):
+            self.assertEqual(core.repo_serve_path(run, self.ws, "API", target, warn=lambda m: None), self.api_wt)
+
+    def test_no_sibling_worktree_still_uses_the_base_target_path(self):
+        run = self.epic_run()
+        self.make_run("sib", repos={})
+        self.assertEqual(core.repo_serve_path(run, self.ws, "API", None, warn=lambda m: None), self.api_base)
+
+    def test_dep_binding_expects_the_sibling_worktree_that_env_serves(self):
+        run = self.epic_run()
+        seen = []
+        with mock.patch.object(prove, "env_binding", side_effect=lambda ws, alias, wt, *a, **k: seen.append((alias, Path(wt)))):
+            self.assertIsNone(prove.dep_binding(run, self.ws, "React", None))
+        self.assertEqual(seen, [("API", self.api_wt)])
+        self.assertEqual(seen[0][1], core.repo_serve_path(run, self.ws, "API", None, warn=lambda m: None))
 
 
 class WorkspaceCheckTests(unittest.TestCase):

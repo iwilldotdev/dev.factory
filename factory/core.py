@@ -406,6 +406,29 @@ def _dep_run_ids(run: dict, workspace: dict) -> list[str]:
     return ids
 
 
+def epic_dep_worktree(run: dict, workspace: dict, alias: str) -> Path | None:
+    """Worktree of `alias` in the nearest epic dependency run of an epic child (breadth first through `depends_on`);
+    None for a run without a parent or when no dependency run has one."""
+    if not run.get("parent"):
+        return None
+    seen = {run.get("id")}
+    queue = _dep_run_ids(run, workspace)
+    while queue:
+        rid = queue.pop(0)
+        if rid in seen:
+            continue
+        seen.add(rid)
+        try:
+            dep = run_load(rid)
+        except (FactoryError, OSError, ValueError):
+            continue
+        wt = ((dep.get("repos") or {}).get(alias) or {}).get("worktree")
+        if wt:
+            return Path(wt)
+        queue += _dep_run_ids(dep, workspace)
+    return None
+
+
 def repo_path_for_env(run: dict, workspace: dict, alias: str, warn=None) -> Path:
     """Like repo_path_for_run, but an epic child without a worktree for `alias` uses the nearest dependency run's worktree.
 
@@ -416,22 +439,9 @@ def repo_path_for_env(run: dict, workspace: dict, alias: str, warn=None) -> Path
     rec = (run.get("repos") or {}).get(alias) or {}
     if rec.get("worktree"):
         return repo_path_for_run(run, workspace, alias)
-    if run.get("parent"):
-        seen = {run.get("id")}
-        queue = _dep_run_ids(run, workspace)
-        while queue:
-            rid = queue.pop(0)
-            if rid in seen:
-                continue
-            seen.add(rid)
-            try:
-                dep = run_load(rid)
-            except (FactoryError, OSError, ValueError):
-                continue
-            wt = ((dep.get("repos") or {}).get(alias) or {}).get("worktree")
-            if wt:
-                return Path(wt)
-            queue += _dep_run_ids(dep, workspace)
+    sibling = epic_dep_worktree(run, workspace, alias)
+    if sibling:
+        return sibling
     path = repo_path_for_run(run, workspace, alias)
     warn(f"WARNING: run {run.get('id')} has no worktree for {alias}; using the main checkout {path} "
          "(it may not contain the run's code)")
@@ -483,14 +493,14 @@ def target_worktree(run: dict, workspace: dict, alias: str, target: str | None =
 def target_serve_path(run: dict, workspace: dict, alias: str, target: str | None) -> Path | None:
     """Where the runtime of a hotfix run is served for `alias` when it is not the run's own resolution: a mirror target's
     worktree, else the repo's `target_paths[target]`. For the BASE target (None or the hotfix base) only a repo WITHOUT a
-    run worktree is served from `target_paths[base]`; a repo with a run worktree always keeps it. None for non-hotfix
+    run worktree is served from `target_paths[base]`; a repo with a run worktree always keeps it, and so does an epic dependency run's worktree (`epic_dep_worktree`). None for non-hotfix
     runs (`target_paths` is not consulted) and when the repo has nothing for the target (it keeps the run's resolution)."""
     hf = hotfix_of(run)
     if not hf:
         return None
     if not target or target == hf["base"]:
-        if ((run.get("repos") or {}).get(alias) or {}).get("worktree"):
-            return None
+        if ((run.get("repos") or {}).get(alias) or {}).get("worktree") or epic_dep_worktree(run, workspace, alias):
+            return None  # this run's worktree, else an epic dependency run's, keeps the run's resolution
         target = hf["base"]
     else:
         wt = target_worktree(run, workspace, alias, target)

@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 from ..collectors.test import copy_main_files, files_from_main_of, prepare_worktree, setup_command
-from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
+from ..core import (HUMAN_TYPES, SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home, flaky_checks,
                     git, git_dirty, git_head, now, register_session, repo_conf, run_dir, target_branch, run_load,
                     run_save, run_update, session_id, session_short, workspace_load, write_json)
@@ -885,8 +885,8 @@ def cmd_login_user(args) -> int:
 
 
 def cmd_human(args) -> int:
-    run_update(args.run, lambda run: event(run, "human", note=args.note, phase=run["phase"]))
-    _emit(args, {"ok": True}, "human intervention recorded")
+    run_update(args.run, lambda run: event(run, "human", note=args.note, phase=run["phase"], type=args.type))
+    _emit(args, {"ok": True, "type": args.type}, f"human intervention recorded ({args.type})")
     return 0
 
 
@@ -969,7 +969,7 @@ def event_summary(e: dict) -> str:
     if kind == "review":
         return f"{d.get('review_kind')} review round {d.get('round')}: {d.get('verdict')} ({d.get('findings')} findings)"
     if kind == "human":
-        return f"human intervention: {d.get('note')}"
+        return f"human intervention [{d.get('type') or 'other'}]: {d.get('note')}"
     if kind == "block":
         return f"blocker #{d.get('n')} [{d.get('blocker_kind')}] {d.get('text')}"
     if kind == "phase":
@@ -1171,9 +1171,12 @@ def register(sub) -> None:
     p.add_argument("run")
     p.add_argument("n", type=int)
     p.set_defaults(func=cmd_unblock)
-    p = rs.add_parser("human")
+    p = rs.add_parser("human", help="record a user message that steers the run")
     p.add_argument("run")
     p.add_argument("note")
+    p.add_argument("--type", choices=HUMAN_TYPES, default="other",
+                   help="decision (a product/scope call), approval (go-ahead, Gate S), env-note (data, user, env hint), "
+                        "correction (the user fixed the agent's course), other (default)")
     p.set_defaults(func=cmd_human)
     p = rs.add_parser("login-user", help="set the e-mail the runtime checks log in as (before gate prove passes)")
     p.add_argument("run")

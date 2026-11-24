@@ -62,5 +62,11 @@ class OrchestratorDisciplineTests(unittest.TestCase):
         self.assertLessEqual(len(text.splitlines()), 135)
 
 
+class HumanTypeDocsTests(unittest.TestCase):
+    def test_skill_and_phases_name_the_types(self):
+        for text in (read(SKILL / "SKILL.md"), read(SKILL / "references" / "phases.md")):
+            self.assertIn("--type decision|approval|env-note|correction|other", text)
+
+
 if __name__ == "__main__":
     unittest.main()

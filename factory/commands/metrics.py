@@ -8,7 +8,7 @@ import os
 from collections import Counter
 from pathlib import Path
 
-from ..core import factory_home, read_json, run_dir, run_load, write_json
+from ..core import HUMAN_TYPES, factory_home, read_json, run_dir, run_load, write_json
 
 RUN_MARKER = "factory-run: "
 
@@ -260,6 +260,16 @@ def phase_hours(run: dict) -> dict:
     return time_breakdown(run)["phase_hours"]
 
 
+def human_types(events: list) -> Counter:
+    """`run human` events per type; an event without a type (older runs) or with an unknown one is `other`."""
+    out: Counter = Counter()
+    for e in events:
+        if e.get("kind") == "human":
+            t = (e.get("data") or {}).get("type")
+            out[t if t in HUMAN_TYPES else "other"] += 1
+    return out
+
+
 def prove_stats(run: dict) -> dict:
     events = run.get("events", [])
     proves = [e for e in events if e.get("kind") == "prove"]
@@ -393,6 +403,7 @@ def compute(run_id: str) -> dict:
         "transcript_span_h": span,
         "human_messages": humans,
         "human_interventions": sum(1 for e in events if e.get("kind") == "human"),
+        "human_by_type": dict(sorted(human_types(events).items())),
         "subagents": dict(sorted(agents.items())),
         "tokens": tokens_block if (tokens_block or tokens_note) else
         {"main": dict(tokens), "subagents": dict(sub_tokens), "total": dict(total)},
@@ -439,7 +450,8 @@ def _summary(m: dict) -> str:
 
 def _summary_base(m: dict) -> str:
     return (
-        f"{m['run']}: wall {m['wall_time_h']}h, human msgs {m['human_messages']}, interventions {m['human_interventions']}, "
+        f"{m['run']}: wall {m['wall_time_h']}h, human msgs {m['human_messages']}, interventions {m['human_interventions']}"
+        f"{' ' + str(m['human_by_type']) if m.get('human_by_type') else ''}, "
         f"subagents {sum(m['subagents'].values())}, out tokens {_out_tokens(m)}, "
         f"gate fails {sum(m['gate_fail'].values())}, loops {m['loops']}, escaped {m['escaped_findings']['count']}"
     )

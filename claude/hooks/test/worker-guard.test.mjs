@@ -60,7 +60,7 @@ test('auditor and author never commit or move the worktree', () => {
 
 test('factory subcommands reserved for the main session', () => {
   const reserved = ['factory gate r prove', 'factory ship plan r', 'factory feedback ingest r',
-    'factory run human r "x"', 'factory run start acme DEV-1', 'python -m factory gate r plan',
+    'factory run human r "x"', 'factory run human r "ok" --type approval', 'factory run start acme DEV-1', 'python -m factory gate r plan',
     'factory --json gate r build', 'C:/p/bin/factory.cmd ship verify r', 'factory workspace import a --from x',
     'factory run replan r "x"', 'factory run rewind r prove "x"', 'factory run decide r "x" --by user',
     'python -m factory run unblock r 0', 'factory run delete r --yes', 'factory run claim r', 'factory run session r', 'factory run session r abc-123',

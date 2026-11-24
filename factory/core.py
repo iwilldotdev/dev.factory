@@ -253,6 +253,10 @@ def run_update(run_id: str, fn) -> dict:
         return run
 
 
+# Types of a `run human` event (`--type`); metrics count them apart. Anything else is `other`.
+HUMAN_TYPES = ("decision", "approval", "env-note", "correction", "other")
+
+
 # ---------- sessions ----------
 
 # Best-effort hint of which Claude session/agent ran a command (whatever the host exports; omitted if none).

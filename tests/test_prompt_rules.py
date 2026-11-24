@@ -45,5 +45,13 @@ class ProductBehaviourVsChecksTests(unittest.TestCase):
             self.assertIn(needle, text)
 
 
+class BlockedCapTests(unittest.TestCase):
+    def test_two_consecutive_blocked_then_rescope(self):
+        text = read(SKILL / "references" / "workers.md")
+        self.assertIn("Cap on consecutive `blocked`: 2", text)
+        for needle in ("re-scopes the task", "changes the approach", "asks the user", "never the same request"):
+            self.assertIn(needle, text)
+
+
 if __name__ == "__main__":
     unittest.main()

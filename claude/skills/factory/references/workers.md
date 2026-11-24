@@ -57,6 +57,7 @@ Final message is only a YAML block: `status` (`done | blocked | failed`), `summa
 - `blocked` with `infra_signal`: see the blocked contract above; relay the signal and what you do next in one line.
 - `done`: verify cheaply (`git log --oneline -n`, `factory run status`, file exists, gate exit code). A report is a claim.
 - `blocked` with `questions`: merge them into the single question round; do not ask piecemeal.
+- **Cap on consecutive `blocked`: 2.** Two `blocked` hand-backs in a row from the same worker role on the same step (same task, same inputs) end the resending: the third request is never the same request. The main session re-scopes the task (smaller or different inputs, another worker, a different split), changes the approach (replan, another check, another env), or asks the user (`run block <kind>` plus one batched message). Say which of the three in the chat line. An infra `blocked` follows the blocked contract above instead.
 - `failed`: read the reason; re-delegate with the missing input, or block the run.
 - Replan caused by a new user decision: first send a `factory-scout` to check whether the current code already satisfies it (cite file:line); dispatch a builder only for the gap.
 - Final decision reports come from `run.json` decisions (`factory run log`), never from memory.

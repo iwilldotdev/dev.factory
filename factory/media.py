@@ -33,6 +33,19 @@ def _safe(name: str, mime: str) -> str:
     return base if not ext or base.lower().endswith(ext) else base + ext
 
 
+BY_EXT = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp",
+          ".bmp": "image/bmp", ".svg": "image/svg+xml", ".mp4": "video/mp4", ".mov": "video/quicktime",
+          ".webm": "video/webm", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo", ".m4v": "video/mp4"}
+
+
+def _mime(a: dict) -> str:
+    """Lowercased mime; a missing or generic one (`application/octet-stream`) falls back to the file extension."""
+    mime = str(a.get("mimeType") or "").strip().lower()
+    if mime in ("", "application/octet-stream"):
+        mime = BY_EXT.get(Path(str(a.get("filename") or "")).suffix.lower(), mime)
+    return mime
+
+
 def _save_name(a: dict, name: str, mime: str) -> str:
     """`<id>-<safe name>`: two attachments with the same filename never share a file."""
     safe = _safe(name, mime)
@@ -52,7 +65,7 @@ def attachments(run_id: str, run: dict) -> list[dict]:
         for a in (fields.get("attachment") if isinstance(fields, dict) else None) or []:
             if not isinstance(a, dict):
                 continue
-            mime = str(a.get("mimeType") or "")
+            mime = _mime(a)
             if not mime.startswith(("image/", "video/")):
                 continue
             name = str(a.get("filename") or a.get("id") or "")
@@ -103,6 +116,8 @@ def _file_ok(run_id: str, rel: Any) -> bool:
         p.relative_to(root)
     except ValueError:
         return False
+    if p.name.lower() == "manifest.json":
+        return False
     return p.is_file() and p.stat().st_size > 0
 
 
@@ -113,6 +128,7 @@ def errors(run_id: str, run: dict) -> list[str]:
     items, bad = _manifest(run_id)
     out = [bad] if bad else []
     questions = [str(b.get("text") or "") for b in run.get("blockers") or [] if b.get("kind") == "question"]
+    used: dict[Path, str] = {}
     for a in atts:
         what = f"{a['ticket']} attachment {a['name']!r} ({a['type']})"
         e = _entry(items, a, atts)
@@ -125,6 +141,12 @@ def errors(run_id: str, run: dict) -> list[str]:
         elif e.get("seen") is True:
             if not _file_ok(run_id, e.get("file")):
                 out.append(f"{what}: seen: true but its file is missing or empty under {MEDIA_DIR}/ ({e.get('file')!r})")
+            else:
+                key = (run_dir(run_id) / e["file"]).resolve()
+                if key in used:
+                    out.append(f"{what}: file {e['file']!r} is already the file of {used[key]}; each seen: true entry "
+                               "needs its own downloaded file")
+                used.setdefault(key, f"attachment {a['name']!r}")
         elif e.get("seen") is False:
             ref = f"attachment:{a['id']}" if a["id"] else a["name"]
             if not any(ref in q for q in questions):

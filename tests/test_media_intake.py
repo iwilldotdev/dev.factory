@@ -69,6 +69,36 @@ class MediaIntakeTests(FactoryCase):
         self.assertTrue(media.fetches(self.rid, run)[0]["args"]["save_to"].endswith("22-image.png"))
         self.assertNotEqual(media.attachments(self.rid, run)[0]["file"], media.attachments(self.rid, run)[1]["file"])
 
+    def test_mime_case_and_generic_mime_by_extension(self):
+        self.issue({"id": "31", "filename": "a.png", "mimeType": "Image/PNG"},
+                   {"id": "32", "filename": "b.MOV", "mimeType": "application/octet-stream"},
+                   {"id": "33", "filename": "c.jpg"},
+                   {"id": "34", "filename": "notes.txt", "mimeType": "application/octet-stream"})
+        from factory import media
+        atts = media.attachments(self.rid, core.run_load(self.rid))
+        self.assertEqual([a["id"] for a in atts], ["31", "32", "33"])
+        self.assertEqual(self.gate()[0], 1)
+
+    def test_manifest_cannot_be_an_entry_file(self):
+        self.issue(PNG)
+        (self.rd / "remote" / "media").mkdir(parents=True)
+        self.manifest({"name": "bug.png", "id": "11", "seen": True, "file": "remote/media/manifest.json"})
+        rc, out = self.gate()
+        self.assertEqual(rc, 1)
+        self.assertIn("missing or empty", out)
+
+    def test_two_seen_entries_cannot_share_a_file(self):
+        a = {"id": "21", "filename": "a.png", "mimeType": "image/png"}
+        b = {"id": "22", "filename": "b.png", "mimeType": "image/png"}
+        self.issue(a, b)
+        (self.rd / "remote" / "media").mkdir(parents=True)
+        (self.rd / "remote" / "media" / "x.png").write_bytes(b"x")
+        self.manifest({"name": "a.png", "id": "21", "seen": True, "file": "remote/media/x.png"},
+                      {"name": "b.png", "id": "22", "seen": True, "file": "remote/media/x.png"})
+        rc, out = self.gate()
+        self.assertEqual(rc, 1)
+        self.assertIn("own downloaded file", out)
+
     def test_seen_without_file_fails(self):
         self.issue(PNG)
         self.manifest({"name": "bug.png", "seen": True, "file": "remote/media/bug.png"})

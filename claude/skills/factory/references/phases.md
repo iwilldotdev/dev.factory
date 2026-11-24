@@ -9,6 +9,7 @@
 - [ ] Author summarises in `R/notes/intake.md`: tickets, type (feature/bug), repos touched, targets, dependencies (other tickets/MRs), Figma nodes, unknowns.
 - [ ] Record dependencies and choices: `factory run decide <run> "<text>"`.
 - [ ] Questions only the user can answer: `factory run block <run> question "<text>"` (one per question). Ask them together with the plan-time questions when possible.
+  - Blocker kinds (`factory run block <run> <kind> "<text>"`): `env` the run's own env does not work; `access` a credential or permission is missing; `question` only the user can answer; `dependency` another ticket, run or MR must land first; `conflict` a merge or cherry-pick conflict; `decision` a product or scope call for the user; `infra` a service, machine or network outside the run is down; `tooling` the factory or a tool lacks a capability the run needs.
 - [ ] `factory gate <run> intake`.
 
 ## plan

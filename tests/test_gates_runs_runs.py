@@ -117,6 +117,39 @@ class BlockersAndNaming(IntegrityCase):
         self.ok("run", "block", self.rid, "decision", "needs the user's call")
         self.assertEqual(core.run_load(self.rid)["blockers"][0]["kind"], "decision")
 
+    def test_infra_and_tooling_are_blocker_kinds_with_events(self):
+        self.start()
+        self.ok("run", "block", self.rid, "infra", "the registry is down")
+        self.ok("run", "block", self.rid, "tooling", "factory cannot mirror env")
+        run = core.run_load(self.rid)
+        self.assertEqual([b["kind"] for b in run["blockers"]], ["infra", "tooling"])
+        self.assertEqual([e["data"]["blocker_kind"] for e in run["events"] if e["kind"] == "block"], ["infra", "tooling"])
+        rc, out = cli("run", "status", self.rid)
+        self.assertEqual(rc, 0)
+        self.assertIn("[infra]", out)
+        self.assertIn("[tooling]", out)
+
+    def test_invalid_blocker_kind_lists_valid_kinds_with_meaning(self):
+        from factory.commands.run import BLOCKER_KIND_HELP
+        self.start()
+        try:
+            rc, out = cli("run", "block", self.rid, "product", "x")
+        except SystemExit as exc:
+            rc, out = exc.code, ""
+        self.assertEqual(rc, 2)
+        self.assertEqual(core.run_load(self.rid)["blockers"], [])
+        self.assertNotIn("product", BLOCKER_KIND_HELP)
+
+    def test_invalid_blocker_kind_message(self):
+        import argparse
+        from factory.commands.run import BLOCKER_KIND_HELP, blocker_kind
+        with self.assertRaises(argparse.ArgumentTypeError) as cm:
+            blocker_kind("tooling2")
+        msg = str(cm.exception)
+        for kind, meaning in BLOCKER_KIND_HELP.items():
+            self.assertIn(f"{kind}: {meaning}", msg)
+        self.assertEqual(blocker_kind("infra"), "infra")
+
     def test_hotfix_mirror_name_never_equals_the_base_name(self):
         from factory.commands import run as run_cmd
         from factory.commands import workspace

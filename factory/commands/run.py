@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import datetime as _dt
 import json
 import os
@@ -20,7 +21,26 @@ from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFa
 from .. import integrity
 from . import gate
 
-BLOCKER_KINDS = ("env", "access", "question", "dependency", "conflict", "decision")
+# kind -> one-line meaning (shown when an invalid kind is given; DESIGN section on blockers lists the same)
+BLOCKER_KIND_HELP = {
+    "env": "the run's own environment (env up/login/ports/worktree) does not work",
+    "access": "a credential or permission is missing (repo, pipeline, ticket, design file)",
+    "question": "only the user can answer it",
+    "dependency": "another ticket, run or MR must land first",
+    "conflict": "a merge or cherry-pick conflict needs resolving",
+    "decision": "a product or scope decision the user must make",
+    "infra": "a service, machine or network outside the run (CI, registry, VPN, shared database) is down",
+    "tooling": "the factory or a tool lacks a capability the run needs",
+}
+BLOCKER_KINDS = tuple(BLOCKER_KIND_HELP)
+
+
+def blocker_kind(value: str) -> str:
+    """argparse type: an invalid kind lists every valid one with its meaning."""
+    if value not in BLOCKER_KIND_HELP:
+        lines = "".join(f"\n  {k}: {v}" for k, v in BLOCKER_KIND_HELP.items())
+        raise argparse.ArgumentTypeError(f"invalid blocker kind {value!r}; valid kinds:{lines}")
+    return value
 
 
 def _emit(args, payload, text: str) -> None:
@@ -1098,7 +1118,7 @@ def register(sub) -> None:
     p.set_defaults(func=cmd_decide)
     p = rs.add_parser("block")
     p.add_argument("run")
-    p.add_argument("kind", choices=BLOCKER_KINDS)
+    p.add_argument("kind", type=blocker_kind, metavar="KIND", help="one of: " + ", ".join(BLOCKER_KINDS))
     p.add_argument("text")
     p.set_defaults(func=cmd_block)
     p = rs.add_parser("unblock")

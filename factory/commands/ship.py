@@ -503,6 +503,17 @@ def _strip_draft(title: str) -> str:
     return t
 
 
+def _already_verified(run: dict, verified: list[dict]) -> bool:
+    """`ship verify` and `gate ship` both verify: the second, with the same MRs and nothing but gate passes
+    recorded since the last `ship` event, must not log the same verification again."""
+    events = run.get("events") or []
+    for i in range(len(events) - 1, -1, -1):
+        if events[i].get("kind") == "ship":
+            return (events[i].get("data") or {}).get("verified") == verified \
+                and all(e.get("kind") == "gate_pass" for e in events[i + 1:])
+    return False
+
+
 def verify(run_id: str) -> list[str]:
     plan_path = run_dir(run_id) / "ship-plan.json"
     if not plan_path.is_file():
@@ -550,8 +561,9 @@ def verify(run_id: str) -> list[str]:
         verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid")})
     if not errors:
         run = run_load(run_id)
-        event(run, "ship", verified=verified)
-        run_save(run)
+        if not _already_verified(run, verified):
+            event(run, "ship", verified=verified)
+            run_save(run)
     return list(dict.fromkeys(errors))
 
 

@@ -566,6 +566,7 @@ def cmd_mirror(args) -> int:
         text = f"cherry-pick conflict mirroring {alias} to {target} in {worktree}: " + ", ".join(files or ["?"])
         run.setdefault("blockers", []).append({"at": now(), "kind": "conflict", "text": text,
                                                "files": files, "resolved": False})
+        event(run, "block", blocker_kind="conflict", text=text, n=len(run["blockers"]) - 1)
         event(run, "mirror", repo=alias, target=target, status="conflict", files=files)
         run_save(run)
         raise GateFailed([text,

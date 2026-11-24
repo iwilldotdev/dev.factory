@@ -130,6 +130,11 @@ class Mirror(HotfixCase):
         blocker = run["blockers"][-1]
         self.assertEqual(blocker["kind"], "conflict")
         self.assertEqual(blocker["files"], ["mod.py"])
+        blocks = [e["data"] for e in run["events"] if e["kind"] == "block"]
+        self.assertEqual(len(blocks), 1, "a conflict blocker is logged like `run block` does")
+        self.assertEqual((blocks[0]["blocker_kind"], blocks[0]["n"], blocks[0]["text"]),
+                         ("conflict", len(run["blockers"]) - 1, blocker["text"]))
+        self.assertIn("conflict", [e["data"].get("status") for e in run["events"] if e["kind"] == "mirror"])
         mwt = core.Path(run["repos"]["React"]["worktrees"]["pack"])
         self.assertTrue(sh("git", "rev-parse", "--git-path", "CHERRY_PICK_HEAD", cwd=mwt))
         self.assertTrue((core.Path(sh("git", "rev-parse", "--absolute-git-dir", cwd=mwt)) / "CHERRY_PICK_HEAD").exists())

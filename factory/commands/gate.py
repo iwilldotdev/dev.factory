@@ -1266,6 +1266,7 @@ def block(run: dict, text: str, resume: str) -> None:
     """Phase -> blocked with a question blocker; `run unblock` resumes at `resume`."""
     _set_phase(run, "blocked", resume=resume)
     run.setdefault("blockers", []).append({"at": now(), "kind": "question", "text": text, "resolved": False})
+    event(run, "block", blocker_kind="question", text=text, n=len(run["blockers"]) - 1)
 
 
 def cmd_gate(args) -> int:

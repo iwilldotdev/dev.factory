@@ -103,5 +103,31 @@ class FollowupTests(ShipCase):
         self.assertNotIn("Follow-ups", self.description())
 
 
+class ShipEventTests(ShipCase):
+    def ship_events(self):
+        return [e for e in core.run_load(self.rid)["events"] if e["kind"] == "ship"]
+
+    def verified_plan(self):
+        import json
+        self.reviewed()
+        plan = json.loads(self.ok("--json", "ship", "plan", self.rid))
+        self.readbacks(plan)
+        return plan
+
+    def test_verify_then_gate_ship_records_one_ship_event(self):
+        self.verified_plan()
+        self.ok("ship", "verify", self.rid)
+        self.assertEqual(len(self.ship_events()), 1)
+        self.ok("gate", self.rid, "ship")
+        self.assertEqual(len(self.ship_events()), 1)
+
+    def test_gate_ship_alone_records_one_event_and_a_verification_after_the_phase_moved_another(self):
+        self.verified_plan()
+        self.ok("gate", self.rid, "ship")
+        self.assertEqual(len(self.ship_events()), 1)
+        self.ok("ship", "verify", self.rid)
+        self.assertEqual(len(self.ship_events()), 2, "the phase moved on since: a new verification is logged")
+
+
 if __name__ == "__main__":
     unittest.main()

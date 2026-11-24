@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -567,19 +568,20 @@ def _cwd_for(workspace: dict, run: dict | None, alias: str, target: str | None =
     return (_serve_root(workspace, run, alias, target) / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
 
 
-def files_missing(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> list[str]:
+def files_missing(workspace: dict, run: dict | None, alias: str, target: str | None = None,
+                  root: Path | None = None) -> list[str]:
     """Messages `file <x> missing in worktree <path>` for every `env.files_from_main` entry that is absent from the path
     the env is served from (a gitignored file such as `.env` that a new worktree does not carry)."""
     repo = repo_conf(workspace, alias)
     wanted = [f for f in (repo.get("env") or {}).get("files_from_main") or [] if safe_rel(f)]
     if not wanted:
         return []
-    root = _serve_root(workspace, run, alias, target)
+    root = root or _serve_root(workspace, run, alias, target)
     return [f"file {rel} missing in worktree {root}" for rel in wanted if not (root / rel).is_file()]
 
 
 def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: list[str],
-            target: str | None = None) -> bool:
+            target: str | None = None, serve_path: Path | None = None) -> bool:
     if alias in seen:
         return True
     seen.add(alias)
@@ -592,7 +594,7 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
     ws = workspace["name"]
     require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     for dep in env.get("depends_on") or []:
-        if not _up_one(workspace, run, dep, seen, out, target):
+        if not _up_one(workspace, run, dep, seen, out, target):  # a dependency is never served from `serve_path`
             return False
 
     shared = is_shared(workspace, run, alias)
@@ -607,8 +609,8 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
         out.append(f"{alias}: {detail}")
         out.append(env_fail_line(alias, "lease", detail))
         return False
-    cwd = _cwd_for(workspace, run, alias, target)
-    missing = files_missing(workspace, run, alias, target)
+    cwd = (Path(serve_path) / (env.get("cwd") or ".")).resolve() if serve_path else _cwd_for(workspace, run, alias, target)
+    missing = files_missing(workspace, run, alias, target, root=Path(serve_path) if serve_path else None)
     if missing:  # env.files_from_main: the served path lacks a gitignored file; starting would answer 500s
         for msg in missing:
             out.append(f"{alias}: {msg}")
@@ -813,13 +815,54 @@ def _start_locked(env: dict, ws: str, alias: str, health: str, cwd: Path, head: 
     return "started", proc
 
 
-def up(workspace: dict, alias: str, run: dict | None = None, target: str | None = None) -> tuple[bool, list[str]]:
-    """Start the env of `alias` for `run`; `target` (a hotfix mirror) serves that target's worktree and is recorded."""
+def up(workspace: dict, alias: str, run: dict | None = None, target: str | None = None,
+       serve_path: Path | None = None) -> tuple[bool, list[str]]:
+    """Start the env of `alias` for `run`; `target` (a hotfix mirror) serves that target's worktree and is recorded.
+    `serve_path` (a temporary worktree, see `serve_from`) is served instead of the run's worktree; dependencies keep theirs."""
     require_lease(workspace, run["id"] if run else None, f"env up {alias}", alias)
     out: list[str] = []
     target = check_target(run, target) if run else None
-    ok = _up_one(workspace, run, alias, set(), out, target)
+    ok = _up_one(workspace, run, alias, set(), out, target, serve_path)
     return ok, out
+
+
+@contextlib.contextmanager
+def serve_from(workspace: dict, run: dict, alias: str, path: Path, say=print):
+    """Serve the env of `alias` from `path` (a temporary worktree, e.g. the merge-base for `prove --repro`) for the
+    duration of the block, then restore it. Sequential, under the run's lease: a second concurrent env would need a
+    second slot of the lease, which a run does not hold. If an env of the run is running it is stopped first (never one
+    that serves another run's or a hand-started checkout: `restart_blocker`) and, afterwards, started again for the
+    target it served; if none ran, the temporary one is just stopped. Raises FactoryError when it cannot be served."""
+    repo = repo_conf(workspace, alias)
+    alias, ws = repo["alias"], workspace["name"]
+    if is_shared(workspace, run, alias):
+        raise FactoryError(f"{alias}: shared repo, this run does not own its process; it cannot be served from {path}")
+    rec = read_record(ws, alias, run_slot(run, alias))
+    running = bool(rec) and record_state(rec) == "same"
+    prev_target = rec.get("target") if running else None
+    if running:  # nothing has been touched yet: refuse before the `finally` below could stop an env that is not ours
+        blocked = restart_blocker(workspace, run, alias)
+        if blocked:
+            raise FactoryError(f"{alias}: the running env cannot be switched to {path}: {blocked}")
+    try:
+        if running:
+            say(f"{alias}: stopping the running env (serves {rec.get('cwd') or '?'}) to serve {path}; it is started again afterwards")
+            say(down(workspace, alias, run["id"]))
+        ok, lines = up(workspace, alias, run, None, serve_path=Path(path))
+        if not ok:
+            detail = next((l for l in reversed(lines) if l.startswith("ENV-FAIL")), None) or \
+                next((l for l in reversed(lines) if l.strip() and not l.startswith("---")), "env up failed")
+            raise FactoryError(f"{alias}: could not serve {path}: {detail}")
+        say(f"{alias}: serving {path} (temporary, sequential)")
+        yield
+    finally:
+        try:
+            down(workspace, alias, run["id"])
+            if running:
+                ok, lines = up(workspace, alias, run, prev_target)
+                say(f"{alias}: env restored" if ok else f"WARNING: {alias}: env not restored: {lines[-1] if lines else '?'}")
+        except FactoryError as err:
+            say(f"WARNING: {alias}: env not restored: {err}; start it with `factory env up {ws} {alias} --run {run['id']}`")
 
 
 def down(workspace: dict, alias: str, run_id: str | None = None, force: bool = False, slot: int | None = None) -> str:

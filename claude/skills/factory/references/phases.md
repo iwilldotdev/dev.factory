@@ -29,7 +29,7 @@
 ## reproduce (bug runs only)
 
 - [ ] Repro checks were written in plan (test/api/browser, runnable on the base; `test` checks with `expect_fail_pattern` = the failing test name or assertion), plus a `red-green` check (`cmd` or `of: CHK-n` of a test check; optional for UI bugs on the runtime path). Author writes `R/diagnosis.md` now with non-empty `## Root cause`, `## Evidence`, `## Ruled out` (the only plan file that may change in reproduce).
-- [ ] `factory prove <run> --repro` (api/browser/screenshot: `factory env up <ws> <repo> --run <run>` on the unmodified worktree, add `--assume-env`). Every check must print REPRODUCED; `BEFORE-<check>` screenshots print PASS (the unfixed screen, kept for the MR). NOT-REPRODUCED or ERROR ("could not reproduce: setup failure" = it failed for another reason) means the check, its setup (`quality.setup`) or the diagnosis is wrong: `factory run replan`, author fixes the check, `gate plan`, repro again. No builder.
+- [ ] `factory prove <run> --repro` (api/browser/screenshot: `factory env up <ws> <repo> --run <run>` on the unmodified worktree, add `--assume-env`; once the fix is committed, HEAD is past the merge-base and `--repro` serves the merge-base itself from a temporary worktree, stopping and restoring the run's env). Every check must print REPRODUCED; `BEFORE-<check>` screenshots print PASS (the unfixed screen, kept for the MR). NOT-REPRODUCED or ERROR ("could not reproduce: setup failure" = it failed for another reason) means the check, its setup (`quality.setup`) or the diagnosis is wrong: `factory run replan`, author fixes the check, `gate plan`, repro again. No builder.
 - [ ] `factory gate <run> reproduce` (also lists the consolidated env gaps for runtime repro checks).
 
 ## build

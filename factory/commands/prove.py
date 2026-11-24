@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import json
 import os
@@ -437,8 +438,11 @@ LOCAL_TYPES = {"test"}  # run inside a temp worktree at the merge-base
 ENV_TYPES = {"api", "browser"}  # run against the already-running env (--assume-env)
 
 
-def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | None = None) -> dict:
-    """Run one check against the merge-base; evidence/REPRO-<id>.json (only the CLI writes it)."""
+def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | None = None,
+              served: Path | None = None, serve_error: str | None = None) -> dict:
+    """Run one check against the merge-base; evidence/REPRO-<id>.json (only the CLI writes it). `served`: the env of the
+    repo was switched to a temporary worktree at the merge-base (`cmd_repro`, run HEAD moved after the fix), so
+    `--assume-env` and a clean run worktree at the merge-base are not needed; `serve_error`: why that switch failed."""
     alias = repo_conf(ws, check["repo"])["alias"]
     wt = repo_path_for_run(run, ws, alias)
     mb = gate.merge_base_for(run, ws, alias, target)
@@ -467,16 +471,19 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
                       out_dir=run_dir(run["id"]) / "evidence" / rid)
             body = dispatch(inner, ctx)
         elif ctype in ENV_TYPES:
-            if not assume_env:
+            at = served if served is not None else wt
+            if serve_error:
+                body = {"status": "error", "summary": serve_error}
+            elif served is None and not assume_env:
                 body = {"status": "error", "summary": f"{ctype} check needs a running env serving the base; "
                         "rerun with --assume-env once the env is up on the unmodified run worktree"}
-            elif git_head(wt) != mb or git_dirty(wt):
+            elif served is None and (git_head(wt) != mb or git_dirty(wt)):
                 body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
                         "(the running env would not serve the base code)"}
-            elif (bound := env_binding(ws, alias, wt, mb, run)):
+            elif (bound := env_binding(ws, alias, at, mb, run)):
                 body = {"status": "error", "summary": bound}
             else:
-                ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
+                ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=at, env=env,
                           out_dir=run_dir(run["id"]) / "evidence" / rid)
                 body = dispatch(inner, ctx)
                 why = runtime_failure_error(ctype, check, body)
@@ -504,7 +511,8 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
     return record
 
 
-def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
+def before_one(run: dict, ws: dict, check: dict, assume_env: bool, served: Path | None = None,
+               serve_error: str | None = None) -> dict:
     """Screenshot check on the unfixed base (bug runs): evidence/BEFORE-<id>.json, `pass` when images were captured.
     Same env rule as runtime repro checks: --assume-env, run worktree clean and at the merge-base, env bound to it."""
     alias = repo_conf(ws, check["repo"])["alias"]
@@ -518,16 +526,18 @@ def before_one(run: dict, ws: dict, check: dict, assume_env: bool) -> dict:
     if slot_err:
         body = {"status": "error", "summary": f"slot env of {alias}: {slot_err}",
                 "details": {"fail_kind": "setup", "slot_error": slot_err}}
-    elif not assume_env:
+    elif serve_error:
+        body = {"status": "error", "summary": serve_error}
+    elif served is None and not assume_env:
         body = {"status": "error", "summary": "screenshot on base needs the env serving the base: rerun with "
                 "--assume-env once the env is up on the unmodified run worktree"}
-    elif git_head(wt) != mb or git_dirty(wt):
+    elif served is None and (git_head(wt) != mb or git_dirty(wt)):
         body = {"status": "error", "summary": "--assume-env: run worktree must be clean and at the merge-base "
                 "(before screenshots show the unfixed code)"}
-    elif (bound := env_binding(ws, alias, wt, mb, run)):
+    elif (bound := env_binding(ws, alias, served if served is not None else wt, mb, run)):
         body = {"status": "error", "summary": bound}
     else:
-        ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=wt, env=env,
+        ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=served if served is not None else wt, env=env,
                   out_dir=run_dir(run["id"]) / "evidence" / bid)
         body = dispatch(dict(check, id=bid), ctx, before=True)
     status = body.get("status") if body.get("status") in ("pass", "fail", "error") else "error"
@@ -572,6 +582,37 @@ def runtime_failure_error(ctype: str, check: dict, body: dict) -> str | None:
     return None
 
 
+def moved_repro_repos(run: dict, ws: dict, checks: list[dict], shot_checks: list[dict]) -> dict[str, str]:
+    """{alias: merge-base} of the repos whose runtime repro (or BEFORE screenshot) checks need an env on the merge-base while
+    the run worktree has moved on (HEAD != merge-base: the fix is committed, e.g. a check-only replan after build). Their
+    env is switched to a temporary merge-base worktree (`env.serve_from`) instead of demanding a worktree at the merge-base."""
+    base = run_targets(run)[0]
+    out: dict[str, str] = {}
+    runtime = [c for c in checks if c.get("type") in ENV_TYPES]
+    for chk in [*runtime, *shot_checks]:
+        if not chk.get("repo"):
+            continue
+        alias = repo_conf(ws, chk["repo"])["alias"]
+        if alias in out or alias not in code_repos(run):
+            continue
+        mb = gate.merge_base_for(run, ws, alias, base)
+        if git_head(repo_path_for_run(run, ws, alias)) != mb:
+            out[alias] = mb
+    return out
+
+
+def _repo_main(run: dict, ws: dict, alias: str) -> Path:
+    main = Path(repo_conf(ws, alias).get("path") or repo_path_for_run(run, ws, alias))
+    return main if (main / ".git").exists() else repo_path_for_run(run, ws, alias)
+
+
+def _base_worktree(run: dict, ws: dict, alias: str, mb: str) -> Path:
+    """Temporary detached worktree of `alias` at the merge-base, prepared like every worktree (setup, `files_from_main`)."""
+    env = {} if run_env_error(ws, run, alias) else run_env(ws, run, alias)
+    return temp_worktree(_repo_main(run, ws, alias), mb, setup_command(ws, alias), env.get("env_vars"),
+                         files_from_main_of(ws, alias))
+
+
 def cmd_repro(args) -> int:
     run = run_load(args.run)
     ensure_owner(run)
@@ -589,17 +630,42 @@ def cmd_repro(args) -> int:
         raise FactoryError("no reproducible checks (kind: bug ACs need a test/api/browser check)")
     records = []
     hf = hotfix_of(run)
-    for chk in checks:
+    for chk in [*checks, *shot_checks]:
         if not chk.get("repo"):
             raise FactoryError(f"{chk['id']}: repo is required")
-        for target in run_targets(run):
-            if hf and target != hf["base"] and chk.get("type") not in LOCAL_TYPES:
-                continue  # runtime checks are reproduced on the base target only (env serves one worktree)
-            records.append(repro_one(run, ws, chk, args.assume_env, target))
-    for chk in shot_checks:  # before images (DESIGN §12): same env, same steps as the after capture at HEAD
-        if not chk.get("repo"):
-            raise FactoryError(f"{chk['id']}: repo is required")
-        records.append(before_one(run, ws, chk, args.assume_env))
+    json_mode = bool(getattr(args, "json", False))
+
+    def say(text: str) -> None:
+        print(text, file=sys.stderr if json_mode else sys.stdout, flush=True)
+
+    with contextlib.ExitStack() as stack:
+        served: dict[str, Path] = {}
+        serve_errors: dict[str, str] = {}
+        for alias, mb in moved_repro_repos(run, ws, checks, shot_checks).items():
+            say(f"{alias}: run worktree is past the merge-base {mb[:8]}: serving the merge-base from a temporary worktree "
+                "for the runtime repro checks (the env is switched and restored)")
+            try:
+                tmp = _base_worktree(run, ws, alias, mb)
+            except (FactoryError, RuntimeError) as err:
+                serve_errors[alias] = f"could not serve the merge-base of {alias}: {err}"
+                continue
+            stack.callback(drop_worktree, _repo_main(run, ws, alias), tmp)  # registered first: runs after the env restore
+            try:
+                from .env import serve_from
+                stack.enter_context(serve_from(ws, run, alias, tmp, say))
+            except FactoryError as err:
+                serve_errors[alias] = str(err)
+                continue
+            served[alias] = tmp
+        for chk in checks:
+            alias = repo_conf(ws, chk["repo"])["alias"]
+            for target in run_targets(run):
+                if hf and target != hf["base"] and chk.get("type") not in LOCAL_TYPES:
+                    continue  # runtime checks are reproduced on the base target only (env serves one worktree)
+                records.append(repro_one(run, ws, chk, args.assume_env, target, served.get(alias), serve_errors.get(alias)))
+        for chk in shot_checks:  # before images (DESIGN §12): same env, same steps as the after capture at HEAD
+            alias = repo_conf(ws, chk["repo"])["alias"]
+            records.append(before_one(run, ws, chk, args.assume_env, served.get(alias), serve_errors.get(alias)))
     bad = [r for r in records if r["status"] != ("pass" if r.get("kind") == "before" else "reproduced")]
     if getattr(args, "json", False):
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha")} for r in records], indent=2))

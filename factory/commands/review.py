@@ -40,6 +40,9 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
             errors.append(f"finding {fid}: severity must be one of {SEVERITIES}")
         if not f.get("text"):
             errors.append(f"finding {fid}: text is required")
+    fixed = rec.get("resolved")
+    if fixed is not None and not (isinstance(fixed, list) and all(isinstance(x, str) and x for x in fixed)):
+        errors.append("resolved must be a list of finding ids from earlier rounds that are now fixed (omit it when none)")
     comp = rec.get("completeness")
     if not isinstance(comp, dict) or not all(isinstance(comp.get(k), int) and not isinstance(comp.get(k), bool)
                                              for k in ("done", "gap", "not_checked")):

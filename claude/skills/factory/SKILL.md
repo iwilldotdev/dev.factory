@@ -86,7 +86,7 @@ Details: epics in [references/epic.md](references/epic.md), workers and request 
 - **Rules** (`workspace.rules[]`) run in prove for every touched repo. They are not optional review advice. Rules with `kind: guideline` have no check: pass their text to the auditor, who cites them.
 - **Early UAT (UI runs):** after the first `gate build`, run only the `screenshot` checks, show the images and the decisions assumed (from `factory run log`, not memory), and ask the user to confirm before full prove and review. No answer does not block autonomous mode; answers go in with `run decide --by user --user-said`.
 - **Replan on a new user decision:** a scout first checks whether the code already satisfies it (file:line) before any builder. Decision reports come from `run.json`.
-- **Minor findings** of the latest code/qa reviews appear in the MR description as `## Follow-ups`.
+- **Minor findings** of every code/qa review round appear in the MR description as `## Follow-ups` (capped, with a count) until a later round names their ids in `resolved`.
 
 ## Epics
 

@@ -305,16 +305,38 @@ def _quality_lines(run: dict, alias: str, targets: list[str]) -> list[str]:
     return [line(load_evidence(run["id"], qid), qid)]
 
 
+FOLLOWUP_CAP = 20
+
+
 def _followup_lines(run_id: str) -> list[str]:
-    """Unresolved minor findings of the latest code and qa reviews, so they have a destination."""
+    """Open minor findings of every code and qa review round, so they have a destination.
+
+    A minor finding stays open until a later round of the same kind names its id in its top-level `resolved` list
+    (absent means still open); the same finding repeated in later rounds (same file and text) appears once.
+    """
     from . import gate
-    items = []
+    items: list[str] = []
     for kind in ("code", "qa"):
-        for f in (gate.latest_review(run_id, kind) or {}).get("findings") or []:
-            if f.get("severity") == "minor" and not f.get("resolved"):
+        history = gate.review_history(run_id, kind)
+        seen: set[tuple[str, str]] = set()
+        for i, rec in enumerate(history):
+            fixed = {str(x) for later in history[i + 1:] for x in (later.get("resolved") or []) if isinstance(x, (str, int))}
+            for f in rec.get("findings") or []:
+                if f.get("severity") != "minor" or f.get("resolved") or str(f.get("id")) in fixed:
+                    continue
+                text = " ".join(str(f.get("text", "")).split())
+                key = (str(f.get("file") or ""), text)
+                if key in seen:
+                    continue
+                seen.add(key)
                 where = f" `{f['file']}`" if f.get("file") else ""
-                items.append(f"- {f.get('id')}{where}: {' '.join(str(f.get('text', '')).split())}")
-    return ["", "## Follow-ups", ""] + items if items else []
+                items.append(f"- {f.get('id')}{where}: {text}")
+    if not items:
+        return []
+    shown = items[:FOLLOWUP_CAP]
+    if len(items) > FOLLOWUP_CAP:
+        shown.append(f"- ... and {len(items) - FOLLOWUP_CAP} more minor finding(s) in the review files of the run")
+    return ["", "## Follow-ups", ""] + shown
 
 
 def _description(run: dict, workspace: dict, alias: str, target: str, deps: list[tuple[str, str]], acs: dict,

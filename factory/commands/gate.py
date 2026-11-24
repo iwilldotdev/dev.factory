@@ -916,6 +916,19 @@ def latest_review(run_id: str, kind: str) -> dict | None:
     return latest_review_file(run_id, kind)[0]
 
 
+def review_history(run_id: str, kind: str) -> list[dict]:
+    """Every recorded review of `kind`, oldest round first (unreadable files are skipped)."""
+    recs = []
+    for p in (run_dir(run_id) / "reviews").glob(f"{kind}-*.json"):
+        try:
+            rec = read_json(p)
+        except FactoryError:
+            continue
+        if isinstance(rec, dict):
+            recs.append(rec)
+    return sorted(recs, key=lambda r: r.get("round", 0) if isinstance(r.get("round", 0), int) else 0)
+
+
 def review_rounds(run_id: str) -> int:
     return max((latest_review(run_id, k) or {}).get("round", 0) or 0 for k in ("code", "qa"))
 

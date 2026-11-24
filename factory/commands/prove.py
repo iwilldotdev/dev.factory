@@ -606,11 +606,11 @@ def _repo_main(run: dict, ws: dict, alias: str) -> Path:
     return main if (main / ".git").exists() else repo_path_for_run(run, ws, alias)
 
 
-def _base_worktree(run: dict, ws: dict, alias: str, mb: str) -> Path:
+def _base_worktree(run: dict, ws: dict, alias: str, mb: str, on_target=None) -> Path:
     """Temporary detached worktree of `alias` at the merge-base, prepared like every worktree (setup, `files_from_main`)."""
     env = {} if run_env_error(ws, run, alias) else run_env(ws, run, alias)
     return temp_worktree(_repo_main(run, ws, alias), mb, setup_command(ws, alias), env.get("env_vars"),
-                         files_from_main_of(ws, alias))
+                         files_from_main_of(ws, alias), on_target)
 
 
 def cmd_repro(args) -> int:
@@ -640,19 +640,20 @@ def cmd_repro(args) -> int:
 
     with contextlib.ExitStack() as stack:
         served: dict[str, Path] = {}
+        outcomes: dict = {}
         serve_errors: dict[str, str] = {}
         for alias, mb in moved_repro_repos(run, ws, checks, shot_checks).items():
             say(f"{alias}: run worktree is past the merge-base {mb[:8]}: serving the merge-base from a temporary worktree "
                 "for the runtime repro checks (the env is switched and restored)")
-            try:
-                tmp = _base_worktree(run, ws, alias, mb)
+            main = _repo_main(run, ws, alias)
+            try:  # the cleanup is registered before the worktree exists (an interrupt cannot leak it) and runs after the env restore
+                tmp = _base_worktree(run, ws, alias, mb, lambda t, m=main: stack.callback(drop_worktree, m, t))
             except (FactoryError, RuntimeError) as err:
                 serve_errors[alias] = f"could not serve the merge-base of {alias}: {err}"
                 continue
-            stack.callback(drop_worktree, _repo_main(run, ws, alias), tmp)  # registered first: runs after the env restore
             try:
                 from .env import serve_from
-                stack.enter_context(serve_from(ws, run, alias, tmp, say))
+                outcomes[alias] = stack.enter_context(serve_from(ws, run, alias, tmp, say))
             except FactoryError as err:
                 serve_errors[alias] = str(err)
                 continue
@@ -667,12 +668,19 @@ def cmd_repro(args) -> int:
             alias = repo_conf(ws, chk["repo"])["alias"]
             records.append(before_one(run, ws, chk, args.assume_env, served.get(alias), serve_errors.get(alias)))
     bad = [r for r in records if r["status"] != ("pass" if r.get("kind") == "before" else "reproduced")]
+    not_restored = [(a, o.detail) for a, o in outcomes.items() if o.restore_failed]  # evidence above stays as written
+    if not_restored:
+        from .env import env_fail_line
+    for alias, detail in not_restored:
+        say(env_fail_line(alias, "start", f"env not restored: {detail}"))
     if getattr(args, "json", False):
         print(json.dumps([{k: r[k] for k in ("check_id", "status", "summary", "git_sha")} for r in records], indent=2))
     else:
         for r in records:
             print(f"{r['status'].upper():14} {r['check_id']}  {r['summary']}")
         print(f"{len(records) - len(bad)}/{len(records)} " + ("ok (REPRO reproduced, BEFORE captured)" if shot_checks else "reproduced"))
+    if not_restored:
+        return EXIT_ENV
     return 1 if bad else 0
 
 

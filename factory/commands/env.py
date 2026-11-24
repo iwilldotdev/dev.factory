@@ -826,13 +826,22 @@ def up(workspace: dict, alias: str, run: dict | None = None, target: str | None 
     return ok, out
 
 
+class ServeOutcome:
+    """What `serve_from` reports to its caller once the block is over: `restore_failed` is set when the run's own env was
+    stopped to serve the temporary worktree and could not be started again (`detail` says why)."""
+    restore_failed: bool = False
+    detail: str = ""
+
+
 @contextlib.contextmanager
 def serve_from(workspace: dict, run: dict, alias: str, path: Path, say=print):
     """Serve the env of `alias` from `path` (a temporary worktree, e.g. the merge-base for `prove --repro`) for the
     duration of the block, then restore it. Sequential, under the run's lease: a second concurrent env would need a
     second slot of the lease, which a run does not hold. If an env of the run is running it is stopped first (never one
     that serves another run's or a hand-started checkout: `restart_blocker`) and, afterwards, started again for the
-    target it served; if none ran, the temporary one is just stopped. Raises FactoryError when it cannot be served."""
+    target it served; if none ran, the temporary one is just stopped. The `depends_on` repos this call started (and only
+    those) are stopped again. Yields a `ServeOutcome` the caller reads after the block: a failed restore is never silent.
+    Raises FactoryError when it cannot be served."""
     repo = repo_conf(workspace, alias)
     alias, ws = repo["alias"], workspace["name"]
     if is_shared(workspace, run, alias):
@@ -844,25 +853,44 @@ def serve_from(workspace: dict, run: dict, alias: str, path: Path, say=print):
         blocked = restart_blocker(workspace, run, alias)
         if blocked:
             raise FactoryError(f"{alias}: the running env cannot be switched to {path}: {blocked}")
+    owned_deps = [d for d in dep_aliases(workspace, alias) if not is_shared(workspace, run, d)]
+    deps_down = [d for d in owned_deps if record_state(read_record(ws, d, run_slot(run, d))) != "same"]
+    outcome = ServeOutcome()
     try:
         if running:
             say(f"{alias}: stopping the running env (serves {rec.get('cwd') or '?'}) to serve {path}; it is started again afterwards")
             say(down(workspace, alias, run["id"]))
         ok, lines = up(workspace, alias, run, None, serve_path=Path(path))
         if not ok:
-            detail = next((l for l in reversed(lines) if l.startswith("ENV-FAIL")), None) or \
-                next((l for l in reversed(lines) if l.strip() and not l.startswith("---")), "env up failed")
+            detail = next((l for l in reversed(lines) if l.startswith("ENV-FAIL")), None) or                 next((l for l in reversed(lines) if l.strip() and not l.startswith("---")), "env up failed")
             raise FactoryError(f"{alias}: could not serve {path}: {detail}")
         say(f"{alias}: serving {path} (temporary, sequential)")
-        yield
+        yield outcome
     finally:
+        hint = f"start it with `factory env up {ws} {alias} --run {run['id']}`"
         try:
             down(workspace, alias, run["id"])
-            if running:
-                ok, lines = up(workspace, alias, run, prev_target)
-                say(f"{alias}: env restored" if ok else f"WARNING: {alias}: env not restored: {lines[-1] if lines else '?'}")
         except FactoryError as err:
-            say(f"WARNING: {alias}: env not restored: {err}; start it with `factory env up {ws} {alias} --run {run['id']}`")
+            if running:
+                outcome.restore_failed, outcome.detail = True, f"{err}; {hint}"
+            say(f"WARNING: {alias}: temporary env not stopped: {err}")
+        for dep in reversed(deps_down):  # started by this call, not running before: stop them again
+            try:
+                if record_state(read_record(ws, dep, run_slot(run, dep))) == "same":
+                    down(workspace, dep, run["id"], slot=run_slot(run, dep))
+            except FactoryError as err:
+                say(f"WARNING: {dep}: dependency started for the temporary env not stopped: {err}")
+        if running and not outcome.restore_failed:
+            try:
+                ok, lines = up(workspace, alias, run, prev_target)
+            except FactoryError as err:
+                ok, lines = False, [str(err)]
+            if ok:
+                say(f"{alias}: env restored")
+            else:
+                outcome.restore_failed = True
+                outcome.detail = f"{next((l for l in reversed(lines) if l.strip()), '?')}; {hint}"
+                say(f"WARNING: {alias}: env not restored: {outcome.detail}")
 
 
 def down(workspace: dict, alias: str, run_id: str | None = None, force: bool = False, slot: int | None = None) -> str:

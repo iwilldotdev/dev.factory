@@ -8,6 +8,7 @@ import sys
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -114,6 +115,100 @@ class MovedHead(BugCase):
                                                  [{"type": "api", "repo": "React"}], []), {"React": self.mb})
         self.assertEqual(prove.moved_repro_repos(core.run_load(self.rid), core.workspace_load("ws"),
                                                  [{"type": "test", "repo": "React"}], []), {})  # local checks never need it
+
+
+    # ---- independent review of the Phase 4 branch: a failed restore is never a success ----
+
+    def test_a_failed_restore_is_an_env_failure_not_a_success(self):
+        self.ok("env", "up", "ws", "React", "--run", self.rid)
+        commit_file(self.wt, "mod.py", "v = 2\n", "[Area] - fix")
+        real_up, calls = envmod.up, []
+
+        def flaky_up(*a, **kw):
+            calls.append(kw.get("serve_path"))
+            if len(calls) >= 2:  # the second `up` is the restore
+                return False, ["ENV-FAIL repo=React kind=start detail=simulated"]
+            return real_up(*a, **kw)
+
+        with mock.patch.object(envmod, "up", flaky_up):
+            rc, out, ev = self.repro()
+        self.assertEqual(rc, prove.EXIT_ENV, out)
+        self.assertIn("ENV-FAIL repo=React kind=start detail=env not restored", out)
+        self.assertEqual(ev["status"], "reproduced")  # the evidence already written stays as it is
+        self.assertIsNone(self.record())  # (and the message tells the user the env is down)
+        self.assertEqual(len(self.worktrees()), 2)
+
+    def test_a_restore_that_works_keeps_exit_zero(self):
+        self.ok("env", "up", "ws", "React", "--run", self.rid)
+        commit_file(self.wt, "mod.py", "v = 2\n", "[Area] - fix")
+        rc, out, _ = self.repro()
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("env not restored", out)
+
+    def test_the_cleanup_is_registered_before_the_worktree_is_created(self):
+        commit_file(self.wt, "mod.py", "v = 2\n", "[Area] - fix")
+        dropped = []
+
+        def interrupted(repo, ref, setup=None, env_vars=None, files=None, on_target=None):
+            on_target(Path("target-before-creation"))  # as the real function does, before `git worktree add`
+            raise KeyboardInterrupt
+
+        with mock.patch.object(prove, "temp_worktree", interrupted),                 mock.patch.object(prove, "drop_worktree", lambda repo, t: dropped.append(t)):
+            with self.assertRaises(KeyboardInterrupt):
+                cli("prove", self.rid, "--repro")
+        self.assertEqual(dropped, [Path("target-before-creation")])
+
+
+class ServeFromRestore(unittest.TestCase):
+    """`serve_from` with the env primitives stubbed: what it reports and which dependencies it stops again."""
+
+    WS = {"name": "ws", "repos": [{"alias": "Web", "env": {"depends_on": ["Api"]}}, {"alias": "Api", "env": {}}]}
+    RUN = {"id": "r1"}
+
+    def serve(self, before, after=None, up_ok=True, down_error=None):
+        """`before`/`after`: record state of each alias ("same", "gone", "unknown") before the serve and once it serves."""
+        said, downs = [], []
+        phase = {"now": before}
+
+        def fake_down(ws, alias, run_id=None, force=False, slot=None):
+            downs.append(alias)
+            if down_error:
+                raise core.FactoryError(down_error)
+            return f"{alias} stopped"
+
+        calls = []
+
+        def fake_up(*a, **kw):
+            calls.append(kw.get("serve_path"))
+            if len(calls) == 1:
+                phase["now"] = after or before  # the serve started the env (and its dependencies)
+                return True, []
+            return up_ok, ["ENV-FAIL repo=Web kind=start detail=nope"]
+
+        with mock.patch.object(envmod, "repo_conf", lambda ws, a: next(r for r in ws["repos"] if r["alias"] == a)),                 mock.patch.object(envmod, "is_shared", lambda *a: False),                 mock.patch.object(envmod, "run_slot", lambda *a: 0),                 mock.patch.object(envmod, "read_record", lambda ws, alias, slot: {"alias": alias}),                 mock.patch.object(envmod, "record_state", lambda rec: phase["now"].get(rec["alias"], "gone") if rec else "gone"),                 mock.patch.object(envmod, "restart_blocker", lambda *a: None),                 mock.patch.object(envmod, "down", fake_down), mock.patch.object(envmod, "up", fake_up):
+            with envmod.serve_from(self.WS, self.RUN, "Web", Path("tmp"), said.append) as outcome:
+                pass
+        return outcome, said, downs
+
+    def test_dependencies_started_by_the_serve_are_stopped_again(self):
+        outcome, _, downs = self.serve({}, {"Web": "same", "Api": "same"})
+        self.assertFalse(outcome.restore_failed)
+        self.assertEqual(downs, ["Web", "Api"])
+
+    def test_a_dependency_that_ran_before_is_left_running(self):
+        _, _, downs = self.serve({"Api": "same"}, {"Web": "same", "Api": "same"})
+        self.assertEqual(downs, ["Web"])
+
+    def test_nothing_stopped_means_no_env_not_restored_message(self):
+        outcome, said, _ = self.serve({"Web": "unknown"}, down_error="lease held elsewhere")
+        self.assertFalse(outcome.restore_failed)  # an "unknown" identity record was never stopped by us
+        self.assertFalse([t for t in said if "env not restored" in t], said)
+
+    def test_a_running_env_that_cannot_be_started_again_is_reported(self):
+        outcome, said, _ = self.serve({"Web": "same"}, up_ok=False)
+        self.assertTrue(outcome.restore_failed)
+        self.assertIn("nope", outcome.detail)
+        self.assertTrue([t for t in said if "env not restored" in t], said)
 
 
 class Worktree(BugCase):

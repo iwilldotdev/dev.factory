@@ -125,11 +125,14 @@ def prepare_worktree(src: Path, dst: Path, setup: str | None = None, env_vars: d
 
 
 def temp_worktree(repo: Path, ref: str, setup: str | None = None, env_vars: dict | None = None,
-                  files: list[str] | None = None) -> Path:
+                  files: list[str] | None = None, on_target=None) -> Path:
     """Detached worktree of `repo` at `ref` in a fresh temp dir, prepared like the run worktree (`files`: the repo's
-    `env.files_from_main`, copied from `repo`)."""
+    `env.files_from_main`, copied from `repo`). `on_target(target)` is called before `git worktree add` and the setup,
+    so a caller can register the cleanup before an interrupt can leak the directory."""
     base = Path(tempfile.mkdtemp(prefix="factory-wt-"))
     target = base / "wt"
+    if on_target is not None:
+        on_target(target)
     proc = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(target), ref],
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:

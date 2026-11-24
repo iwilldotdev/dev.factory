@@ -33,7 +33,7 @@ SPEC = {
     "limits": {"max_diff_ratio": T(("nr", 0, 1), 0.03), "tolerance_px": T("n", 2), "approx": APPROX},
     "providers": {k: {"fetch": "c", "timeout_s": T("i", 60), "secrets": T("key", [])} for k in KINDS},
     "ship": {"title": T("s", "[{key}] - {summary}"), "draft": T("b", True),
-             "ticket": T(("e", "none", "comment", "transition"), "none"), "transition_to": "c",
+             "ticket": T(("e", "none", "comment", "transition", "both"), "none"), "transition_to": "c",
              "reviewers": [{"scm": "c", "tracker": "c"}], "require_pipeline": T("b", False)},
     "autonomy": {"max_loops": T(("r", 0, 10), 3), "ship": T(("e", "ask", "draft-auto"), "ask")},
     "orchestration": {"max_parallel": T("i", 1)},

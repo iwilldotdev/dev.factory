@@ -55,3 +55,45 @@ class M3Case(M2Case):
 
     def loops(self) -> list[dict]:
         return [e for e in self.events(self.run_dir) if e["type"] == "loop"]
+
+
+class ShipCase(M3Case):
+    """`to_ship()` leaves both reviews APPROVE and the review gate passed; helpers build change readbacks."""
+
+    def to_ship(self, kind: str = "feature", **kw) -> Path:
+        self.ready(kind, **kw)
+        self.approve_both()
+        self.ok("gate", "review")
+        return self.run_dir
+
+    def ship_plan(self, *flags: str) -> dict:
+        self.ok("ship", "plan", *flags)
+        return self.sp()
+
+    def sp(self) -> dict:
+        return json.loads((self.run_dir / "ship" / "plan.json").read_text(encoding="utf-8"))
+
+    def change_data(self, **over) -> dict:
+        sp = self.sp()
+        it = next(i for i in sp["intents"] if i["intent"] == "change_request")
+        data = {"id": "42", "url": "https://scm.example/c/42", "repo": "web", "title": sp["title"], "source_branch": it["source_branch"],
+                "target_branch": it["target_branch"], "head_sha": sp["heads"]["web"], "state": "open", "draft": True, "reviewers": [],
+                "description_md": (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")}
+        data.update(over)
+        return data
+
+    def ingest_change(self, kind: str = "change", **over) -> dict:
+        data = self.change_data(**over) if kind == "change" else over
+        raw = self.run_dir / "ship" / "readback" / f"web-{kind}.raw.json"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps({"payload": data}), encoding="utf-8")
+        self.ok("ingest", kind, "--raw", str(raw), "--stdin", stdin=json.dumps(data))
+        return data
+
+    def ship_verify(self, code: int = 0) -> dict:
+        got, out, err = self.cli("ship", "verify", "--json")
+        self.assertEqual(got, code, out + err)
+        return json.loads(out)
+
+    def ship_events(self, kind: str) -> list[dict]:
+        return [e for e in self.events(self.run_dir) if e["type"] == kind]

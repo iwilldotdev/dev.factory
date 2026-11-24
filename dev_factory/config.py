@@ -174,8 +174,8 @@ def semantic(cfg: dict) -> list[str]:
     ship = cfg["ship"]
     if not str(ship.get("title") or "").strip():
         ship["title"] = "[{key}] - {summary}"  # an empty or null title falls back [L-142]
-    if ship["ticket"] == "transition" and not ship.get("transition_to"):
-        errs.append('ship.transition_to: required when ship.ticket = "transition"')
+    if ship["ticket"] in ("transition", "both") and not ship.get("transition_to"):
+        errs.append('ship.transition_to: required when ship.ticket is "transition" or "both"')
     if any(not (r.get("scm") and r.get("tracker")) for r in ship.get("reviewers", [])):
         errs.append("ship.reviewers: every entry needs scm and tracker identities [L-143]")
     if any(not (t.get("name") and t.get("branch")) for t in cfg.get("hotfix", {}).get("targets", [])):

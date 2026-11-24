@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import acquire, evidence, git, lock, media, plan as planmod, review
+from . import acquire, evidence, git, lock, media, plan as planmod, review, ship
 from .run import Run
 from .util import FactoryError, fwd, sha256_file
 
 # Run kind -> the ticket `type` it requires; epic and review runs do not derive from a single ticket type.
 KIND_TYPE = {"feature": "feature", "bug": "bug", "hotfix": "bug"}
-NAMES = ("intake", "plan", "reproduce", "verify", "review")
+NAMES = ("intake", "plan", "reproduce", "verify", "review", "ship")
 SECTIONS = ("Root cause", "Evidence", "Ruled out")
 
 
@@ -164,7 +164,8 @@ def _red_green_reasons(st: dict, c: dict, lk: dict, plan: dict, path: Path, bp: 
 def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     """What a later gate adds on top of verify; callers know that verify holds."""
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
-    return review.reasons(st, plan, lk)
+    out = review.reasons(st, plan, lk)
+    return out + ship.reasons(run, project, st) if name == "ship" and not out else out
 
 
 def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
@@ -186,7 +187,7 @@ def passed(run: Run, project, st: dict, name: str, chain: bool = True) -> bool:
         return False
     if name == "intake":
         return intake_passed(run, project.cfg, st)
-    if name == "review" and g["at"] < st["review_at"]:
+    if name in ("review", "ship") and g["at"] < max(st["review_at"], st["ship_at"] if name == "ship" else -1):
         return False
     return not (reasons_for(run, project, st, name) if chain else extra_reasons(run, project, st, name))
 

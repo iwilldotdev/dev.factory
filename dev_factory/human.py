@@ -58,6 +58,31 @@ def human(run: Run, kind: str, text: str, actor: str | None) -> dict:
     return run.append({"type": "human", "kind": kind, "text": text.strip()}, actor)
 
 
+def _contract_ref(run: Run, target: str, what: str) -> tuple[str, str]:
+    kind, _, ident = target.partition(":")
+    if kind not in ("change", "pipeline") or not ident:
+        raise FactoryError(f"{what} takes <kind>:<id> of a change or pipeline contract of this run, e.g. change:42")
+    if (kind, ident) not in run.state()["contracts"]:
+        raise FactoryError(f"run {run.id} has no {kind} contract {ident}: ingest or fetch it first")
+    return kind, ident
+
+
+def confirm(run: Run, target: str, said: str, heads: dict, actor: str | None) -> dict:
+    """The user vouches for an agent-written contract that is used as proof; a later re-ingest asks again [L-21]."""
+    said = _said(said)
+    kind, ident = _contract_ref(run, target, "confirm")
+    return run.append({"type": "confirm", "contract": f"{kind}:{ident}", "user_said": said, "heads": heads}, actor)
+
+
+def waive(run: Run, target: str, said: str, actor: str | None) -> dict:
+    """A user waiver names one pipeline id; a newer pipeline is not covered [L-20]."""
+    said = _said(said)
+    kind, ident = _contract_ref(run, target, "waive")
+    if kind != "pipeline":
+        raise FactoryError("only a pipeline can be waived: waive pipeline:<id>")
+    return run.append({"type": "waiver", "pipeline": ident, "user_said": said}, actor)
+
+
 def _kinds_msg(what: str, got: str, kinds: dict) -> str:
     return f"invalid {what} {got!r}; valid kinds:\n" + "\n".join(f"  {k}: {v}" for k, v in kinds.items())
 

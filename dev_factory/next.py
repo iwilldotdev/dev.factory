@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import acquire, gates, git, lock, media, plan as planmod, review as rv
+from . import acquire, gates, git, lock, media, plan as planmod, review as rv, ship, shipbody
 from .project import Project
 from .run import Run
 from .util import fwd, safe_id
@@ -32,7 +32,9 @@ def phase(run: Run, project: Project, st: dict) -> str:
         return "reproduce"
     if not gates.passed(run, project, st, "verify"):
         return "build"
-    return "review" if not gates.passed(run, project, st, "review", chain=False) else "ship"
+    if not gates.passed(run, project, st, "review", chain=False):
+        return "review"
+    return "ship" if not gates.passed(run, project, st, "ship", chain=False) else "done"
 
 
 def _repeated_env_failure(st: dict) -> dict | None:
@@ -50,8 +52,11 @@ def compute(project: Project, run: Run) -> dict:
                  "action": None, "kind_of_action": None, "command": None, "files": [], "reasons": [], "role": "orchestrator",
                  "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]], "refused": []}
     reasons = gates.reasons_for(run, project, st, {"build": "verify"}.get(ph, ph)) if ph in ("intake", "plan", "reproduce", "build") else []
+    stage = None
     if ph == "review":
         reasons = gates.extra_reasons(run, project, st, "review")  # verify holds in this phase
+    elif ph == "ship":
+        stage, reasons = ship.stage(run, project, st)
 
     def set_(action, kind, command=None, files=(), role="orchestrator"):
         out.update(action=action, kind_of_action=kind, command=command, files=[fwd(f) for f in files], role=role)
@@ -86,8 +91,13 @@ def compute(project: Project, run: Run) -> dict:
             set_("every check passes at HEAD; run the verify gate", "command", f"factory gate verify{flag}")
     elif ph == "review":
         _review_action(project, run, st, reasons, set_, flag)
+    elif ph == "ship":
+        _ship_action(project, run, st, stage, set_, flag)
+        if st["ships"] and stage != "plan":
+            out["briefing"] = shipbody.briefing(ship.load(run), ship.load(run)["rows"], st)
     else:
-        set_("review passed; the ship phase is not available in this build", "none")
+        set_("the ship gate passed: the draft change is verified. Tell the user what was shipped (changes, AC x evidence, follow-ups); "
+             "the feedback phase is not available in this build", "none")
     out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:
@@ -166,3 +176,30 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
              "command", f'factory review record --kind {kind} --file "{fwd(path)}"{flag}', [path], "reviewer")
     else:
         set_("both reviews are APPROVE at HEAD; run the review gate", "command", f"factory gate review{flag}")
+
+
+def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: str) -> None:
+    if stage == "plan":
+        update = " --update" if any(ship._existing(run, st, r) for r in st["repos"]) else ""
+        set_("write the ship plan: neutral intents (push, change request with its AC x check x status body, readback, ticket writes) for "
+             "the current commits; --ticket none|comment|transition|both picks the ticket writes, --pipeline adds a pipeline readback, "
+             "--allow-behind --decision Q-n accepts a target that moved", "command", f"factory ship plan{update}{flag}", [], "orchestrator")
+    elif stage == "execute":
+        sp = ship.load(run)
+        todo = [i for i in sp["intents"] if i["intent"] == "readback" and not ship.changes(run, st, i["repo"], st["ships"][-1]["at"])]
+        first = todo[0]
+        ask = any(i["needs_user"] for i in sp["intents"])
+        how = f"factory ship verify{flag}" if first["adapter"] else f"{first['ingest']}{flag}"
+        set_("execute the intents of ship/plan.json in order with your own tools" + (", asking the user before each intent that needs_user "
+             "(push, creating or updating the change, ticket writes)" if ask else " (draft-auto lets you push and open a draft without asking; "
+             "ticket writes still ask)") + ". Create or update the change with the title, branches and body file named there, then read "
+             "it back: save the provider payload and the change contract data to the paths given, ingest them"
+             + (" (or let the configured adapter do it in ship verify)" if first["adapter"] else "") + ", then run ship verify",
+             "user" if ask else "command", how, [Path(first["raw"]), Path(first["contract_file"]), run.dir / "ship" / "body.md"], "orchestrator")
+    elif stage == "fix":
+        set_("the change read back differs from the ship plan (see the reasons): fix the change with your own tools, or re-plan, read it "
+             "back again and run ship verify", "command", f"factory ship verify{flag}", [], "orchestrator")
+    elif stage == "verify":
+        set_("the readback matches the ship plan; record it", "command", f"factory ship verify{flag}")
+    else:
+        set_("the readback is verified; run the ship gate", "command", f"factory gate ship{flag}")

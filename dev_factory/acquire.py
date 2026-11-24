@@ -41,7 +41,7 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
     return envelope
 
 
-def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: str | None = None) -> dict:
+def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: str | None = None, extra: dict | None = None) -> dict:
     """Run the configured adapter for `kind`; stdout is the raw, validated into a `source: adapter` contract."""
     prov = cfg["providers"].get(kind, {})
     if not prov.get("fetch"):
@@ -55,6 +55,7 @@ def fetch(run: Run, cfg: dict, project_dir: Path, kind: str, ident: str, repo: s
     values = {"id": ident, "run_dir": fwd(run.dir), "project_dir": fwd(project_dir)}
     if repo_cfg:
         values.update(repo=repo_cfg["name"], repo_path=fwd(repo_cfg["path"]))
+    values.update(extra or {})  # `branch` and `sha`, when the caller knows them
     argv = proc.substitute(proc.split_template(prov["fetch"]), values)
     keys = prov.get("secrets", [])
     secret_values, missing = config.resolve_secrets(cfg, keys)

@@ -119,6 +119,7 @@ def cmd_next(args) -> int:
     text += [f"expects file: {f}" for f in n["files"]] + [f"role: {n['role']}"]
     if n["reasons"]:
         text += [f"pending gate {n['gate']} would fail:"] + [f"  - {r}" for r in n["reasons"]]
+    text += n.get("briefing", [])
     if n.get("decisions_note"):
         text.append(n["decisions_note"])
     text += [f"do not run: {c}" for c in n["refused"]]
@@ -273,6 +274,39 @@ def cmd_review(args) -> int:
     ev = review.record(_run(args, proj), proj, args.kind, review.load_file(Path(args.file)), args.decision, args.actor)
     _out(args, ev, f"recorded {ev['kind']} review round {ev['round']}: {ev['verdict']} ({len(ev['findings'])} finding(s)) bound to "
                    + ", ".join(f"{r}@{s[:7]}" for r, s in ev["repos"].items()))
+    return 0
+
+
+def cmd_ship(args) -> int:
+    from . import ship
+    proj = _project(args)
+    run = _run(args, proj)
+    if args.sub == "plan":
+        sp = ship.plan(run, proj, args.ticket, args.update, args.allow_behind, args.decision, args.pipeline, args.actor)
+        lines = [f"ship plan for {sp['ticket']}: {sp['title']} (draft {sp['draft']}, autonomy.ship {sp['mode']})"]
+        lines += [f"  {i['id']} {i['intent']}{' ' + i['repo'] if i.get('repo') else ''}: " + ("asks the user first" if i["needs_user"] else "may run without asking")
+                  for i in sp["intents"]]
+        lines += [f"  {r}: {b['count']} commit(s) behind; {b['note']}" for r, b in sp["behind"].items()]
+        lines += [f"plan: {fwd(ship.path_of(run, 'plan.json'))}", f"body: {fwd(ship.path_of(run, 'body.md'))}", "next: factory next"]
+        _out(args, sp, "\n".join(lines))
+        return 0
+    res = ship.verify(run, proj, args.actor)
+    note = "" if res["recorded"] else " (same state as the last verification, nothing new recorded)"
+    _out(args, res, f"ship verify: {res['result']}{note}" + "".join(f"\n  - {m}" for m in res["mismatches"]))
+    return 0 if res["result"] == "pass" else 1
+
+
+def cmd_confirm(args) -> int:
+    from . import human, review
+    proj = _project(args)
+    run = _run(args, proj)
+    if args.cmd == "waive":
+        ev = human.waive(run, args.target, args.user_said, args.actor)
+        print(f"waived pipeline {ev['pipeline']}; a newer pipeline is not covered")
+    else:
+        st = run.state()
+        ev = human.confirm(run, args.target, args.user_said, review.heads_of(st, st["repos"]), args.actor)
+        print(f"recorded the user's confirmation of {ev['contract']}")
     return 0
 
 

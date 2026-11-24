@@ -7,8 +7,8 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
-                      cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_runs, cmd_status, cmd_verify)
+    from .cli import (cmd_check, cmd_confirm, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_metrics, cmd_next,
+                      cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
     p = argparse.ArgumentParser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
     p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
@@ -123,6 +123,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", required=True, help="code (bound to the plan without checks) or qa (bound to the full plan)")
     sp.add_argument("--file", required=True, help="the review as JSON (factory review example)")
     sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this CHANGES round from the loop budget, once")
+    sh = sub.add_parser("ship", help="plan the ship intents, or verify the readback").add_subparsers(dest="sub", required=True)
+    sp = sh.add_parser("plan", parents=[scoped])
+    sp.set_defaults(func=cmd_ship)
+    sp.add_argument("--ticket", choices=("none", "comment", "transition", "both"), help="ticket writes to plan (default: [ship] ticket)")
+    sp.add_argument("--update", action="store_true", help="re-plan the body and head of changes that already exist")
+    sp.add_argument("--allow-behind", action="store_true", help="plan although the target has commits HEAD lacks (needs --decision)")
+    sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n) for --allow-behind, consumed once")
+    sp.add_argument("--pipeline", action="store_true", help="also plan a pipeline readback (always planned with require_pipeline)")
+    sp = sh.add_parser("verify", parents=[scoped])
+    sp.set_defaults(func=cmd_ship)
+    sp = add("confirm", cmd_confirm, "record the user's confirmation of an agent-written change or pipeline contract", [scoped])
+    sp.add_argument("target", help="<kind>:<id>, e.g. change:42")
+    sp.add_argument("--user-said", required=True)
+    sp = add("waive", cmd_confirm, "record the user's waiver of one pipeline", [scoped])
+    sp.add_argument("target", help="pipeline:<id>")
+    sp.add_argument("--user-said", required=True)
     sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
     sp.add_argument("name")
     return p

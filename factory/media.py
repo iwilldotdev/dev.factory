@@ -9,7 +9,8 @@ downloads each image through dev.mcp (`save_to` under `remote/media/`) and recor
                {"name": "<video filename>", "type": "video/mp4", "source": "...", "seen": false,
                 "note": "asked the user for the file or a description"}]}
 
-`seen: true` needs the downloaded file; `seen: false` needs a `question` blocker that names the attachment. Packs
+`seen: true` needs the downloaded file; `seen: false` needs a `question` blocker (answered or open) that references the attachment as `attachment:<id>`
+(its name when it has no id). Packs
 without an attachment list (older runs, a filtered `fields`) have nothing to check.
 """
 
@@ -119,15 +120,16 @@ def errors(run_id: str, run: dict) -> list[str]:
             out.append(f"{what} is not in {MANIFEST}: " + (
                 f"download it to {a['file']} (FETCH below), look at it, and record it with seen: true"
                 if a["type"].startswith("image/") else
-                "a video cannot be viewed: `factory run block <run> question` asking the user for the file or a "
-                "description naming it, and record it with seen: false"))
+                f"a video cannot be viewed: `factory run block <run> question` with `{'attachment:' + a['id'] if a['id'] else a['name']}` "
+                "in the text, asking the user for the file or a description, and record it with seen: false"))
         elif e.get("seen") is True:
             if not _file_ok(run_id, e.get("file")):
                 out.append(f"{what}: seen: true but its file is missing or empty under {MEDIA_DIR}/ ({e.get('file')!r})")
         elif e.get("seen") is False:
-            if not any(a["name"] in q or (a["id"] and a["id"] in q) for q in questions):
-                out.append(f"{what}: seen: false needs a `question` blocker naming it (ask the user for the file or a "
-                           "description)")
+            ref = f"attachment:{a['id']}" if a["id"] else a["name"]
+            if not any(ref in q for q in questions):
+                out.append(f"{what}: seen: false needs a `question` blocker (answered or open) that references it as "
+                           f"`{ref}` (ask the user for the file or a description)")
         else:
             out.append(f"{what}: manifest entry needs seen: true or false")
     return out

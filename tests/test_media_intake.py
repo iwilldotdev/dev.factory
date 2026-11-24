@@ -91,14 +91,23 @@ class MediaIntakeTests(FactoryCase):
         rc, out = self.gate()
         self.assertEqual(rc, 1)
         self.assertIn("needs a `question` blocker", out)
-        cli("run", "block", self.rid, "question", "Video 'screen 16-11-53': send the file or describe the steps")
+        cli("run", "block", self.rid, "question", "attachment:12 Video 'screen 16-11-53': send the file or describe the steps")
         cli("run", "unblock", self.rid, "0")  # answered; the record of the question stays
         self.assertEqual(self.gate()[0], 0)
+
+    def test_unrelated_question_naming_the_file_does_not_pass(self):
+        self.issue(MP4)
+        self.manifest({"name": "screen 16-11-53", "id": "12", "seen": False})
+        cli("run", "block", self.rid, "question", "does 'screen 16-11-53' mean we need video support?")
+        cli("run", "unblock", self.rid, "0")
+        rc, out = self.gate()
+        self.assertEqual(rc, 1)
+        self.assertIn("attachment:12", out)
 
     def test_open_question_still_blocks(self):
         self.issue(MP4)
         self.manifest({"name": "screen 16-11-53", "seen": False})
-        cli("run", "block", self.rid, "question", "Video 'screen 16-11-53': send it")
+        cli("run", "block", self.rid, "question", "attachment:12 Video 'screen 16-11-53': send it")
         rc, out = self.gate()
         self.assertEqual(rc, 1)
         self.assertIn("open question blocker", out)
@@ -113,6 +122,8 @@ class MediaDocsTests(unittest.TestCase):
             self.assertIn("remote/media/manifest.json", text)
             self.assertIn("seen: false", text) if text is author else self.assertIn('"seen": false', text)
         self.assertIn("jira_download_issue_attachment", phases)
+        self.assertIn("attachment:<id>", phases)
+        self.assertIn("attachment:<id>", author)
         self.assertIn("question", phases)
 
 

@@ -301,7 +301,7 @@ The proposed caps (decision 16) replace PIVOT §3 once approved.
 | `checks/visual`, `checks/style` | 120, 120 | `next` | 300 |
 | `design` (frames, PNG header, table, expect, crop box, approx, freshness) | 400 | `cli` | 370 |
 
-M6 modules (lines now): `mirror` 175, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core 8,053 of 8,500.
+M6 modules (lines now): `mirror` 176, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core 8,080 of 8,500.
 
 Command overhead is at most 1 s, excluding checks. The CLI installs through the standard Python entry point, apart from any working tree, with an optional version pin [L-130, L-149] (decision 3).
 

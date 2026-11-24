@@ -65,6 +65,14 @@ def validate(rec: dict, kind: str, acs: list[str]) -> list[str]:
 AUDITOR_ROLE = "auditor"
 
 
+def _same_commit(claimed, head: str) -> bool:
+    """A claimed SHA matches the HEAD when it is the full SHA or a prefix of at least 7 hex characters."""
+    if not isinstance(claimed, str):
+        return False
+    text = claimed.strip().lower()
+    return len(text) >= 7 and bool(re.fullmatch(r"[0-9a-f]+", text)) and head.lower().startswith(text)
+
+
 def cmd_record(args) -> int:
     if os.environ.get("FACTORY_ROLE") != AUDITOR_ROLE:
         raise FactoryError("review record is for the auditor: run it as `FACTORY_ROLE=auditor factory review record ...` "
@@ -83,10 +91,15 @@ def cmd_record(args) -> int:
     errors = validate(rec, args.kind, acs)
     shas = {alias: git_head(repo_path_for_run(run, ws, alias)) for alias in code_repos(run)}
     claimed = rec.get("repos")
-    if claimed:
+    if claimed and not isinstance(claimed, dict):
+        errors.append('"repos" must be an object mapping repo alias to the commit SHA reviewed, e.g. '
+                      f'{{"repos": {{"{next(iter(shas))}": "{next(iter(shas.values()))}"}}}} (got {type(claimed).__name__}); '
+                      "omit it to review the current HEADs")
+    elif claimed:
         for alias, sha in shas.items():
-            if claimed.get(alias) not in (None, sha):
-                errors.append(f"review was made against {alias}@{str(claimed[alias])[:8]}, HEAD is {sha[:8]}")
+            said = claimed.get(alias)
+            if said is not None and not _same_commit(said, sha):
+                errors.append(f"review was made against {alias}@{str(said)[:8]}, HEAD is {sha[:8]}")
     if errors:
         raise GateFailed(errors)
     rdir = run_dir(run["id"]) / "reviews"

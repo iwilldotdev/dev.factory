@@ -353,13 +353,15 @@ class QualityDeltaTests(FactoryCase):
 
 
 class ReviewGateTests(FactoryCase):
-    def review(self, verdict="APPROVE", findings=None, kind="code", sha_override=None):
+    def review(self, verdict="APPROVE", findings=None, kind="code", sha_override=None, repos=None):
         rec = {"verdict": verdict, "reviewer": "factory-auditor", "findings": findings or [],
                "completeness": {"done": 1, "gap": 0, "not_checked": 0}}
         if kind == "qa":
             rec["ac_coverage"] = [{"ac": "AC-1", "exercises": True}]
         if sha_override:
             rec["repos"] = {"React": sha_override}
+        if repos is not None:
+            rec["repos"] = repos
         path = self.tmp / f"{kind}.json"
         core.write_json(path, rec)
         return cli("review", "record", self.run_id, "--kind", kind, "--file", str(path))
@@ -391,6 +393,34 @@ class ReviewGateTests(FactoryCase):
         self.assertEqual(rc, 1)
         rc, out = self.review(verdict="APPROVE", findings=[{"id": "F1", "severity": "major", "text": "x"}])
         self.assertIn("open blocker/major", out)
+
+    def test_record_accepts_a_short_sha_and_stores_the_full_one(self):
+        rc, out = self.review(sha_override=self.head[:7])
+        self.assertEqual(rc, 0, out)
+        rec = core.read_json(core.run_dir(self.run_id) / "reviews" / "code-1.json")
+        self.assertEqual(rec["repos"], {"React": self.head})
+        rc, out = self.review(sha_override=self.head[:12].upper())
+        self.assertEqual(rc, 0, out)
+
+    def test_record_rejects_short_prefix_that_is_too_short_or_wrong(self):
+        for claim in (self.head[:6], "abcdef0" if not self.head.startswith("abcdef0") else "1234567", "xyz1234", ""):
+            if not claim:
+                continue
+            rc, out = self.review(sha_override=claim)
+            self.assertEqual(rc, 1, (claim, out))
+            self.assertIn(f"React@{claim[:8]}", out)
+            self.assertIn(f"HEAD is {self.head[:8]}", out)
+
+    def test_record_explains_repos_that_is_not_an_object(self):
+        rc, out = self.review(repos=[{"React": self.head}])
+        self.assertEqual(rc, 1)
+        self.assertIn('"repos" must be an object mapping repo alias to the commit SHA', out)
+        self.assertIn(f'"React": "{self.head}"', out)
+        self.assertIn("list", out)
+        rc, out = self.review(repos="React@" + self.head)
+        self.assertEqual(rc, 1)
+        self.assertIn("got str", out)
+        self.assertFalse((core.run_dir(self.run_id) / "reviews" / "code-1.json").exists())
 
     def test_qa_requires_ac_coverage(self):
         path = self.tmp / "qa.json"

@@ -43,4 +43,52 @@ jobs:
         with:
           name: test-output-${{ matrix.os }}-${{ matrix.python }}
           path: .tmp/test-output
-  # The Node browser runner job joins this workflow with M4.
+  runner:
+    name: browser runner on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        working-directory: browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: browser/package-lock.json
+      - name: Install the runner and its headless browser
+        shell: bash
+        run: |
+          npm ci
+          if [ "$RUNNER_OS" = "Linux" ]; then npx playwright install --with-deps chromium; else npx playwright install chromium; fi
+      - name: Runner suite (local static pages, 90 s budget)
+        run: npm test
+        timeout-minutes: 2
+  e2e:
+    name: python suite with the real runner on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the runner and its headless browser
+        working-directory: browser
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Real-runner tests
+        run: python tests/run_tests.py browser_e2e

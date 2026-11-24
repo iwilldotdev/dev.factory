@@ -193,7 +193,8 @@ def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: s
         set_("execute the intents of ship/plan.json in order with your own tools" + (", asking the user before each intent that needs_user "
              "(push, creating or updating the change, ticket writes)" if ask else " (draft-auto lets you push and open a draft without asking; "
              "ticket writes still ask)") + ". Create or update the change with the title, branches and body file named there, then read "
-             "it back: save the provider payload and the change contract data to the paths given, ingest them"
+             "it back: save the provider payload and the change contract data (id, url, repo, title, description_md, source_branch, target_branch, "
+             "head_sha as the full SHA, state, draft, reviewers, pipelines newest first) to the paths given, ingest them"
              + (" (or let the configured adapter do it in ship verify)" if first["adapter"] else "") + ", then run ship verify",
              "user" if ask else "command", how, [Path(first["raw"]), Path(first["contract_file"]), run.dir / "ship" / "body.md"], "orchestrator")
     elif stage == "fix":

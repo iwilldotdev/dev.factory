@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dev-factory"
+description = "Local CLI that takes one ticket from intake to a draft change request, with evidence-bound gates."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dynamic = ["version"]
+dependencies = []
+
+[project.scripts]
+factory = "dev_factory.cli:main"
+
+[tool.setuptools]
+packages = ["dev_factory"]
+
+[tool.setuptools.dynamic]
+version = { attr = "dev_factory.__version__" }

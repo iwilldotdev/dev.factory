@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { FH, FH_POSIX, TMP, WIN } from './helpers.mjs';
 
@@ -16,7 +18,15 @@ const baseline = require('./fixtures/protect-lib.baseline.js');
 const HOME = (process.env.USERPROFILE || process.env.HOME || os.homedir()).replace(/\\/g, '/');
 const HOME_WIN = HOME.replace(/\//g, '\\');
 const hctx = (l) => ({ home: l.normPath(FH, os.homedir()), cwd: '/work' });
-const decide = (l, cmd) => l.bashWriteReason(cmd, hctx(l));
+// The auditor's corpus targets the default home (~/.factory) from a project folder, as its harness did.
+const auditCtx = { home: lib.normPath('~/.factory', os.homedir()), cwd: `${HOME}/Code/proj` };
+// Decisions are memoised: the corpora are judged by several tests.
+const memo = new Map();
+const decide = (l, cmd, c = hctx(l)) => {
+  const key = `${l === lib ? 'n' : 'b'}|${c.home}|${c.cwd}|${cmd}`;
+  if (!memo.has(key)) memo.set(key, l.bashWriteReason(cmd, c));
+  return memo.get(key);
+};
 const newDenies = (cmd) => Boolean(decide(lib, cmd));
 const oldDenies = (cmd) => Boolean(decide(baseline, cmd));
 const SCRATCH = `${TMP.replace(/\\/g, '/')}/scratch`;
@@ -67,7 +77,38 @@ const REGRESSION = [
   `python -c "import os,sys; sys.stdout=os.fdopen(os.open('@F@', os.O_WRONLY|os.O_CREAT)); sys.stdout.write('x')"`,
   `python -c "import sys; from pathlib import Path; sys.stdout=Path('@F@').open('w'); sys.stdout.write('x')"`,
   `node -e "const fs=require('fs');const {homedir}=require('os');process.stdout=fs.openSync(homedir()+'/.factory/runs/r1/run.json','w'); process.stdout.write('x')"`,
+  // third audit, M1: the verb hidden behind a name defined in another segment (function, alias, positional parameters)
+  'zap() { rm -rf "$1"; }; zap @E@', 'q() { rm "$@"; }; q @F@', 'function q { rm -f "$1"; }; q @F@',
+  'function z() { Remove-Item -Recurse -Force $args[0] }; z @E@', 'Set-Alias wipe Clear-Content; wipe @F@', 'sal wipe Remove-Item; wipe @F@',
+  'New-Alias wipe Remove-Item; wipe @F@', 'set -- rm -rf; "$@" @E@',
+  // M2: xargs -I completes the protected name
+  'echo run.json | xargs -I% cp /tmp/x @R@/%', 'echo run.json | xargs -iX rm @R@/X', 'cat /tmp/list | xargs -I@ rm @R@/@',
+  'echo run.json | xargs --replace=X rm @R@/X',
+  // M6: shells whose body the lexer cannot judge; M7: Push-Location; a subshell around a cd
+  'cmd /c del @F@', 'cmd /c "del @F@"', 'Push-Location @R@; Remove-Item run.json', 'Push-Location @R@; rm run.json',
+  'Push-Location -Path @R@; Clear-Content run.json',
 ];
+// Third audit, spelled with this machine's home: junction aliases (M3), bash escapes in all-backslash paths (M4), odd
+// spellings attached to a flag value (M5), cmd.exe carets and quote loss (M6). The junction rows need the junction.
+const U = path.basename(HOME);
+const UPPER = path.basename(HOME).toUpperCase();
+const M_HOME = WIN ? [
+  `rm C:\\\\Users\\\\${U}\\\\.factory\\\\runs\\\\r1\\\\run.jso\\n`, `rm -rf C:\\\\Users\\\\${U}\\\\.factory\\\\runs\\\\r1\\\\evidenc\\e`,
+  `rm C:\\\\Users\\\\${U.slice(0, 3)}\\${U.slice(3)}\\\\.factory\\\\runs\\\\r1\\\\run.json`, `rm /c/Users/${U}/.factory/runs/r1/run.jso\\n`,
+  `dd if=/dev/zero of=//localhost/c$/Users/${U}/.factory/runs/r1/run.json`, `dd of=//127.0.0.1/C$/Users/${U}/.factory/runs/r1/run.json if=/dev/null`,
+  `cp -t//127.0.0.1/c$/Users/${U}/.factory/runs/r1/evidence /tmp/x`, `cp /tmp/x --target-directory=//localhost/c$/Users/${U}/.factory/runs/r1/evidence`,
+  `Set-Content -Path://localhost/c$/Users/${U}/.factory/runs/r1/run.json -Value x`,
+  `Copy-Item C:/tmp/x -Destination:\\\\localhost\\c$\\Users\\${U}\\.factory\\runs\\r1\\run.json`,
+  `Out-File -FilePath://localhost/c$/Users/${U}/.factory/runs/r1/run.json`, `dd if=/dev/zero of=~${U}/.factory/runs/r1/run.json`,
+  `cmd /c del C:\\Users\\${U.slice(0, 3)}^${U.slice(3)}\\.factory\\runs\\r1\\run.json`, `cmd /c del C:\\Users\\${U}\\.fac^tory\\runs\\r1\\run.json`,
+  `cmd /c del "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`, `rm C:/Users/${UPPER.slice(0, 6)}~1/.factory/runs/r1/run.json`,
+  `rm "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`, `cp /tmp/x "C:/Users/All Users/../${U}/.factory/runs/r1/run.json"`,
+  ...(fs.existsSync('C:/Documents and Settings') ? [
+    `rm "C:/Documents and Settings/${U}/.factory/runs/r1/run.json"`, `rm -rf "C:/Documents and Settings/${U}/.factory/runs/r1/evidence"`,
+    `cat C:/x && cp /tmp/x "C:/Documents and Settings/${U}/.factory/runs/r1/run.json"`,
+    `sed -i s/a/b/ "C:/Documents and Settings/${U}/.factory/runs/r1/run.json"`,
+  ] : []),
+] : [];
 // Spellings that cannot be expressed through the R placeholder (their own home or odd forms of the file).
 const FIXED_DENY = [
   'rm C:\\Users\\OWILL~1\\.factory\\runs\\r1\\run.json', 'rm C:\\fh-test\\FACTOR~1\\runs\\r1\\run.json',
@@ -116,6 +157,7 @@ test('regression: every write, delete, move, alias or permission change of a pro
     }
   }
   for (const cmd of FIXED_DENY) if (!newDenies(cmd)) misses.push(`fixed: ${cmd}`);
+  for (const cmd of M_HOME) if (!newDenies(cmd) || !decide(lib, cmd, auditCtx)) misses.push(`home: ${cmd}`);
   assert.deepEqual([...new Set(misses)], []);
 });
 
@@ -125,7 +167,8 @@ test('regression: literal read sources with a literal scratch destination stay a
 });
 
 // ---- differential safety net against the frozen pre-target-rule library ----
-// Every command the baseline DENIES and the current code ALLOWS must belong to a documented false-positive class below.
+// Every command the baseline DENIES and the current code ALLOWS must be provably safe (protect-lib provablySafe) AND fall
+// in one of the classes below, whose checkers are written here independently of the library's grammar.
 const VERBS_REMOVE = ['rm', 'rm -rf', 'rm -f', 'del', 'del /q', 'Remove-Item', 'ri', 'rmdir', 'rd /s /q', 'unlink', 'truncate -s0', 'shred',
   'mv', 'Move-Item', 'chmod 600', 'chown u', 'icacls', 'attrib +r', 'touch', 'mkdir', 'tee', 'Set-Content', 'Add-Content', 'Clear-Content',
   'Out-File', 'ni', 'New-Item', 'sed -i s/a/b/', 'perl -pi -e s/a/b/', 'vim', 'nano', 'ln -s'];
@@ -146,7 +189,7 @@ function corpus() {
   const out = [];
   for (const cmd of [...ALLOW, ...ALLOW_SPELLED]) out.push({ cmd, cls: 'previously-fixed-false-positive' });
   for (const tpl of [...REGRESSION]) for (const { R } of SPELLINGS) for (const sep of ['/', '\\']) out.push({ cmd: subst(tpl, R, sep), cls: 'regression' });
-  for (const cmd of FIXED_DENY) out.push({ cmd, cls: 'regression' });
+  for (const cmd of [...FIXED_DENY, ...M_HOME]) out.push({ cmd, cls: 'regression' });
   for (const { R } of SPELLINGS) {
     for (const d of DEST_FORMS) {
       const D = subst(d, R, '/');
@@ -167,32 +210,126 @@ function corpus() {
   return out;
 }
 
-// Documented false-positive classes: the baseline denied, the current code allows, and it is correct to allow.
-const DOCUMENTED_FALSE_POSITIVES = {
-  // the previously fixed false positives (guard-targets.test.mjs) and the heredoc-as-text class
-  'previously-fixed-false-positive': () => true,
-  // a literal path inside the run folder that no rule protects (remote/, notes/): the target-aware rule allows it
-  'unprotected-run-file': () => true,
-  // a protected path that is only a plain literal READ source of a copier whose destination is a literal scratch path
-  // (`ln` is not in the class: a link to a protected source aliases the tree.)
-  'generated-source-read': (e) => /^(?:cp|cp -r|cp -a|install|rsync -a|scp|copy|xcopy|robocopy|Copy-Item|cpi)$/.test(e.verb)
-    && e.dest.startsWith(SCRATCH) && PLAIN_SOURCE_FORMS.includes(e.form),
+// ---- classes of allowed baseline denials, checked without the library ----
+// A gain (baseline denies, current code allows) is legitimate only when EVERY segment of the command is one of these
+// kinds; the class of a command is the set of its segment kinds. Scratch = the temp dir; unprotected = runs/<id>/remote|notes.
+const fwd = (s) => s.replace(/\\/g, '/');
+const SCRATCH_DIRS = [fwd(TMP), '/tmp'];
+const noDots = (p) => !/(?:^|\/)\.\.(?:\/|$)/.test(p) && !/[$~%`*?{]/.test(p);
+const inScratch = (p) => noDots(p) && !/\.factory/i.test(p) && SCRATCH_DIRS.some((d) => p === d || p.startsWith(`${d}/`));
+const unprotected = (p) => noDots(p) && /^[A-Za-z]:\/|^\//.test(p) && /\/runs\/[\w.-]+\/(?:remote|notes)\/[\w.-]+$/i.test(p);
+const writable = (p) => inScratch(fwd(p)) || unprotected(p) || p === '/dev/null';
+
+/** Top-level segments split on unquoted ; && || | and newlines; null on substitutions, groups or heredocs. */
+function splitTop(input) {
+  const cmd = input.replace(/\$\{(HOME|FACTORY_HOME)\}/g, '$$$1');
+  if (/\$\(|`|<<|[<>]\(/.test(cmd)) return null;
+  const segs = [];
+  let cur = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i += 1) {
+    const c = cmd[i];
+    if (q) { if (c === q) q = ''; cur += c; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if ('(){}'.includes(c)) return null;
+    if (';\n|&'.includes(c) && !(c === '&' && cmd[i - 1] === '>') && !(c === '&' && cmd[i + 1] === '>')) {
+      segs.push(cur);
+      cur = '';
+      if (cmd[i + 1] === c) i += 1;
+      continue;
+    }
+    cur += c;
+  }
+  segs.push(cur);
+  return segs.map((s) => s.trim()).filter(Boolean);
+}
+
+const unquote = (w) => w.replace(/^"([^"]*)"$|^'([^']*)'$/, '$1$2');
+const SEGMENT_KINDS = {
+  read: (w) => /^(?:cat|head|tail|ls|grep|jq|wc|echo|stat|type|get-content|gc|test-path|select-string)$/i.test(w[0]),
+  'sort-diff-read': (w) => /^(?:sort|diff)$/.test(w[0]) && !w.some((a) => /^-[^-]*[oT]|^--(?:output|temporary|compress)/.test(a)),
+  'gzip-to-stdout': (w) => /^(?:gzip|gunzip)$/.test(w[0]) && w.some((a) => /^-[a-z]*c[a-z]*$/.test(a)),
+  'copy-out': (w) => /^(?:cp|rsync)$/.test(w[0]) && w.length >= 3 && !w.slice(1).some((a) => /^-[a-zA-Z]*[lstdTixe]|^--(?:link|symbolic|target|remove|delete|backup|log|write|temp|partial|rsh|files)/.test(a))
+    && writable(unquote(w[w.length - 1])),
+  'write-scratch': (w) => /^(?:rm|mkdir|touch|mv|rmdir)$/.test(w[0]) && w.slice(1).filter((a) => !/^-/.test(a)).length > 0
+    && w.slice(1).filter((a) => !/^-/.test(a)).every((a) => writable(unquote(a))),
+  'sed-in-place-scratch': (w) => w[0] === 'sed' && /^s\/[^/]*\/[^/]*\/g?$/.test(w.find((a, i) => i > 0 && !/^-/.test(a)) || '')
+    && w.slice(1).filter((a) => !/^-/.test(a)).slice(1).every((a) => writable(unquote(a))),
+  'cd-elsewhere': (w) => /^(?:cd|pushd|set-location|sl)$/i.test(w[0]) && w.length === 2 && !/\.factory/i.test(w[1]),
+  'git-elsewhere': (w) => w[0] === 'git' && !w.some((a) => /\.factory|^--(?:work-tree|git-dir|output)|^-c$/.test(a)),
+  'python-read': (w) => /^python3?$/.test(w[0]) && w[1] === '-c' && w.length === 3
+    && !/\b(?:os|subprocess|shutil|pathlib|io|exec|eval|__\w+)\b|open\([^)]*,|print\([^)]*file=/.test(unquote(w[2]))
+    && !unquote(w[2]).replace(/sys\.stdout\.write\(/g, '').includes('write('),
+  factory: (w) => /^factory$/i.test(w[0]) || (/^python3?$/.test(w[0]) && w[1] === '-m' && w[2] === 'factory'),
 };
 
-test('differential: nothing the frozen baseline denied is allowed now, except documented false-positive classes', () => {
-  const entries = corpus();
+/** The class of a command (sorted segment kinds) or null when one segment fits no kind or redirects outside scratch. */
+function classOf(cmd) {
+  const heredoc = cmd.match(/^((?:cat|git commit -F -|gh [\w ]+--body-file -))\s*<<'(\w+)'\n[\s\S]*\n\2\s*$/);
+  if (heredoc) return 'heredoc-data';
+  const segs = splitTop(cmd);
+  if (!segs) return null;
+  const kinds = new Set();
+  for (const seg of segs) {
+    const outs = [...seg.matchAll(/(?:^|\s)\d?>>?\s*(\S+)/g)].map((m) => m[1]).filter((t) => !/^&\d$/.test(t));
+    if (!outs.every((t) => writable(unquote(t)))) return null;
+    const w = (seg.replace(/(?:^|\s)\d?>>?\s*\S+/g, ' ').match(/"[^"]*"|'[^']*'|\S+/g) || []);
+    if (!w.length) return null;
+    const kind = Object.keys(SEGMENT_KINDS).find((k) => SEGMENT_KINDS[k](w));
+    if (!kind) return null;
+    kinds.add(kind);
+  }
+  return [...kinds].sort().join('+');
+}
+
+const auditCorpus = require('./fixtures/audit-corpus.cjs');
+
+function differential(entries, c) {
   const gained = [];
   const byClass = {};
   let baselineDenied = 0;
-  for (const e of entries) {
-    if (!oldDenies(e.cmd)) continue;
+  for (const cmd of entries) {
+    if (!decide(baseline, cmd, c)) continue;
     baselineDenied += 1;
-    if (newDenies(e.cmd)) continue;
-    const ok = DOCUMENTED_FALSE_POSITIVES[e.cls];
-    if (!(ok && ok(e))) gained.push(e.cmd);
-    else byClass[e.cls] = (byClass[e.cls] || 0) + 1;
+    if (decide(lib, cmd, c)) continue;
+    const cls = classOf(cmd);
+    const safe = lib.provablySafe(cmd, c) || (cls === 'heredoc-data' && lib.provablySafe(lib.stripDataHeredoc(cmd), c))
+      || (cls === 'heredoc-data' && !decide(baseline, lib.stripDataHeredoc(cmd), c));
+    if (!(safe && cls)) gained.push(cmd);
+    else byClass[cls] = (byClass[cls] || 0) + 1;
   }
+  return { gained, byClass, baselineDenied };
+}
+
+test('differential (own corpus): every baseline denial allowed now is provably safe and in a checked class', () => {
+  const entries = corpus().map((e) => e.cmd);
+  const { gained, byClass, baselineDenied } = differential(entries, hctx(lib));
   assert.ok(entries.length > 3000, `corpus too small: ${entries.length}`);
-  assert.deepEqual([...new Set(gained)], [], `${gained.length} of ${baselineDenied} baseline denials are now allowed`);
-  process.stdout.write(`# differential corpus ${entries.length}, baseline denied ${baselineDenied}, allowed now (documented classes) ${JSON.stringify(byClass)}\n`);
+  assert.deepEqual([...new Set(gained)], [], `${gained.length} of ${baselineDenied} baseline denials are now allowed outside the classes`);
+  process.stdout.write(`# differential own corpus ${entries.length}, baseline denied ${baselineDenied}, allowed now by class ${JSON.stringify(byClass)}, unexplained 0\n`);
 });
+
+test('differential (audit corpus): every baseline denial allowed now is provably safe and in a checked class', () => {
+  const entries = auditCorpus(HOME).map((p) => p.cmd);
+  const { gained, byClass, baselineDenied } = differential(entries, auditCtx);
+  assert.ok(entries.length > 6000, `corpus too small: ${entries.length}`);
+  assert.deepEqual([...new Set(gained)], [], `${gained.length} of ${baselineDenied} baseline denials are now allowed outside the classes`);
+  process.stdout.write(`# differential audit corpus ${entries.length}, baseline denied ${baselineDenied}, allowed now by class ${JSON.stringify(byClass)}, unexplained 0\n`);
+});
+
+test('property: a regression row or a baseline-denied corpus command is never provably safe unless it is in a checked class', () => {
+  const bad = [];
+  const rows = [...corpus().map((e) => [e.cmd, hctx(lib)]), ...M_HOME.map((cmd) => [cmd, auditCtx]),
+    ...auditCorpus(HOME).map((p) => [p.cmd, auditCtx])];
+  for (const [cmd, c] of rows) if (decide(baseline, cmd, c) && lib.provablySafe(cmd, c) && !classOf(cmd)) bad.push(cmd);
+  for (const tpl of REGRESSION) {
+    for (const { R } of SPELLINGS) {
+      for (const sep of ['/', '\\']) {
+        const cmd = subst(tpl, R, sep);
+        if (lib.provablySafe(cmd, hctx(lib)) && !classOf(cmd)) bad.push(cmd);
+      }
+    }
+  }
+  assert.deepEqual([...new Set(bad)], []);
+});
+

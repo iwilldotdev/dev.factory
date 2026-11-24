@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .. import integrity, mirrordiff, shots
+from .. import integrity, media, mirrordiff, shots
 from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, _dep_run_ids, code_repos, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
@@ -570,6 +570,7 @@ def _intake(run_id, run, ws) -> list[str]:
     for i, b in enumerate(run.get("blockers", [])):
         if b.get("kind") == "question" and not b.get("resolved"):
             errors.append(f"open question blocker #{i}: {b.get('text')}")
+    errors.extend(media.errors(run_id, run))
     return errors
 
 
@@ -1246,6 +1247,7 @@ def fetches_for(phase: str, run: dict, ws: dict) -> list[dict]:
     out: list[dict] = []
     if phase == "intake":
         out += fetches.review_intake_fetches(run, ws) if run.get("kind") == "review" else fetches.intake_fetches(run)
+        out += media.fetches(run["id"], run)
     if phase == "plan":
         out += fetches.figma_fetches(run["id"])
     if phase == "feedback":

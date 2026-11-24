@@ -162,7 +162,7 @@ The rest grows existing modules within their caps. Proposed caps are in `m0-deci
 | M1 | Project, config, run, events, contracts, adapters, intake (media), `log`, `delete`, `close`, `init --import`, minimal `agents-md` adapter | |
 | M2 | Plan, lock, amend, worktrees, `cmd` checks, `verify` (reuse, order, fail-fast), reproduce, red-green, commit pattern, metrics | |
 | M3 | Review, ship, `ship verify`, update intents. **Criterion: a real ticket in a single repo reaches a draft change** | yes |
-| M4 | Workspace, env (data, warm-up, port diagnosis, login users), `http` (sessions), `browser` (batching), design (`visual`, `style`, approx), screenshots, UAT, `wait` | |
+| M4 | Workspace, env (data, warm-up, port diagnosis, login users), `http` (sessions), `browser` (batching), design (`visual`, `style`, approx), screenshots, UAT, `wait` (delivered; decisions in `docs/m4-notes.md`) | |
 | M5 | Feedback loop, human checks, quality baseline, delta and scoped, rules, risk and design note, estimates, metrics report and tokens | |
 | M6 | Composite runs: hotfix and mirror with the same-diff gate, epics, review runs, claim, parallel children, env slots and shareable | yes (parity review) |
 | M7 | Harness adapters with optional hooks, installation, transition note, `1.0.0-alpha` = full parity | |

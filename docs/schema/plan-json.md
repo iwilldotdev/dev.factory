@@ -16,7 +16,7 @@ The agent writes `.factory/runs/<run-id>/plan.json` during the plan phase. `gate
 | `login_user` | string slug | no | selects the `<KEY>_<slug>` secrets and a login state per user [L-81] |
 | `evidence` | `{ "screenshots": bool }` | no | `true` (set from an answered question) requires a `screenshot` check per touched UI repo [L-56, L-190] |
 
-M2 builds `cmd` checks only. Every other check type is rejected by `gate plan` with a message saying it arrives in a later milestone. A bug `cmd` check with `reproduce` must carry `red_green`, and `red_green` is only valid together with `reproduce`.
+`cmd`, `http`, `browser`, `visual`, `style` and `screenshot` checks run in this build; `quality` and `human` are rejected by `gate plan` with a message saying they arrive in a later milestone. A bug `cmd` check with `reproduce` must carry `red_green`, and `red_green` is only valid together with `reproduce`. Runtime checks (every type but `cmd`) need the repo's `[repo.env]`, a healthy env at `gate plan`, and pass a dry run that does not end in `setup`, `error` or `env` [L-86].
 
 ### Parity check types (summary; full field tables arrive with their milestone)
 
@@ -90,6 +90,8 @@ A zero-test marker or setup marker in the output makes the result `setup` [L-02,
 | `frame` | `design_frame` id; must be in the `design` list of each AC named in `ac` | yes | — |
 | `url` | path starting with `/`, resolved against the env `base_url` | yes | — |
 | `viewport` | `[width, height]` | no | the frame image size |
+| `actions` | list of one-key objects (`goto`, `click`, `fill`, `wait`, `press`, `expect_*`) run after `state_spec` | no | — |
+| `settle_ms` | int | no | wait after the page is ready, before capture or probe |
 | `state_spec` | run-relative browser spec under `checks/`, executed before capture or probe (opens a drawer, popover or toast) [L-51] | no | — |
 | `wait_for` | CSS selector that must be visible before capture or probe | no | — |
 

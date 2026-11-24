@@ -84,6 +84,12 @@ class SizeTests(unittest.TestCase):
         total = sum(self.counts().values())
         self.assertLessEqual(total, CORE_CAP)
 
+    def test_the_node_runner_stays_under_900_lines(self):
+        """Decision 16: the bundled runner has its own cap of 900 lines (tests excluded)."""
+        total = sum(len(p.read_text(encoding="utf-8").splitlines()) for p in (ROOT / "browser" / "src").glob("*.js"))
+        self.assertGreater(total, 100)
+        self.assertLessEqual(total, 900)
+
     def test_adapter_text_is_at_most_100_lines(self):
         from dev_factory import harness
         self.assertLessEqual(len(harness.agents_md_section().splitlines()), 100)

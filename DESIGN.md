@@ -197,24 +197,22 @@ If an AC has UI and a design source exists, the alpha proves parity with the des
 
 ## 10. Browser runner
 
-The alpha bundles a minimal Node runner (`browser/`, about 820 lines on a separate budget). Besides the commands below, it has `batch` (several checks in one browser [L-57]) and `screenshot` (capture only [L-56]). It is optional for projects without UI, and `factory check` prints its install command when a plan needs it.
+The alpha bundles a minimal Node runner (`browser/`, plain JavaScript, about 500 lines on a separate budget of 900). It is optional for projects without UI, and `factory check` prints its install command when a plan needs it. It only renders, compares and probes: Python computes crop boxes and approx tolerances from contracts. The page can reach the env origin only; every other request is aborted.
 
-**Contract:** `factory-browser <cmd> --out <dir> --base-url <url> [--storage-state <f>] [--viewport WxH] [--timeout-ms N]`.
-
-**Commands:**
+**Contract:** `factory-browser <cmd> --out <dir> --base-url <url> [--storage-state <f>] [--viewport WxH] [--timeout-ms N] [--expect-timeout-ms N] [--headed]`.
 
 | Command | Does |
 |---|---|
-| `login --spec <f> --state-out <f>` | credentials from env only [L-80] |
-| `visual --url --design <png> --crop x,y,w,h --max-diff-ratio R [--selector] [--state-spec] [--mask ...]` | capture, crop, pixel diff |
-| `style --url --map <f> [--state-spec] [--px N] [--delta-e N] [--font-px N]` | computed-style probe |
-| `spec --spec <f>` | project browser spec |
+| `login --spec <f> --state-out <f>` | runs an action spec with credentials from env vars only [L-80], keeps the storage state; ending on another origin is exit 3 [L-79] |
+| `visual --url <path> --design <png> --crop x,y,w,h --max-diff-ratio R [--selector] [--mask x,y,w,h]... [--fit] [--fidelity]` | capture, crop the design, mask, diff; writes `app.png`, `design.png`, `diff.png` |
+| `style --url <path> --map <f> [--px N --delta-e N --font-px N]` | computed-style probe against a style map |
+| `screenshot [--url <path>] [--spec <f>] [--selector]` | capture only [L-56] |
+| `spec --spec <f>` | a `.json` action spec, or a test file run by the browser library with the check's assertion timeout [L-59] |
+| `batch --manifest <f>` | the entries `{id, argv, out, timeout_ms}` in one browser, one result each; one failing or stuck entry does not stop the others [L-57] |
 
-It writes `<out>/result.json` as `{status, summary, details, artifacts}`.
+Page flags of `visual`, `style` and `screenshot`: `--state-spec <f>` (repeatable), `--wait-for <css>`, `--settle-ms N`. A spec for `login`, `--state-spec` and a `.json` browser spec is `{"actions": [...]}` with actions `goto` (same origin), `click`, `fill` (values may be `${ENV_VAR}`), `press`, `wait`, `expect_visible`, `expect_text`, `expect_url` [L-51].
 
-**Exit codes:** 0 pass, 1 fail, 2 usage, 3 env (navigation or connection), 4 setup (browser missing). A watchdog enforces the timeout, and stdin is closed [L-42, L-44].
-
-Python computes crop boxes and approx tolerances from contracts. Node only renders, compares and probes.
+It writes `<out>/result.json` as `{status, summary, details, artifacts}`. **Exit codes:** 0 pass, 1 fail, 2 usage, 3 env (navigation or connection), 4 setup (browser missing). A watchdog enforces the timeout, and stdin is closed [L-42, L-44].
 
 ## 11. Environment
 

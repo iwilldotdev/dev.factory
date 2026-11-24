@@ -76,6 +76,42 @@ def setup_command(workspace: dict | None, alias: str | None) -> str | None:
     return None
 
 
+def files_from_main_of(workspace: dict | None, alias: str | None) -> list[str]:
+    """`env.files_from_main` of the repo: gitignored files (relative paths) a new worktree copies from the main checkout."""
+    for repo in (workspace or {}).get("repos", []):
+        if alias and alias in (repo.get("alias"), repo.get("name")):
+            files = (repo.get("env") or {}).get("files_from_main")
+            return [f for f in files if isinstance(f, str)] if isinstance(files, list) else []
+    return []
+
+
+def safe_rel(rel) -> bool:
+    """A non-empty relative path that stays inside its root: not absolute (POSIX, drive letter, UNC), no `..` segment."""
+    text = str(rel).strip() if isinstance(rel, str) else ""
+    if not text or text.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", text):
+        return False
+    return ".." not in re.split(r"[\\/]+", text)
+
+
+def copy_main_files(src: Path, dst: Path, files: list[str] | None) -> list[str]:
+    """Copy (never link) each `files` entry from the main checkout `src` into the worktree `dst` when it exists in `src`
+    and is absent in `dst`; an existing file is never overwritten. Returns the relative paths copied."""
+    copied: list[str] = []
+    for rel in files or []:
+        if not safe_rel(rel):
+            continue
+        source, target = Path(src) / rel, Path(dst) / rel
+        if not source.is_file() or target.exists():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        except OSError:
+            continue
+        copied.append(rel)
+    return copied
+
+
 def prepare_worktree(src: Path, dst: Path, setup: str | None = None, env_vars: dict | None = None) -> None:
     """Identical preparation for every worktree (run, temp base, red, green): `setup` when the repo
     declares one (no node_modules link then: a restore through a junction would rewrite the main repo),
@@ -88,8 +124,10 @@ def prepare_worktree(src: Path, dst: Path, setup: str | None = None, env_vars: d
     link_deps(src, dst)
 
 
-def temp_worktree(repo: Path, ref: str, setup: str | None = None, env_vars: dict | None = None) -> Path:
-    """Detached worktree of `repo` at `ref` in a fresh temp dir, prepared like the run worktree."""
+def temp_worktree(repo: Path, ref: str, setup: str | None = None, env_vars: dict | None = None,
+                  files: list[str] | None = None) -> Path:
+    """Detached worktree of `repo` at `ref` in a fresh temp dir, prepared like the run worktree (`files`: the repo's
+    `env.files_from_main`, copied from `repo`)."""
     base = Path(tempfile.mkdtemp(prefix="factory-wt-"))
     target = base / "wt"
     proc = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(target), ref],
@@ -102,6 +140,7 @@ def temp_worktree(repo: Path, ref: str, setup: str | None = None, env_vars: dict
     except RuntimeError:
         drop_worktree(repo, target)
         raise
+    copy_main_files(repo, target, files)
     return target
 
 

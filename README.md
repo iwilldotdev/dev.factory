@@ -76,7 +76,7 @@ Fill what `workspace check` reports:
 | Key | What |
 |---|---|
 | `worktree_root` | Where run worktrees are created, for example `C:/Code/wt` |
-| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors, `hot_reload`, `seed` {cmd, cwd, reset}, `preflight` [{name, cmd}], `slots` + `port_stride` (several runs of the repo at once, each on its own ports), `shareable` (runs that do not change the repo share one process), `login.handoff_rewrite`; `env_vars` and `start` may use `{base_url:<ALIAS>}` / `{port:<ALIAS>}` to point at another repo's instance in the run's slot), optional `quality_fast` (scoped quality for `prove --fast`, commands may use `{changed}`), optional `ui` (`true`/`false`: is this a UI repo, for the visual-evidence question; set it explicitly on every repo with an `env` block, `workspace check` warns otherwise and fails if it is not a boolean) |
+| `repos[]` | `alias`, `path` (main clone), `quality` (typecheck, lint, test commands), `env` (`start`, `health`, `base_url`, `ports`, optional `login` selectors, `hot_reload`, `files_from_main` (gitignored files such as `.env` copied from the main checkout into every new worktree), `seed` {cmd, cwd, reset}, `preflight` [{name, cmd}], `slots` + `port_stride` (several runs of the repo at once, each on its own ports), `shareable` (runs that do not change the repo share one process), `login.handoff_rewrite`; `env_vars` and `start` may use `{base_url:<ALIAS>}` / `{port:<ALIAS>}` to point at another repo's instance in the run's slot), optional `quality_fast` (scoped quality for `prove --fast`, commands may use `{changed}`), optional `ui` (`true`/`false`: is this a UI repo, for the visual-evidence question; set it explicitly on every repo with an `env` block, `workspace check` warns otherwise and fails if it is not a boolean) |
 | `ship` | `targets` (branches MRs go to), `draft_default`, Jira transition, optional `hotfix: {base, mirror}` |
 | `branch_format`, `commit.header_regex` | Branch names and commit header rule |
 | `autonomy` | `ship: ask` or `draft-auto`, loop caps |
@@ -175,6 +175,7 @@ factory run close <run> --reason "abandoned"               # end a run you will 
 | `run … is claimed by session …` | Another session drives this run | Continue there, or `factory run claim <run> --takeover` |
 | `missing secrets file` / login failure | Credentials not set | Add the keys to `FACTORY_HOME/secrets/<ws>.env` |
 | `ENV-FAIL repo=… kind=unhealthy\|start\|timeout` | The env did not come up or answer | Fix what `detail=` names (port, SDK, DB), then `factory env check <ws> --run <run>` |
+| `ENV-FAIL … kind=files` | a file listed in `env.files_from_main` is missing in the served worktree | Create it (copy from the main checkout) and re-run `env up` / `prove` |
 | `ENV-FAIL … kind=seed\|preflight` | `env.seed` command or an `env.preflight` entry exited non-zero | Fix the data or DB state `detail=` names, then re-run `env check` / `prove` |
 | `ENV-FAIL … kind=stale` | The env runs an older commit | `factory env check <ws> --run <run> --auto-restart` (prove also does it once) |
 | `ENV-FAIL … kind=port` | The port is held by something factory did not start | Stop that process yourself. Factory never kills it |

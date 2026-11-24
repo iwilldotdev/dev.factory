@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from ..collectors.test import safe_rel
 from ..core import (ensure_owner, 
     FactoryError,
     event,
@@ -553,11 +554,27 @@ def env_fail_line(alias: str, kind: str, detail: str) -> str:
 
 # ---------- up / down / check ----------
 
+def _serve_root(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> Path:
+    """Root of the worktree (or checkout) the env of `alias` is served from, before `env.cwd`."""
+    repo = repo_conf(workspace, alias)
+    return (target_serve_path(run, workspace, alias, target) if run and target else None) \
+        or (repo_path_for_env(run, workspace, alias) if run else Path(repo["path"]))
+
+
 def _cwd_for(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> Path:
     repo = repo_conf(workspace, alias)
-    base = (target_serve_path(run, workspace, alias, target) if run and target else None) \
-        or (repo_path_for_env(run, workspace, alias) if run else Path(repo["path"]))
-    return (base / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
+    return (_serve_root(workspace, run, alias, target) / ((repo.get("env") or {}).get("cwd") or ".")).resolve()
+
+
+def files_missing(workspace: dict, run: dict | None, alias: str, target: str | None = None) -> list[str]:
+    """Messages `file <x> missing in worktree <path>` for every `env.files_from_main` entry that is absent from the path
+    the env is served from (a gitignored file such as `.env` that a new worktree does not carry)."""
+    repo = repo_conf(workspace, alias)
+    wanted = [f for f in (repo.get("env") or {}).get("files_from_main") or [] if safe_rel(f)]
+    if not wanted:
+        return []
+    root = _serve_root(workspace, run, alias, target)
+    return [f"file {rel} missing in worktree {root}" for rel in wanted if not (root / rel).is_file()]
 
 
 def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: list[str],
@@ -590,6 +607,12 @@ def _up_one(workspace: dict, run: dict | None, alias: str, seen: set[str], out: 
         out.append(env_fail_line(alias, "lease", detail))
         return False
     cwd = _cwd_for(workspace, run, alias, target)
+    missing = files_missing(workspace, run, alias, target)
+    if missing:  # env.files_from_main: the served path lacks a gitignored file; starting would answer 500s
+        for msg in missing:
+            out.append(f"{alias}: {msg}")
+        out.append(env_fail_line(alias, "files", missing[0]))
+        return False
     head = _head_of(cwd) if cwd.is_dir() else None
     # record check -> port checks -> Popen -> pid write under the env lock: two concurrent ups cannot both start
     with _file_lock(_lock_path(ws)):
@@ -1347,6 +1370,10 @@ def _cmd_check(args) -> int:
                                                       "detail": f"{alias}: restart failed", "health": ""}
         if st["code"] == 0:
             print(f"{alias}: healthy {st.get('health', '')}{_served_target(ws, run, alias)}")
+            for msg in files_missing(ws, run, alias, target):
+                print(f"{alias}: {msg}")
+                print(env_fail_line(alias, "files", msg))
+                st = {"code": EXIT_UNHEALTHY}
             for name, code, text in run_preflights(ws, run, alias, target):
                 detail = f"{name} exited {code}" + (f": {text.splitlines()[-1]}" if text else "")
                 print(f"{alias}: preflight {name} FAILED ({detail})")

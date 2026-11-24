@@ -127,6 +127,19 @@ def _data_errors(alias: str, env: dict) -> list[str]:
     return errors
 
 
+def _files_errors(alias: str, env: dict) -> list[str]:
+    """env.files_from_main: an array of relative file paths (no absolute path, no `..`) copied from the main checkout
+    into every new worktree."""
+    from ..collectors.test import safe_rel
+    files = env.get("files_from_main")
+    if files is None:
+        return []
+    if not isinstance(files, list):
+        return [f"{alias}: env.files_from_main must be an array of relative file paths"]
+    return [f"{alias}: env.files_from_main[{i}] must be a relative path inside the repo (no absolute path, no `..`), got {f!r}"
+            for i, f in enumerate(files) if not (isinstance(f, str) and safe_rel(f))]
+
+
 def _slot_errors(alias: str, env: dict) -> list[str]:
     """env.slots / port_stride / shareable / login.handoff_rewrite (DESIGN section 11: slots, shared repos, hand-off)."""
     import re
@@ -376,6 +389,7 @@ def check_workspace(ws: dict) -> list[str]:
             if "hot_reload" in env and not isinstance(env["hot_reload"], bool):
                 missing.append(f"{alias}: env.hot_reload must be true or false")
             missing.extend(_data_errors(alias, env))
+            missing.extend(_files_errors(alias, env))
             missing.extend(_slot_errors(alias, env))
     autonomy = ws.get("autonomy") or {}
     if autonomy.get("ship", "ask") not in ("ask", "draft-auto"):

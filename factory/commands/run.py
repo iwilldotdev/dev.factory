@@ -13,7 +13,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from ..collectors.test import prepare_worktree, setup_command
+from ..collectors.test import copy_main_files, files_from_main_of, prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, hotfix_of, run_targets, FactoryError, GateFailed, claim_is_recent, current_owner, ensure_owner, event,
                     factory_home,
                     git, git_dirty, git_head, now, repo_conf, run_dir, target_branch, run_load,
@@ -434,9 +434,11 @@ def cmd_branch(args) -> int:
         run["repos"][alias]["env_only"] = True
         event(run, "env_only", repo=alias, on=True, phase=run.get("phase"), via="branch")
     run_save(run)
-    warn = _prepare(ws, conf, main, worktree)
-    _emit(args, dict(run["repos"][alias], **({"setup_error": warn} if warn else {})),
-          f"{alias}: branch {branch} from {base} at {worktree}" + (f"\nWARNING: {warn}" if warn else ""))
+    copied: list[str] = []
+    warn = _prepare(ws, conf, main, worktree, copied)
+    _emit(args, dict(run["repos"][alias], **({"setup_error": warn} if warn else {}), **({"copied_from_main": copied} if copied else {})),
+          f"{alias}: branch {branch} from {base} at {worktree}" + (f"\nWARNING: {warn}" if warn else "")
+          + (f"\ncopied from main checkout: {', '.join(copied)}" if copied else ""))
     return 1 if warn else 0
 
 
@@ -501,12 +503,17 @@ def cmd_target_ticket(args) -> int:
     return 0
 
 
-def _prepare(ws: dict, conf: dict, main: Path, worktree: Path) -> str | None:
-    """Same preparation as the temp worktrees of baseline/repro/red-green (quality.setup or node_modules link)."""
+def _prepare(ws: dict, conf: dict, main: Path, worktree: Path, copied: list[str] | None = None) -> str | None:
+    """Same preparation as the temp worktrees of baseline/repro/red-green (quality.setup or node_modules link), plus
+    the repo's `env.files_from_main` (gitignored files copied from the main checkout; their names are appended to
+    `copied`)."""
     try:
         prepare_worktree(main, worktree, setup_command(ws, conf["alias"]), (conf.get("env") or {}).get("env_vars"))
     except RuntimeError as err:
         return f"{err}; fix it and rerun the setup command in {worktree}"
+    finally:
+        if copied is not None:
+            copied.extend(copy_main_files(main, worktree, files_from_main_of(ws, conf["alias"])))
     return None
 
 
@@ -554,7 +561,8 @@ def cmd_mirror(args) -> int:
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise FactoryError(f"git worktree add failed: {proc.stderr.strip()}")
-    warn = _prepare(ws, conf, main, worktree)
+    copied: list[str] = []
+    warn = _prepare(ws, conf, main, worktree, copied)
     if warn:
         print(f"WARNING: {warn}")
     rec.setdefault("branches", {})[target] = name
@@ -577,8 +585,10 @@ def cmd_mirror(args) -> int:
                           f"mode on a whole file; then run `factory run mirror-diff {run['id']}` (the gates fail on any divergence)"])
     event(run, "mirror", repo=alias, target=target, status="ok", commits=len(shas))
     run_save(run)
-    _emit(args, {"target": target, "branch": name, "worktree": str(worktree), "commits": len(shas)},
-          f"{alias}: mirrored {len(shas)} commit(s) to {target} on {name} at {worktree}")
+    _emit(args, dict({"target": target, "branch": name, "worktree": str(worktree), "commits": len(shas)},
+                     **({"copied_from_main": copied} if copied else {})),
+          f"{alias}: mirrored {len(shas)} commit(s) to {target} on {name} at {worktree}"
+          + (f"\ncopied from main checkout: {', '.join(copied)}" if copied else ""))
     return 0
 
 

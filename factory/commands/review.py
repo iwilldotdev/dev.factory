@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 
 from .. import integrity
-from ..collectors.test import prepare_worktree, setup_command
+from ..collectors.test import copy_main_files, files_from_main_of, prepare_worktree, setup_command
 from ..core import (SCHEMA_VERSION, SESSION_HINT_VARS, code_repos, session_hint, now, FactoryError, GateFailed, event, factory_home, file_sha256, git, git_dirty,
                     git_head, load_evidence, read_json, repo_conf,
                     repo_path_for_run, run_dir, run_load, run_save,
@@ -412,12 +412,15 @@ def branch_for_mr(args, run: dict, ws: dict, conf: dict, main: Path) -> int:
         prepare_worktree(main, worktree, setup_command(ws, alias), (conf.get("env") or {}).get("env_vars"))
     except RuntimeError as err:
         print(f"WARNING: {err}; fix it and rerun the setup command in {worktree}")
+    copied = copy_main_files(main, worktree, files_from_main_of(ws, alias))
     run["repos"][alias] = {"branch": mr["source_branch"], "base": mr["target_branch"], "worktree": str(worktree),
                            "head": git_head(worktree), "base_ref": gate.resolve_base(main, mr["target_branch"]),
                            "mr": args.mr, "detached": True}
     mr["head_sha"] = sha
     run_save(run)
-    _emit(args, run["repos"][alias], f"{alias}: detached worktree for !{args.mr} at {sha[:10]} in {worktree}")
+    _emit(args, dict(run["repos"][alias], **({"copied_from_main": copied} if copied else {})),
+          f"{alias}: detached worktree for !{args.mr} at {sha[:10]} in {worktree}"
+          + (f"\ncopied from main checkout: {', '.join(copied)}" if copied else ""))
     return 0
 
 

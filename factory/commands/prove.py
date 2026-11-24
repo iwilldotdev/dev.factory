@@ -14,8 +14,8 @@ import traceback
 from pathlib import Path
 
 from ..collectors import browser as browser_collector
-from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, run_shell, setup_command, temp_worktree,
-                               weak_pattern_reason)
+from ..collectors.test import (DEFAULT_TIMEOUT_S, drop_worktree, files_from_main_of, run_shell, setup_command,
+                               temp_worktree, weak_pattern_reason)
 from ..core import (SCHEMA_VERSION, check_target, code_repos, ensure_owner, Ctx, FactoryError, event, evidence_event, evidence_id, git,
                     git_dirty, git_head, hotfix_of, now, read_json, repo_conf,
                     repo_path_for_run, run_base_branch, run_dir, run_load, run_targets, run_update,
@@ -155,7 +155,8 @@ def compute_baseline(run: dict, ws: dict, alias: str, force: bool = False) -> di
     main = Path(conf.get("path") or wt)
     env_vars = _env_vars(ws, run, alias)
     try:
-        tmp = temp_worktree(main if (main / ".git").exists() else wt, merge_base, quality.get("setup"), env_vars)
+        tmp = temp_worktree(main if (main / ".git").exists() else wt, merge_base, quality.get("setup"), env_vars,
+                            files_from_main_of(ws, alias))
     except RuntimeError as err:
         raise FactoryError(f"{alias}: baseline worktree: {err}") from err
     try:
@@ -459,7 +460,7 @@ def repro_one(run: dict, ws: dict, check: dict, assume_env: bool, target: str | 
         elif check.get("expect_fail_pattern") and (weak := weak_pattern_reason(check["expect_fail_pattern"])):
             body = {"status": "error", "summary": weak}
         elif ctype in LOCAL_TYPES:
-            tmp = temp_worktree(main, mb, setup_command(ws, alias), env.get("env_vars"))
+            tmp = temp_worktree(main, mb, setup_command(ws, alias), env.get("env_vars"), files_from_main_of(ws, alias))
             ctx = Ctx(run=run, workspace=ws, run_dir=run_dir(run["id"]), repo_path=tmp, env=env,
                       out_dir=run_dir(run["id"]) / "evidence" / rid)
             body = dispatch(inner, ctx)
@@ -733,6 +734,24 @@ def _preflight_envs(run: dict, ws: dict, aliases: list[str], rep: Reporter, stop
             detail = _first_line(next((l for l in reversed(lines) if l.strip() and not l.startswith("---")), "restart failed"))
             stopped[alias] = f"env restart failed: {detail}"
             rep.env_fail(alias, "start", f"restart failed: {detail}")
+
+
+def _preflight_files(run: dict, ws: dict, aliases: list[str], rep: Reporter, stopped: dict,
+                     target: str | None = None) -> None:
+    """`env.files_from_main`: a repo whose served path lacks a listed (gitignored) file is an env failure; its runtime
+    checks are not run (they would answer 500s that look like product bugs)."""
+    try:
+        from .env import files_missing
+    except ImportError:
+        return
+    for alias in aliases:
+        try:
+            missing = files_missing(ws, run, alias, target)
+        except FactoryError:
+            continue
+        if missing:
+            stopped[alias] = missing[0]
+            rep.env_fail(alias, "files", missing[0])
 
 
 def _reset_data(run: dict, ws: dict, checks: list[dict], aliases: list[str], reuse: bool, rep: Reporter,
@@ -1016,6 +1035,7 @@ def cmd_prove(args) -> int:
     _preflight_envs(run, ws, runtime_aliases + [d for d in dep_closure(ws, runtime_aliases) if d not in runtime_aliases],
                     rep, stopped, strict=mode == "final",
                     target=(only_target or targets[0]) if hotfix_of(run) else None)
+    _preflight_files(run, ws, runtime_aliases, rep, stopped, target=(only_target or targets[0]) if hotfix_of(run) else None)
     if not args.check:
         _reset_data(run, ws, checks, runtime_aliases, reuse, rep, stopped, prior=prior_of, targets=targets)
     seen_runtime: set[str] = set()

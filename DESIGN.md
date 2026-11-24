@@ -95,6 +95,7 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
         "ports": [5173],
         "base_url": "http://localhost:5173",
         "env_vars": {},
+        "files_from_main": [".env"],
         "seed": {"cmd": ["node", "scripts/seed.js"], "cwd": ".", "reset": ["node", "scripts/reset.js"]},
         "preflight": [{"name": "trigger-exists", "cmd": ["node", "scripts/check-trigger.js"]}],
         "login": {"url": "/login", "user_field": "#email", "pass_field": "#password", "submit": "button[type=submit]", "success_url_contains": "/app", "handoff_rewrite": false},
@@ -134,6 +135,8 @@ Run id: `<ws>-<ticket-key-lowercase>` (epic: the epic key), e.g. `acme-dev-9454`
 `rules[]` are repo conventions with an executable check; every rule check runs in `prove` for each touched repo.
 
 `quality.setup` (optional) is not a quality command: it is the restore command every worktree gets before checks run, identically for the run worktree (`run branch`/`run mirror`/`--mr`), the baseline and REPRO temp worktrees, and both red-green worktrees. Without it, worktrees get a link to the main repo's `node_modules` (with it, no link: a restore through a junction would rewrite the main repo). A failing setup is an `error`, never a reproduction.
+
+`env.files_from_main` (optional, array of relative file paths, no absolute path and no `..`; `workspace check` validates it) lists gitignored files a new worktree lacks, such as `.env`. Every worktree the CLI creates (`run branch`, `run mirror`, `run branch --mr` review worktrees, and the baseline, REPRO and red-green temp worktrees) gets a **copy** (never a link) of each listed file that exists in the repo's main checkout and is absent in the worktree; an existing file is never overwritten. `run branch`/`run mirror` report what was copied (`copied from main checkout: ...`, `copied_from_main` with `--json`). `env up` refuses to start (`ENV-FAIL repo=<alias> kind=files detail=file <x> missing in worktree <path>`) when a listed file is absent from the path it would serve, a healthy `env check` fails the same way, and `prove` records that repo as an env failure (its runtime checks are not run) instead of letting the app answer 500s that look like product bugs.
 
 `limits` caps check thresholds (§2.3): a plan cannot loosen a visual or style check past them.
 
@@ -445,7 +448,7 @@ Real runs lost most of their time to slow failing checks, misleading env diagnos
 
 - **Per-check cap.** Every runtime check has a wall-clock cap: the check's `timeout_s`, else `limits.check_timeout_s`, else 120 s for browser, visual, style and screenshot, or 60 s for api. When it hits the cap the process tree is killed. Playwright gets a per-test timeout below the cap and a 30 s navigation timeout (`--goto-timeout-ms`, `--wait-until load` unless the check sets `wait_until`). `test` checks keep their own timeout.
 - **Env failures stop the batch.** An env-kind failure marks the remaining runtime checks of that repo `skipped: env`, and `prove` exits 3. Env-kind failures are connection refused, a 5xx health, a login failure, or a timeout on a repo's first runtime check. Two consecutive identical failures (same kind, same first line) stop the runtime batch.
-- **Machine-readable lines.** `prove` and `env` print `PROVE-FAIL check=<id> kind=<timeout|assert|flaky|env|setup> detail=…` and `ENV-FAIL repo=<alias> kind=<unhealthy|stale|port|lease|start|timeout|usage|seed|preflight> detail=…`. With `--json` they go to stderr. `prove` exits 0 on pass, 1 on a check failure, 2 on usage and 3 on an env failure.
+- **Machine-readable lines.** `prove` and `env` print `PROVE-FAIL check=<id> kind=<timeout|assert|flaky|env|setup> detail=…` and `ENV-FAIL repo=<alias> kind=<unhealthy|stale|port|lease|start|timeout|usage|seed|preflight|files> detail=…`. With `--json` they go to stderr. `prove` exits 0 on pass, 1 on a check failure, 2 on usage and 3 on an env failure.
 - **Preflight.** `factory env check <ws> [repo] [--run R] [--auto-restart]` infers repo and run from a run-worktree cwd. Healthy means a status below 500, and redirects are not followed. Exit codes: 0 healthy, 1 unhealthy, 2 usage or capability, 3 stale (the process is not at the worktree HEAD), 4 port or lease conflict. The orchestrator runs it before delegating any runtime-dependent worker and passes the result in the request (`env_preflight`).
 - **Stale env.** `prove` restarts a stale env once (down, then up) when the run holds the lease.
 - **Process safety.** Factory only stops processes it started. The pid record's create time must match the live process (a record without it is never killed). Factory never stops itself or its ancestors. A record that does not match is treated as foreign and is reported, never killed. A port held by HTTP.sys (PID 4, IIS Express) is judged by its health after three probes.

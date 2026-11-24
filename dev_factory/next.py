@@ -266,7 +266,10 @@ def _feedback_action(project: Project, run: Run, stage: str, set_, flag: str) ->
 
 
 def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: str) -> None:
-    if stage == "plan":
+    from . import mirror
+    if stage == "plan" and (step := mirror.next_step(project, run, st, flag)):
+        set_(f"hotfix: {step[0]}", "command", step[1], [], "builder")
+    elif stage == "plan":
         update = " --update" if any(ship._existing(run, st, r) for r in st["repos"]) else ""
         set_("write the ship plan: neutral intents (push, change request with its AC x check x status body, readback, ticket writes) for "
              "the current commits; --ticket none|comment|transition|both picks the ticket writes, --pipeline adds a pipeline readback, "

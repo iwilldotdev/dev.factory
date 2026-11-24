@@ -12,6 +12,7 @@ class MirrorTests(HotfixCase):
     def test_mirror_branches_carry_the_target_and_a_collision_is_refused_before_the_worktree_is_added(self):
         """L-93: the mirror branch is {kind}/{key}-{target}; an existing branch of that name stops `mirror` before `git worktree add`."""
         self.hotfix()
+        self.assertIn("no mirror target 'nope'", self.fails("mirror", "web", "--to", "nope"))
         git("branch", "hotfix/ABC-1-old", cwd=self.proj)
         err = self.fails("mirror", "web", "--to", "old")
         self.assertIn("must not collide", err)
@@ -22,17 +23,13 @@ class MirrorTests(HotfixCase):
         self.assertEqual((m["branch"], m["result"], len(m["commits"])), ("hotfix/ABC-1-old", "applied", 1))
         self.assertEqual(Path(m["path"] + "/app.py").read_text(), "VALUE = 2\n")
         self.assertIn("already mirrored", self.fails("mirror", "web", "--to", "old"))
-
-    def test_a_mirror_needs_the_review_gate_and_a_known_target(self):
-        self.hotfix()
-        self.assertIn("no mirror target 'nope'", self.fails("mirror", "web", "--to", "nope"))
-        self.commit("notes.txt", "later" + chr(10), "chore: later")  # a new commit makes both reviews stale
-        self.assertIn("review gate has to pass", self.fails("mirror", "web", "--to", "old"))
+        self.commit("notes.txt", "later\n", "chore: later")  # a new commit makes both reviews stale
+        self.assertIn("review gate has to pass", self.fails("mirror", "web", "--to", "older"))
 
     def test_a_cherry_pick_conflict_is_a_tooling_blocker_and_the_mirror_resumes_after_the_fix(self):
         self.hotfix()
         git("checkout", "-q", "rel-old", cwd=self.proj)
-        (self.proj / "app.py").write_text("VALUE = 7" + chr(10), newline=chr(10))
+        (self.proj / "app.py").write_text("VALUE = 7\n", newline="\n")
         git("add", "app.py", cwd=self.proj)
         git("commit", "-q", "-m", "chore: diverge", cwd=self.proj)
         git("checkout", "-q", "main", cwd=self.proj)
@@ -44,18 +41,32 @@ class MirrorTests(HotfixCase):
         self.assertIn("app.py", blocker["reason"])
         self.assertIn("is not finished", self.fails("mirror", "web", "--to", "old"))
         tree = Path(m["path"])
-        (tree / "app.py").write_text("VALUE = 2" + chr(10), newline=chr(10))  # the builder resolves it by hand
+        (tree / "app.py").write_text("VALUE = 2\n", newline="\n")  # the builder resolves it by hand
         git("add", "app.py", cwd=tree)
         git("-c", "core.editor=true", "cherry-pick", "--continue", cwd=tree)
         self.ok("mirror", "web", "--to", "old")
         self.assertEqual(self.mirror_event()["result"], "applied")
 
     @lesson("L-100")
-    def test_each_mirror_change_is_titled_with_its_own_target_ticket_key(self):
-        """L-100: the ship plan holds one change per mirror, titled with that target's ticket key, not the first ticket's."""
-        self.hotfix(("old", "older"), runtime=True)
+    def test_next_leads_a_hotfix_through_mirror_verify_and_the_diff_and_each_mirror_change_has_its_own_ticket_key(self):
+        """L-100: `next` goes review gate, mirror each target, verify --mirror, diff, ship plan; the plan holds one change per mirror, titled
+        with that target's ticket key, not the first ticket's."""
+        self.hotfix()
+        self.up()  # the plan gate wants the env of a runtime check to answer
+        first = json.loads(self.ok("next", "--json"))
+        self.assertEqual((first["phase"], first["command"]), ("ship", "factory mirror web --to old"))
+        self.assertIn("hotfix: mirror the reviewed fix", first["action"])
         self.ok("mirror", "web", "--to", "old", "--ticket", "ABC-11")
+        self.assertEqual(json.loads(self.ok("next", "--json"))["command"], "factory mirror web --to older")
         self.ok("mirror", "web", "--to", "older", "--ticket", "ABC-12")
+        self.assertEqual(json.loads(self.ok("next", "--json"))["command"], "factory verify --mirror")
+        self.ok("verify", "--mirror")
+        self.assertEqual(json.loads(self.ok("next", "--json"))["command"], "factory ship plan")
+        self.commit("tests/extra.py", "x = 1\n", "test: extra", tree=Path(self.mirror_event()["path"]))
+        self.ok("verify", "--mirror")
+        n = json.loads(self.ok("next", "--json"))
+        self.assertEqual(n["command"], "factory mirror diff web --to old")
+        self.assertIn("differs from the base fix", n["action"])
         self.ok("ship", "plan")
         intents = [i for i in self.sp()["intents"] if i["intent"] == "mirror_change_request"]
         self.assertEqual([(i["target"], i["title"].split("]")[0]) for i in intents], [("old", "[ABC-11"), ("older", "[ABC-12")])
@@ -63,7 +74,7 @@ class MirrorTests(HotfixCase):
         self.assertEqual([i["target_branch"] for i in intents], ["rel-old", "rel-older"])
 
     @lesson("L-95")
-    def test_gate_ship_needs_an_equal_mirror_diff_or_a_user_decision_naming_the_files(self):
+    def test_gate_ship_needs_an_equal_mirror_diff_or_a_user_decision_naming_every_divergent_file(self):
         """L-95: a mirror that moved a test to another file shows as divergence; only a user decision naming the file accepts it."""
         self.hotfix()
         self.ok("mirror", "web", "--to", "old")
@@ -77,26 +88,21 @@ class MirrorTests(HotfixCase):
         text = self.reasons("ship")
         self.assertIn("tests/moved_test.py (content)", text)
         self.assertIn("factory mirror diff", text)
+        self.ok("decide", "--user-said", "fine, go ahead")
+        self.assertIn("does not name: tests/moved_test.py", self.fails("mirror", "diff", "web", "--to", "old", "--decision", "D-1"))
         self.ok("decide", "--user-said", "accept the extra tests/moved_test.py on the old branch")
-        self.fails("mirror", "diff", "web", "--to", "old", "--decision", "D-1", code=1)
+        self.fails("mirror", "diff", "web", "--to", "old", "--decision", "D-2", code=1)
         self.assertNotIn("mirror diff differs", self.reasons("ship"))
         self.commit("tests/more.py", "x = 1\n", "test: more", tree=tree)
         self.ok("verify", "--mirror")
         self.ok("ship", "plan")
         self.assertIn("tests/more.py", self.reasons("ship"))
 
-    def test_the_decision_has_to_name_every_divergent_file(self):
-        self.hotfix()
-        self.ok("mirror", "web", "--to", "old")
-        self.commit("tests/extra.py", "x = 1\n", "test: extra", tree=Path(self.mirror_event()["path"]))
-        self.ok("decide", "--user-said", "fine, go ahead")
-        self.assertIn("does not name: tests/extra.py", self.fails("mirror", "diff", "web", "--to", "old", "--decision", "D-1"))
-
     @lesson("L-41", "L-99", "L-98")
     def test_verify_mirror_runs_every_mirror_check_runtime_included_from_the_mirror_tree_per_target(self):
         """L-41, L-99, L-98: `verify --mirror` serves the runtime check from the mirror worktree; a failure on one target does not cancel the
         other target's checks; an env the factory did not start is never stopped."""
-        self.hotfix(("old", "older"), runtime=True)
+        self.hotfix()
         self.ok("mirror", "web", "--to", "old")
         self.ok("mirror", "web", "--to", "older")
         self.commit("app.py", "VALUE = 3\n", "fix: wrong", tree=Path(self.mirror_event("old")["path"]))

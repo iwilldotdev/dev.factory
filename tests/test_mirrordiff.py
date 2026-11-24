@@ -1,4 +1,5 @@
-"""The same-diff comparison on small repos: relocated hunks, line endings, trailing spaces, reformatting and import specifiers."""
+"""The same-diff comparison on one small repo: relocated hunks, line endings, trailing spaces, reformatting and import specifiers."""
+import functools
 import unittest
 
 from dev_factory import mirrordiff
@@ -6,13 +7,21 @@ from tests.helpers import git, lesson
 from tests.m6_support import two_branches
 
 BODY = "".join(f"line {i}\n" for i in range(1, 21))
+START = {"a.txt": BODY, "c.txt": BODY, "d.txt": BODY, "i.ts": "import { x } from '../old'\nuse(x)\n", "k.ts": "const k = 1\n"}
+BASE = {"a.txt": BODY.replace("line 2\n", "line 2\nadded\n"), "c.txt": BODY.replace("line 2\n", "line 2\nadded\n"),
+        "d.txt": BODY.replace("line 2\n", "line 2\nadded\n"), "i.ts": "import { x } from '../old'\nuse(x)\nfix()\n", "k.ts": "const k = 2\n"}
+MIRROR = {"a.txt": BODY.replace("line 15\n", "line 15\nadded\n"),  # the same hunk, elsewhere
+          "c.txt": BODY.replace("line 2\n", "line 2\nadded   \n").replace("\n", "\r\n"),  # CRLF and trailing spaces
+          "d.txt": "".join("  " + ln for ln in BASE["d.txt"].splitlines(True)),  # reindented as a whole
+          "i.ts": "import { x } from '../../moved'\nuse(x)\nfix()\n", "k.ts": "const k = 3\n"}
 
 
-def compare(base_edit: dict, mirror_edit: dict, files: dict) -> dict:
-    repo = two_branches(files)
+@functools.cache
+def compare() -> dict:
+    repo = two_branches(START)
     start = git("rev-parse", "HEAD", cwd=repo)
     trees = {}
-    for name, edit in (("b", base_edit), ("m", mirror_edit)):
+    for name, edit in (("b", BASE), ("m", MIRROR)):
         trees[name] = repo.parent / f"{name}tree"
         git("worktree", "add", "-q", "-b", name, str(trees[name]), start, cwd=repo)
         for rel, data in edit.items():
@@ -26,21 +35,16 @@ class SignatureTests(unittest.TestCase):
     @lesson("L-96")
     def test_relocated_hunks_crlf_and_trailing_spaces_are_equal_but_a_reformat_is_not(self):
         """L-96: the diff is normalized (EOL, trailing whitespace) and hunks match wherever they landed; whole-file reindentation differs."""
-        base = {"a.txt": BODY.replace("line 2\n", "line 2\nadded\n")}
-        moved = {"a.txt": BODY.replace("line 15\n", "line 15\nadded\n")}
-        self.assertTrue(compare(base, moved, {"a.txt": BODY})["equal"])
-        crlf = {"a.txt": BODY.replace("line 2\n", "line 2\nadded   \n").replace("\n", "\r\n")}
-        self.assertTrue(compare(base, crlf, {"a.txt": BODY})["equal"])
-        indented = {"a.txt": "".join("  " + ln for ln in base["a.txt"].splitlines(True))}
-        self.assertEqual(compare(base, indented, {"a.txt": BODY})["divergent"], {"a.txt": "content"})
+        divergent = compare()["divergent"]
+        self.assertNotIn("a.txt", divergent)
+        self.assertNotIn("c.txt", divergent)
+        self.assertEqual(divergent["d.txt"], "content")
 
     @lesson("L-97")
     def test_moved_module_import_specifiers_are_their_own_divergence_class(self):
         """L-97: files whose only difference is import lines are listed as `imports`, apart from content."""
-        files = {"a.ts": "import { x } from '../old'\nuse(x)\n", "b.ts": "const k = 1\n"}
-        base = {"a.ts": "import { x } from '../old'\nuse(x)\nfix()\n", "b.ts": "const k = 2\n"}
-        mirror = {"a.ts": "import { x } from '../../moved'\nuse(x)\nfix()\n", "b.ts": "const k = 3\n"}
-        self.assertEqual(compare(base, mirror, files)["divergent"], {"a.ts": "imports", "b.ts": "content"})
+        self.assertEqual({f: c for f, c in compare()["divergent"].items() if f.endswith(".ts")}, {"i.ts": "imports", "k.ts": "content"})
+        self.assertFalse(compare()["equal"])
 
 
 if __name__ == "__main__":

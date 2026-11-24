@@ -123,6 +123,30 @@ def accept(run: Run, repo: str, target: str, decision: str, actor: str | None) -
     return run.append({"type": "mirror", "repo": repo, "target": target, "result": "accepted", "decision": decision, "files": files, "heads": _heads(st, m)}, actor)
 
 
+def next_step(project, run: Run, st: dict, flag: str) -> tuple[str, str] | None:
+    """What a hotfix does between the review gate and the ship plan: mirror each target, verify the mirrors, make the diff equal."""
+    if gates.effective_kind(run, st) != "hotfix":
+        return None
+    plan = planmod.load_plan(run)[0]
+    pairs = [(repo, t, latest(st, repo, t)) for repo in plan["repos"] for t in targets(project.cfg, repo)]
+    for repo, t, m in pairs:
+        if m is None:
+            return f"mirror the reviewed fix onto target {t} (a worktree {{kind}}/{{key}}-{t}; a conflict becomes a tooling blocker)", f"factory mirror {repo} --to {t}{flag}"
+    for repo, t, m in pairs:
+        if m["result"] == "applied" and not evidence_ok(project, plan, st, repo, m):
+            return "run the mirror: true checks from the mirror worktrees (runtime checks are served from there)", f"factory verify --mirror{flag}"
+    for repo, t, m in pairs:
+        if m["result"] == "applied" and not compare(st, m)["equal"] and not any(a["target"] == t and a["result"] == "accepted" for a in st["mirrors"]):
+            return (f"the mirror diff of {t} differs from the base fix: make it equal, or ask the user and record a decision that names the files",
+                    f"factory mirror diff {repo} --to {t}{flag}")
+    return None
+
+
+def evidence_ok(project, plan: dict, st: dict, repo: str, m: dict) -> bool:
+    head, lk = git.head(Path(m["path"])), st["locks"][-1]
+    return all(evidence.satisfied(st, c["id"], "verify", lk["spec_hashes"][c["id"]], head) for c in planmod.effective_checks(plan, project.cfg) if c.get("mirror") and c["repo"] == repo)
+
+
 def reasons(run: Run, project, st: dict) -> list[str]:
     """Why `gate ship` fails on a hotfix: a target not mirrored, a conflict, mirror checks without a pass at the mirror head, a different
     diff, or a ship plan that lacks the mirror changes [L-41, L-95, L-100]."""

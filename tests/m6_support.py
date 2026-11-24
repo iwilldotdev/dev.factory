@@ -34,12 +34,12 @@ class HotfixCase(M4Case, ShipCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def hotfix(self, targets: tuple[str, ...] = ("old",), runtime: bool = False) -> Path:
+    def hotfix(self) -> Path:
         self.run_dir = self.proj / ".factory" / "runs" / "ABC-1"
-        self.cached("hotfix", lambda: self._hotfix(targets, runtime), targets, runtime)
+        self.cached("hotfix", self._hotfix)
         return self.run_dir
 
-    def _hotfix(self, targets, runtime: bool) -> None:
+    def _hotfix(self, targets=("old", "older"), runtime: bool = True) -> None:
         self.configure(repo_extra="".join(f'\n[[repo.mirror]]\nname = "{t}"\nbranch = "rel-{t}"\n' for t in targets))
         for t in targets:
             git("branch", f"rel-{t}", cwd=self.proj)

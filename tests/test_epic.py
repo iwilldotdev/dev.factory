@@ -113,28 +113,18 @@ class EpicPlanTests(M2Case):
 
 class EpicRunTests(EpicCase):
     @lesson("L-91", "L-92")
-    def test_a_stacked_branch_starts_at_the_dependency_head_so_its_commits_are_not_the_dependents(self):
-        """L-91, L-92: the dependent's branch_point is the dependency's head; commit checks span branch_point..HEAD, so the dependency's commits are never its own."""
-        self.epic()
-        self.child_to_ship_plan("ABC-1")
-        first = head_of(self.tree())
-        self.switch("ABC-2")
-        self.ingest_ticket(self.run_dir, id="ABC-2", type="feature")
-        self.ok("gate", "intake")
-        self.ok("run", "branch")
-        wt = [e for e in self.events(self.run_dir) if e["type"] == "worktree"][-1]
-        self.assertEqual(wt["branch_point"], first)
-        self.assertEqual(head_of(Path(wt["path"])), first)
-        self.commit("second.txt", "second\n", "feat: second", tree=Path(wt["path"]))
-        self.assertEqual(product_git.commit_problems(Path(wt["path"]), wt["branch_point"], "main", r"^feat: second$", []), [])
-        self.assertEqual(len(product_git.commit_problems(Path(wt["path"]), head_of(self.proj), "main", r"^feat: second$", [])), 1)
-        self.assertIn("ABC-2", json.loads(self.ok("status", "EP-1", "--json"))["children"][1]["run"])
-
-    def test_the_epic_ships_the_children_in_order_with_depends_on_links_and_one_ticket_comment(self):
+    def test_the_epic_ships_the_children_in_order_with_stacked_branches_depends_on_links_and_one_ticket_comment(self):
+        """L-91, L-92: the dependent's branch_point is the dependency's head and commit checks span branch_point..HEAD, so the dependency's commits are
+        never the dependent's own; the epic ships the children in order with depends_on links and one ticket comment."""
         self.epic({"children": CHILDREN["children"][:2]}, extra="\n[ship]\nticket = \"comment\"\n")
         self.child_to_ship_plan("ABC-1")
+        first = head_of(self.tree())
         self.assertEqual(json.loads(self.ok("next", "EP-1", "--json"))["phase"], "children")
         self.child_to_ship_plan("ABC-2")
+        wt = [e for e in self.events(self.run_dir) if e["type"] == "worktree"][-1]
+        self.assertEqual(wt["branch_point"], first)
+        self.assertEqual(product_git.commit_problems(Path(wt["path"]), wt["branch_point"], "main", r"^feat: ABC-2$", []), [])
+        self.assertEqual(len(product_git.commit_problems(Path(wt["path"]), head_of(self.proj), "main", r"^feat: ABC-2$", [])), 1)
         self.switch("EP-1")
         self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "ship")
         self.ok("epic", "ship", "plan")

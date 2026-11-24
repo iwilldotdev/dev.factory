@@ -174,10 +174,13 @@ class BudgetTests(FeedbackCase):
         self.assertEqual(json.loads(self.ok("metrics", "--json"))["escaped_findings"], 1)
 
 
+IGNORE = "\n[feedback]\nignore_authors = ['ana']\n"
+
+
 class DismissTests(FeedbackCase):
     def test_a_thread_is_dismissed_only_by_a_recorded_user_decision_and_then_stops_counting(self):
-        self.shipped()
-        self.refresh(threads=[T1], pipe=self.pipeline())
+        self.shipped(IGNORE)
+        self.refresh(threads=[{**T1, "author": "cy"}], pipe=self.pipeline())
         self.ok("feedback", "--no-fetch")
         self.assertIn("needs --decision", self.fails("feedback", "--dismiss", "F1"))
         self.assertIn("not recorded", self.fails("feedback", "--dismiss", "F1", "--decision", "D-1"))
@@ -191,7 +194,7 @@ class DismissTests(FeedbackCase):
         self.assertEqual(self.nxt()["phase"], "done")
 
     def test_ignore_authors_skips_those_threads_and_by_default_every_unresolved_thread_counts(self):
-        self.shipped("\n[feedback]\nignore_authors = ['ana']\n")
+        self.shipped(IGNORE)
         self.refresh(threads=[T1, {**T1, "id": "T3", "author": "bo"}], pipe=self.pipeline())
         self.assertIn("thread:T3 is unresolved", self.feedback_gate()[1])
         self.assertNotIn("thread:T1", self.feedback_gate()[1])

@@ -755,7 +755,8 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
 
     `branch_point` (the commit `run branch` created the worktree at; absent in older runs) limits the span to
     `<branch_point>..HEAD` when it is still an ancestor of HEAD, so commits the branch already had when the run
-    started (a stacked or reused branch) are not the run's. Merge commits that only bring the base in are never checked.
+    started (a stacked or reused branch) are not the run's. Merge commits that only bring the base in skip the header
+    check; their forbidden trailers still count.
 
     `origin_head` (a review-fix run: the MR head recorded at conversion) limits the span to
     `<origin_head>..HEAD` without merges: the MR's own earlier commits are not this run's. Otherwise
@@ -799,10 +800,10 @@ def commits_errors(path: Path, base_ref: str, ws: dict, alias: str, branch: str 
     for rec in filter(None, (r.strip() for r in log.split("\x1e"))):
         sha, _, rest = rec.partition("\x1f")
         parents, _, msg = rest.partition("\x1f")
-        if _integrates_base(path, parents.split(), base_ref):
-            continue
+        # A merge that only brings the base in has no header of its own to check, but its message and trailers do count.
+        brings_base = _integrates_base(path, parents.split(), base_ref)
         header = msg.strip().splitlines()[0] if msg.strip() else ""
-        if regex and not regex.search(header):
+        if regex and not brings_base and not regex.search(header):
             errors.append(f"{alias} {sha[:8]}: header does not match commit.header_regex: {header!r}")
         low = msg.lower()
         for trailer in forbidden:

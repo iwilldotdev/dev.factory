@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import string
 from pathlib import Path
 
@@ -308,21 +309,42 @@ def _quality_lines(run: dict, alias: str, targets: list[str]) -> list[str]:
 FOLLOWUP_CAP = 20
 
 
+def _resolved_findings(history: list[dict]) -> set[tuple[int, str]]:
+    """`(index in history, finding id)` pairs that a later round of the same kind marks fixed in its `resolved` list.
+
+    Auditors reuse ids (round 1 F1 is not round 2 F1), so an entry must be unambiguous: `"<round>:<id>"` (`"1:F1"`)
+    names that round, a bare id names only the round immediately before the one that lists it."""
+    fixed: set[tuple[int, str]] = set()
+    for j, later in enumerate(history):
+        for entry in later.get("resolved") or []:
+            if not isinstance(entry, (str, int)):
+                continue
+            text = str(entry).strip()
+            m = re.match(r"^(\d+):(.+)$", text)
+            if m:
+                rounds = [k for k in range(j) if history[k].get("round") == int(m.group(1))]
+                fixed.update((k, m.group(2).strip()) for k in rounds)
+            elif j > 0:
+                fixed.add((j - 1, text))
+    return fixed
+
+
 def _followup_lines(run_id: str) -> list[str]:
     """Open minor findings of every code and qa review round, so they have a destination.
 
-    A minor finding stays open until a later round of the same kind names its id in its top-level `resolved` list
-    (absent means still open); the same finding repeated in later rounds (same file and text) appears once.
+    A minor finding stays open until a later round of the same kind names it in its top-level `resolved` list, as
+    `"<round>:<id>"` or as a bare id that means the round right before (absent means still open); the same finding
+    repeated in later rounds (same file and text) appears once.
     """
     from . import gate
     items: list[str] = []
     for kind in ("code", "qa"):
         history = gate.review_history(run_id, kind)
+        fixed = _resolved_findings(history)
         seen: set[tuple[str, str]] = set()
         for i, rec in enumerate(history):
-            fixed = {str(x) for later in history[i + 1:] for x in (later.get("resolved") or []) if isinstance(x, (str, int))}
             for f in rec.get("findings") or []:
-                if f.get("severity") != "minor" or f.get("resolved") or str(f.get("id")) in fixed:
+                if f.get("severity") != "minor" or f.get("resolved") or (i, str(f.get("id"))) in fixed:
                     continue
                 text = " ".join(str(f.get("text", "")).split())
                 key = (str(f.get("file") or ""), text)
@@ -558,7 +580,8 @@ def verify(run_id: str) -> list[str]:
         elif remote_sha != mr["head_sha"]:
             errors.append(f"{label}: MR head sha {str(remote_sha)[:8]} != proven HEAD {mr['head_sha'][:8]} "
                           "(push the proven commit; never push unproven commits)")
-        verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid")})
+        verified.append({"repo": mr["repo"], "target": mr["target"], "url": data.get("web_url"), "iid": data.get("iid"),
+                         "head": remote_sha or current})
     if not errors:
         run = run_load(run_id)
         if not _already_verified(run, verified):

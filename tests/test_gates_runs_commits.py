@@ -138,6 +138,24 @@ class BranchPoint(CommitsCase):
             errors, _ = self.check(**kw)
             self.assertEqual(errors, [], kw)
 
+    def test_a_merge_that_integrates_the_base_still_gets_the_forbidden_trailer_check(self):
+        run(self.repo, "checkout", "-b", "feature/own")
+        self.commit("[X-2] - mine")
+        run(self.repo, "checkout", "main")
+        self.commit("[X-3] - main moved")
+        run(self.repo, "checkout", "feature/own")
+        run(self.repo, "merge", "--no-ff", "main", "-m", "Merge branch main into feature/own\n\nCo-Authored-By: Some Bot <bot@x.com>")
+        ws = {"commit": {"header_regex": WS["commit"]["header_regex"], "forbidden_trailers": ["Co-Authored-By"]}}
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            errors = gate.commits_errors(self.repo, "main", ws, "R", "feature/own")
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("forbidden trailer", errors[0])
+        self.assertNotIn("header does not match", errors[0], "the header of a merge that brings the base in is still not checked")
+        clean = {"commit": {"header_regex": WS["commit"]["header_regex"], "forbidden_trailers": ["Signed-off-by"]}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.commits_errors(self.repo, "main", clean, "R", "feature/own"), [])
+
 
 class InheritedScope(CommitsCase):
     def stale_bad_commit_on_own_run(self):

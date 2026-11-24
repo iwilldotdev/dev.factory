@@ -73,6 +73,36 @@ class FollowupTests(ShipCase):
         self.assertIn("- F2 `src/a.txt`: still open", desc)
         self.assertIn("- F3 `src/a.txt`: new one", desc)
 
+    def test_reused_ids_across_rounds_are_told_apart_by_round(self):
+        # round 1 F1 and round 2 F1 are different findings; `resolved: ["1:F1"]` in round 3 closes only the first
+        self.to_review()
+        self.assertEqual(self.round_with("code", [minor("F1", "first finding", file="src/one.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [minor("F1", "second finding", file="src/two.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [], resolved=["1:F1"])[0], 0)
+        self.assertEqual(self.record("qa")[0], 0)
+        self.ok("gate", self.rid, "review")
+        desc = self.description()
+        self.assertNotIn("first finding", desc)
+        self.assertIn("- F1 `src/two.txt`: second finding", desc)
+
+    def test_a_bare_id_means_the_round_right_before(self):
+        self.to_review()
+        self.assertEqual(self.round_with("code", [minor("F1", "first finding", file="src/one.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [minor("F1", "second finding", file="src/two.txt")])[0], 0)
+        self.assertEqual(self.round_with("code", [], resolved=["F1"])[0], 0)  # round 3: only round 2's F1
+        self.assertEqual(self.record("qa")[0], 0)
+        self.ok("gate", self.rid, "review")
+        desc = self.description()
+        self.assertIn("- F1 `src/one.txt`: first finding", desc)
+        self.assertNotIn("second finding", desc)
+
+    def test_a_round_qualified_entry_must_name_an_earlier_round(self):
+        self.to_review()
+        self.assertEqual(self.round_with("code", [minor("F1", "still open")], resolved=["1:F1", "2:F1", "9:F1"])[0], 0)
+        self.assertEqual(self.record("qa")[0], 0)
+        self.ok("gate", self.rid, "review")
+        self.assertIn("still open", self.description())
+
     def test_same_finding_in_several_rounds_is_listed_once(self):
         self.to_review()
         self.assertEqual(self.round_with("code", [minor("F1", "repeat me")])[0], 0)
@@ -127,6 +157,19 @@ class ShipEventTests(ShipCase):
         self.assertEqual(len(self.ship_events()), 1)
         self.ok("ship", "verify", self.rid)
         self.assertEqual(len(self.ship_events()), 2, "the phase moved on since: a new verification is logged")
+
+    def test_a_new_push_makes_the_next_verification_a_new_event(self):
+        from factory.commands import ship
+        self.verified_plan()
+        self.ok("ship", "verify", self.rid)
+        self.assertEqual(len(self.ship_events()), 1)
+        first = self.ship_events()[0]["data"]["verified"]
+        self.assertTrue(all(v.get("head") for v in first), first)
+        # the same MRs, but the source branch moved: a verification of another head is a different fact
+        run = core.run_load(self.rid)
+        again = [dict(v, head="f" * 40) for v in first]
+        self.assertFalse(ship._already_verified(run, again))
+        self.assertTrue(ship._already_verified(run, [dict(v) for v in first]))
 
 
 if __name__ == "__main__":

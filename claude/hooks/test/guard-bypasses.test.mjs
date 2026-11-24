@@ -46,13 +46,17 @@ const DENY = [
 const ALLOW = [
   `factory run show acme-dev-1`, `python -m factory run show acme-dev-1`, `factory.cmd run show acme-dev-1`, `FACTORY_X=1 factory run human acme-dev-1 "rm ${R}/run.json"`,
   `cat ${R}/run.json | python -m json.tool`, `python -m json.tool ${R}/run.json`, `cat ${R}/run.json | jq .`,
-  `sed -n p ${R}/run.json`, `awk '{print $1}' ${R}/run.json`, `gzip -c ${R}/run.json > ${SCRATCH}/r.gz`, `gzip ${SCRATCH}/x.json`,
+  `sed -n p ${R}/run.json`, `awk '{print $1}' ${R}/run.json`, `gzip -c ${R}/run.json > /dev/null`, `gzip ${SCRATCH}/x.json`,
   `git -C /other/repo checkout main`, `cd /other/repo && rm *`, `echo hello | sh -c 'cat'`, `echo '{}' | python -m json.tool`,
   `tee >(cat > ${SCRATCH}/a) < x`, `patch ${SCRATCH}/f x.diff`, `python -c "import json; print(json.load(open('${R}/remote/x.json')))"`,
 ];
 
+// Documented false positive: no file write target is provably safe, so a redirection to a file next to a run path keeps
+// the coarse denial (the remedy is a separate command).
+const STILL_DENIED = [`gzip -c ${R}/run.json > ${SCRATCH}/r.gz`];
+
 test('bypasses that predate the write-target rule are denied', () => {
-  for (const cmd of DENY) assert.ok(denies(cmd), `should deny: ${JSON.stringify(cmd)}`);
+  for (const cmd of [...DENY, ...STILL_DENIED]) assert.ok(denies(cmd), `should deny: ${JSON.stringify(cmd)}`);
 });
 
 test('the same fixes leave ordinary commands alone', () => {

@@ -745,12 +745,13 @@ function extraReason(command, ctxIn, depth) {
 //
 // A command the coarse nets deny is allowed only when the WHOLE command parses into this grammar. It does not look
 // for dangers; it accepts a short list of shapes and everything else keeps the coarse verdict:
-//   readers (cat, grep, jq, Get-Content...; sort/diff/gzip with listed flags), with output redirections;
-//   cp [listed flags] SRC... DEST;  sed [-i|-n|-E|-r] s/a/b/[gI0-9] FILE...;  cd /absolute;  the factory CLI (data).
-// A write target (redirection, cp destination, sed -i file) is /dev/null, NUL, or a strict literal whose real path is
-// inside a safe root (the temp dir; the session cwd when it is outside every factory home) and outside the guarded
-// tree, from every cwd the command may be in. Each rule holds in bash, PowerShell 5.1 and later (where cp, cat, ls,
-// sort, diff, echo are cmdlet aliases and native arguments are re-quoted) and on Windows paths.
+//   readers (cat, grep, jq, Get-Content...; sort/diff/gzip with listed flags; sed s/a/b/ without -i);
+//   cd /absolute;  the factory CLI (data).
+// It accepts NO file write target: the only output redirection is to /dev/null (or NUL on Windows); cp, sed -i and
+// every other writer are outside it. Five audits wrote a run file through a destination that node cannot see as a link
+// (junctions, MSYS cookie files, `.lnk` shortcuts and `.exe` twins, Interix cookies), so a write target is never proven
+// safe. Each rule holds in bash and PowerShell 5.1 and later (cat, ls, sort, diff, echo are cmdlet aliases there and
+// native arguments are re-quoted).
 
 // Smart quotes and dashes are quotes and parameter dashes to PowerShell: only ASCII, letters and digits pass.
 const LOOKALIKE = /[^\t\n\x20-\x7e\p{L}\p{N}]/u;
@@ -886,135 +887,9 @@ function strictPath(w) {
   return v.replace(/^[A-Za-z]:/, '').split('/').every((c) => c === '' || c === '.' || (c !== '..' && !c.endsWith('.')));
 }
 
-/** Real path of an fs path: the nearest existing ancestor resolved through links and junctions, plus the rest; null when unsure. */
-function realOf(p) {
-  const tail = [];
-  let cur = path.resolve(p);
-  for (let i = 0; i < 200; i += 1) {
-    try {
-      return path.join(fs.realpathSync.native(cur), ...tail);
-    } catch (e) {
-      if (e.code !== 'ENOENT') return null;
-    }
-    try {
-      fs.lstatSync(cur);
-      return null; // exists but does not resolve: a dangling link
-    } catch (e) {
-      if (e.code !== 'ENOENT') return null;
-    }
-    const up = path.dirname(cur);
-    if (up === cur) return null;
-    tail.unshift(path.basename(cur));
-    cur = up;
-  }
-  return null;
-}
-
-/**
- * Filesystem paths a strict literal denotes from `cwd`, one per shell reading, or null when a reading is not certain.
- * On Windows a `/x` path is the root of the current drive (`drive`) in PowerShell and a Git Bash mount: only the drive
- * mounts (`/c/`) and `/tmp` are mapped; any other mount (`/proc/cygdrive`, `/mnt`, `/cygdrive`, `/dev`...) is unknown.
- */
-function writeForms(v, cwd, drive) {
-  if (!ABS.test(v)) {
-    const bases = writeForms(String(cwd).replace(/\\/g, '/'), null, drive);
-    return bases && bases.map((b) => `${b.replace(/\/$/, '')}/${v}`);
-  }
-  if (process.platform !== 'win32' || !v.startsWith('/')) return [v];
-  const mount = /^\/[A-Za-z](?:\/|$)/.test(v) ? `${v[1]}:/${v.slice(3)}` : /^\/tmp(?:\/|$)/.test(v) ? os.tmpdir() + v.slice(4) : null;
-  return mount && [`${drive}:${v}`, mount];
-}
-
-let homeCache = null;
-
-/** The guarded homes, lexical and real: FACTORY_HOME (ctx and env) and ~/.factory. */
-function guardedHomes(ctx) {
-  const raws = [ctx.home, process.env.FACTORY_HOME, CONFIG.homeRaw, `${homeDir()}/.factory`].filter(Boolean);
-  const key = raws.join('|');
-  if (homeCache && homeCache.key === key) return homeCache.homes;
-  const lexical = raws.map((r) => normPath(r, os.homedir()));
-  const real = raws.map((r) => realOf(expandVars(r).replace(/^~(?=[\\/]|$)/, homeDir())))
-    .filter(Boolean).map((r) => normPath(r));
-  homeCache = { key, homes: [...new Set([...lexical, ...real])] };
-  return homeCache.homes;
-}
-
-/** A factory home, inside one (any run file, remote/ and notes/ included), or an ancestor of one. */
-function nearHome(p, homes) {
-  return homes.some((h) => under(h, p) || under(p, h));
-}
-
-/** Where a write may land: the real temp dir, and the real session cwd when it is outside every guarded home. */
-function safeRoots(ctx, homes) {
-  const inHome = (p) => homes.some((h) => under(p, h));
-  const cwd = ctx.cwd ? realOf(String(ctx.cwd)) : null;
-  const tmp = realOf(os.tmpdir());
-  return [tmp, cwd && !inHome(normPath(ctx.cwd)) && !inHome(normPath(cwd)) ? cwd : null].filter(Boolean).map((r) => normPath(r));
-}
-
-/**
- * A real path a write may land on: inside a safe root, neither inside nor above a factory home, not an existing folder (a cp
- * into it would write <dest>/<name>, perhaps an existing link) and not a file with a second name (a hard link).
- */
-function landsSafe(real, homes, roots) {
-  if (real === null) return false;
-  const p = normPath(real);
-  if (nearHome(p, homes) || !roots.some((r) => under(p, r))) return false;
-  // Links node cannot see: MSYS/Cygwin follow a "magic cookie" file (`!<symlink>` + target) and a `<name>.lnk` shortcut as
-  // symlinks. So no path component may have a `.lnk` twin, the nearest existing ancestor must be a real folder (a cookie
-  // is a file), and an existing target must not be a cookie.
-  let at = real;
-  let st = null;
-  for (;;) {
-    if (fs.existsSync(`${at}.lnk`)) return false;
-    try {
-      st = fs.lstatSync(at);
-      break;
-    } catch (e) {
-      if (e.code !== 'ENOENT') return false;
-    }
-    const up = path.dirname(at);
-    if (up === at) return false;
-    at = up;
-  }
-  if (at !== real) return st.isDirectory();
-  if (!st.isFile() || st.nlink > 1) return false;
-  try {
-    const fd = fs.openSync(real, 'r');
-    try {
-      const head = Buffer.alloc(12);
-      const n = fs.readSync(fd, head, 0, 12, 0);
-      return !head.subarray(0, n).toString('latin1').includes('!<symlink>');
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return false;
-  }
-}
-
-/**
- * The real paths a write target lands on, from every cwd the command may be in and in every shell reading, or null when
- * the target is not acceptable: not /dev/null or NUL, not a strict literal, naming a run path, or landing outside a safe root.
- */
-function targetPaths(w, cwds, ctx) {
-  if (w && !w.quoted && (w.v === '/dev/null' || (process.platform === 'win32' && /^nul$/i.test(w.v)))) return [];
-  if (!strictPath(w) || mentions(w, ctx)) return null;
-  const homes = guardedHomes(ctx);
-  const roots = safeRoots(ctx, homes);
-  const drive = (String(ctx.cwd || '').match(/^([A-Za-z]):/) || process.cwd().match(/^([A-Za-z]):/) || ['', 'C'])[1];
-  const out = [];
-  for (const cwd of ABS.test(w.v) ? [ctx.cwd || process.cwd()] : cwds) {
-    if (nearHome(normPath(w.v, cwd), homes)) return null;
-    const forms = writeForms(w.v, cwd, drive);
-    if (!forms) return null;
-    for (const f of forms) {
-      const real = realOf(f);
-      if (!landsSafe(real, homes, roots)) return null;
-      out.push(real);
-    }
-  }
-  return out;
+/** An output redirection that writes no file: a bare /dev/null, or NUL on Windows. Any other target is never safe. */
+function nullTarget(w) {
+  return Boolean(w) && !w.quoted && !w.odd && (w.v === '/dev/null' || (process.platform === 'win32' && /^nul$/i.test(w.v)));
 }
 
 /** The word names a run or env path in any reading (the baseline's mention test, per word and per flag-attached value). */
@@ -1033,14 +908,11 @@ const READ_FLAGS = {
   gunzip: /^(?:-[cdfnqv]+|--stdout|--to-stdout)$/,
   zcat: /^-[fqv]+$/,
 };
-// cp flags that mean the same harmless thing to GNU cp and, as Copy-Item parameters, are a switch or a binding error
-// (no -t/-T/-l/-s/-b; no -L, which PowerShell reads as -LiteralPath and so swaps source and destination; no -p, -pv is -PipelineVariable).
-const CP_FLAGS = /^(?:-[rRafvnu]+|--(?:recursive|archive|verbose|no-clobber|update|force))$/;
 const SED_SCRIPT = /^s\/[^\/\\\n]*\/[^\/\\\n]*\/[gI0-9]*$/;
 // cmd.exe reads these in the arguments of factory.cmd however they were quoted (PowerShell re-quotes only on whitespace).
 const CMD_META = /["&|<>^%!]/;
 
-/** A segment's kind (`read`, `cp`, `sed`, `factory`) and its words' roles (`read`, `data`, `plain`, `write`, `dest`), or null outside the grammar. */
+/** A segment's kind (`read`, `sed`, `factory`) and its words' roles (`read`, `data`, `flag`, `plain`), or null outside the grammar. */
 function segmentRoles(seg) {
   const head = seg.words[0];
   if (!head || head.quoted || head.odd || !/^[A-Za-z][\w.-]*$/.test(head.v)) return null;
@@ -1059,38 +931,24 @@ function segmentRoles(seg) {
     if (/^g/.test(name) && !flags.some((w) => /^-[^-]*c|^--(?:to-)?stdout$/.test(w.v))) return null;
     return { kind: 'read', roles: args.map((w) => ({ w, role: isFlag(w) ? 'flag' : 'read' })) };
   }
-  if (name === 'cp' && !seg.piped) { // PowerShell binds piped objects to Copy-Item's path parameters
-    const pos = [];
-    let opts = true;
-    for (const w of args) {
-      if (opts && w.v === '--') opts = false;
-      else if (opts && isFlag(w)) { if (!CP_FLAGS.test(w.v)) return null; } else if (w.v.includes(',')) return null; // PowerShell: an array
-      else pos.push(w);
-    }
-    if (pos.length < 2) return null;
-    return { kind: 'cp', roles: [...as('read', pos.slice(0, -1)), { w: pos[pos.length - 1], role: 'dest' }] };
-  }
-  if (name === 'sed') {
+  if (name === 'sed') { // a reader only: no -i (or any other flag that writes), no script flag that writes a file
     let script = null;
-    let inPlace = false;
     const files = [];
     for (const w of args) {
       if (isFlag(w)) {
-        if (w.v === '-i') inPlace = true;
-        else if (!/^-[nEr]$/.test(w.v)) return null;
+        if (!/^-[nEr]$/.test(w.v)) return null;
       } else if (!script) script = w;
       else files.push(w);
     }
     if (!script || !SED_SCRIPT.test(script.v)) return null;
-    return { kind: 'sed', roles: [{ w: script, role: 'plain' }, ...as(inPlace ? 'write' : 'read', files)] };
+    return { kind: 'sed', roles: [{ w: script, role: 'plain' }, ...as('read', files)] };
   }
   return null;
 }
 
 /**
  * True only when the whole command parses into the grammar in both shells: known command words, every word classified,
- * run paths named only where they are read (reader operands, cp sources, factory CLI arguments), every write target
- * landing in a safe root, and no write under a path that an earlier cp of the same command created (a link it copied).
+ * run paths named only where they are read (reader operands, factory CLI arguments), and no output but /dev/null.
  */
 function provablySafe(command, ctx) {
   return ['bash', 'ps'].every((mode) => safeIn(String(command), ctx, mode));
@@ -1100,41 +958,22 @@ function provablySafe(command, ctx) {
 function safeIn(command, ctx, mode) {
   const segs = lexStrict(command, mode);
   if (!segs || !segs.length) return false;
-  const cwds = [ctx.cwd || process.cwd()];
+  let named = false;
   for (const seg of segs) {
     const name = seg.words.length ? seg.words[0].v.toLowerCase() : '';
-    if (!CHDIR.has(name)) continue;
-    const args = seg.words.slice(1);
-    if (name !== 'cd' || args.length !== 1 || seg.piped || seg.outs.length || seg.ins.length) return false;
-    if (!strictPath(args[0]) || !ABS.test(args[0].v) || mentions(args[0], ctx)) return false;
-    cwds.push(args[0].v);
-  }
-  const writes = [];
-  let named = false;
-  for (const [i, seg] of segs.entries()) {
-    if (CHDIR.has(seg.words.length ? seg.words[0].v.toLowerCase() : '')) continue;
-    const s = segmentRoles(seg);
-    if (!s || ((seg.outs.length || seg.ins.length) && s.kind !== 'read')) return false;
-    for (const w of seg.outs) {
-      const paths = targetPaths(w, cwds, ctx);
-      if (!paths) return false;
-      writes.push({ i, paths });
+    if (CHDIR.has(name)) {
+      const args = seg.words.slice(1);
+      if (name !== 'cd' || args.length !== 1 || seg.piped || seg.outs.length || seg.ins.length) return false;
+      if (!strictPath(args[0]) || !ABS.test(args[0].v) || mentions(args[0], ctx)) return false;
+      continue;
     }
+    const s = segmentRoles(seg);
+    if (!s || ((seg.outs.length || seg.ins.length) && s.kind !== 'read') || !seg.outs.every(nullTarget)) return false;
     for (const { w, role } of [...s.roles, ...seg.ins.map((x) => ({ w: x, role: 'read' }))]) {
       const m = mentions(w, ctx);
       named = named || m;
-      if (role === 'write' || role === 'dest') {
-        const paths = targetPaths(w, cwds, ctx);
-        if (!paths) return false;
-        writes.push({ i, paths, cp: role === 'dest' });
-      } else if (m && role !== 'read' && role !== 'data') return false;
+      if (m && role !== 'read' && role !== 'data') return false;
     }
-  }
-  // cp -r/-a copies links as links: a later write at or under an earlier cp destination may go through one.
-  const norm = (ps) => ps.map((p) => normPath(p));
-  for (const d of writes.filter((x) => x.cp)) {
-    const dp = norm(d.paths);
-    if (writes.some((t) => t.i > d.i && norm(t.paths).some((p) => dp.some((q) => under(p, q))))) return false;
   }
   // A run path in the raw text that no single word accounts for was split or spelled in a way the lexer did not see.
   return named || !(runsMention(command, ctx.home) || textMentionsProtected(command, ctx));
@@ -1143,14 +982,15 @@ function safeIn(command, ctx, mode) {
 // ---------- heredoc text ----------
 
 /**
- * `<first line> <<DELIM` + body + `DELIM` as the WHOLE command, where the heredoc feeds a data consumer: `cat` with no
- * operand, `tee`, `git commit|tag ... -F -`, `gh ... --body-file -`, the factory CLI. The body is dropped and the
- * first line (with an optional trailing `> file`) is judged in full. An unquoted DELIM keeps any body with `$`, a
- * backtick or `\` (the shell expands those). Anything else is returned unchanged.
+ * `<first line> <<DELIM` + body + `DELIM` as the WHOLE command, where the heredoc feeds a data consumer that writes no
+ * file: `cat` with no operand, `git commit|tag ... -F -`, `gh ... --body-file -`, the factory CLI. The body is dropped
+ * and the first line is judged in full. A first line with a write target (`> file`, `tee file`) keeps the body: no file
+ * write target is ever proven safe. An unquoted DELIM keeps any body with `$`, a backtick or `\` (the shell
+ * expands those). Anything else is returned unchanged.
  */
 function stripDataHeredoc(command) {
   const lines = command.split('\n');
-  const m = lines[0].match(/^(.*?)<<(-?)(?:'([A-Za-z_][\w-]*)'|"([A-Za-z_][\w-]*)"|([A-Za-z_][\w-]*))((?:[ \t]*>>?[ \t]*[\w.\/:-]+)?)[ \t]*$/);
+  const m = lines[0].match(/^(.*?)<<(-?)(?:'([A-Za-z_][\w-]*)'|"([A-Za-z_][\w-]*)"|([A-Za-z_][\w-]*))[ \t]*$/);
   if (!m || lines.length < 3) return command;
   const delim = m[3] || m[4] || m[5];
   let end = lines.length - 1;
@@ -1166,10 +1006,10 @@ function stripDataHeredoc(command) {
   const w = last.words.map((x) => x.v);
   const name = w[0].toLowerCase();
   const dash = (flag) => w.some((x, i) => (x === flag && w[i + 1] === '-') || x === `${flag}=-`);
-  const consumer = (name === 'cat' && w.length === 1) || name === 'tee' || isFactory(w)
+  const consumer = (name === 'cat' && w.length === 1) || isFactory(w)
     || (name === 'git' && (w.includes('commit') || w.includes('tag')) && (dash('-F') || dash('--file')))
     || (name === 'gh' && (dash('--body-file') || dash('-F')));
-  return consumer ? `${m[1]}${m[6]}` : command;
+  return consumer ? m[1] : command;
 }
 
 // ---------- decision ----------
@@ -1178,7 +1018,20 @@ function decide(command, ctx, depth) {
   const extra = extraReason(command, ctx, depth);
   if (extra) return extra;
   const coarse = BASELINE.bashWriteReason(command, ctx) || coarseReason(command, ctx);
-  return coarse && !provablySafe(command, ctx) ? coarse : '';
+  if (!coarse || provablySafe(command, ctx)) return '';
+  return copiesOut(command, ctx) ? `${coarse}; ${COPY_OUT_HINT}` : coarse;
+}
+
+const COPY_OUT_HINT = 'to copy a run file out, use `cat <file> > <dest>` or the Read tool; run it as a separate command from any write';
+
+/** A copy command (cp, Copy-Item...) with a run or env path among its sources (every operand but the last). */
+function copiesOut(command, ctx) {
+  return segments(tokenize(command)).some((seg) => {
+    const w = stripPrefix(seg.words);
+    if (!w.length || !COPIERS.has(baseName(w[0]))) return false;
+    const ops = w.slice(1).filter((a) => !/^-/.test(a));
+    return ops.slice(0, -1).some((a) => runsMention(a, ctx.home) || textMentionsProtected(a, ctx));
+  });
 }
 
 /** Returns a reason string when the shell command writes a protected path, else ''. */

@@ -105,6 +105,10 @@ const REGRESSION = [
   `cp @F@ -L ${SCRATCH}/x`, `cp -pv @F@ ${SCRATCH}/x`, `factory run show r1 'x&echo>@F@'; cp @R@/remote/x ${SCRATCH}/y`,
   `factory.cmd run show r1 'a" & echo x > @F@ & "'; cp @R@/remote/x ${SCRATCH}/y`, 'cp /tmp/x @R@/remote/y && cat @F@',
   'sed -i s/a/b/ @R@/notes/n.md && cat @F@', 'cat @F@ > @R@/remote/copy.json && cp @F@ /tmp/x',
+  // sixth audit: a scratch write target that MSYS resolves through a link node cannot see (C: a `ck.exe` twin cookie,
+  // B: an explicit `ck.lnk` shortcut). Denied whatever is on disk: no file write target is provably safe any more.
+  `cp @R@/remote/x ${SCRATCH}/ck`, `cp @R@/remote/x ${SCRATCH}/z && cat ${SCRATCH}/forged.json > ${SCRATCH}/ck`,
+  `cp @R@/remote/x ${SCRATCH}/z && cat ${SCRATCH}/forged.json > ${SCRATCH}/ck.lnk`, `cp @F@ ${SCRATCH}/ck.lnk`,
 ];
 // Third audit, spelled with this machine's home: junction aliases (M3), bash escapes in all-backslash paths (M4), odd
 // spellings attached to a flag value (M5), cmd.exe carets and quote loss (M6). The junction rows need the junction.
@@ -146,6 +150,10 @@ const FIXED_DENY = [
   'rm ~/.fac\\tory/runs/r1/run.json', "rm ~/.factory/runs/r1/run.json.", 'rm $HOME/.factory/runs/r1/run.json::$DATA',
   'Remove-Item "C:\\Users\\owill\\.factory\\runs\\r1\\run.json."', 'del C:\\Users\\owill\\.factory\\runs\\r1\\run.json ',
   'rm /c/Users/owill/.factory/runs/r1/run.js$()on',
+  // sixth audit, env storage as the source: C1 `.exe` twin cookie, B2 explicit `.lnk` shortcut, E1 Interix `IntxLNK` cookie
+  ...[`${FH_POSIX}/env/ws/React.storage.json`, '~/.factory/env/ws/React.storage.json'].flatMap((src) => [
+    `cp ${src} ${SCRATCH}/ck`, `cp ${src} ${SCRATCH}/ck.lnk`, `cp ${src} ${SCRATCH}/ik`,
+  ]),
 ];
 
 // ---- previously fixed false positives that must stay allowed (same list as guard-targets.test.mjs) ----
@@ -153,8 +161,8 @@ const STORAGE = `${FH_POSIX}/env/ws/React.storage.json`;
 const ALLOW = [
   `head -c 300 ${RUN}/evidence/CHK-1.json`, `ls ${RUN}`,
   `python -c "import json; print(json.load(open('${RUN}/remote/issue.json'))['key'])"`,
-  `cp ${STORAGE} ${SCRATCH}/state.json`, `cp ${RUN}/run.json ${SCRATCH}/run.json`,
-  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`,
+  `cat ${STORAGE} > ${SCRATCH}/state.json`, `cat ${RUN}/remote/x > ${SCRATCH}/x`,
+  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`, // the frozen baseline allows it (no grammar involved)
   `git checkout main && cat ${STORAGE}`, `git -C /other/repo checkout main -- src/a.ts`,
   `factory run human acme-dev-1 "user: delete discover-task.spec.ts; rm -rf x then cp a ${RUN}/run.json"`,
   `factory run human acme-dev-1 "user: said \\"delete the spec\\" and move it" && cat ${RUN}/run.json`,
@@ -168,14 +176,14 @@ const sepOf = (R) => (/\\/.test(R) ? (/\//.test(R) ? null : '\\') : '/');
 const ALLOW_SPELLED = SPELLINGS.flatMap(({ R }) => {
   const sep = sepOf(R); // a spelling that mixes both separators is itself an odd spelling: the coarse rule judges it
   if (!sep) return [];
-  return [
-    `cp ${R}${sep}run.json ${SCRATCH}/run.json`, `cp -r ${R}${sep}evidence ${SCRATCH}/ev`,
-    `cat ${R}${sep}run.json > ${SCRATCH}/out.txt`, `ls ${R}${sep}evidence && cat ${R}${sep}run.json`,
-  ];
+  return [`cat ${R}${sep}run.json > ${SCRATCH}/out.txt`, `ls ${R}${sep}evidence && cat ${R}${sep}run.json`];
 });
 // Documented false positives: once allowed on this branch, now outside the provably-safe grammar (python -c, git, rsync,
-// a run-folder write target), so the baseline denial stands. Use separate commands or the Edit/Write tools.
+// cp, sed -i, any file write target), so the baseline denial stands. Use `cat <file> > <dest>` as its own command, the
+// Read tool, or the Edit/Write tools.
 const STILL_DENIED = [
+  `cp ${STORAGE} ${SCRATCH}/state.json`, `cp ${RUN}/run.json ${SCRATCH}/run.json`,
+  ...SPELLINGS.flatMap(({ R }) => (sepOf(R) ? [`cp ${R}${sepOf(R)}run.json ${SCRATCH}/run.json`, `cp -r ${R}${sepOf(R)}evidence ${SCRATCH}/ev`] : [])),
   `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
   `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
   `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,
@@ -252,16 +260,9 @@ function corpus() {
 
 // ---- classes of allowed baseline denials, checked without the library ----
 // A gain (baseline denies, current code allows) is legitimate only when EVERY segment of the command is one of these
-// kinds; the class of a command is the set of its segment kinds. The only gains left: a copy out to a safe root, a
-// redirection or sed -i in a safe root next to a run-path read, factory CLI data, and a heredoc that is data.
-// Safe root = the temp dir (and /tmp off Windows) or the session cwd when it is not under a .factory folder.
-const fwd = (s) => s.replace(/\\/g, '/');
-const SCRATCH_DIRS = [fwd(TMP), ...(WIN ? [] : ['/tmp'])];
-const noDots = (p) => !/(?:^|\/)\.\.(?:\/|$)/.test(p) && !/[$~%`*?{]/.test(p) && !/\.factory/i.test(p);
-const under = (p, d) => p.toLowerCase() === d.toLowerCase() || p.toLowerCase().startsWith(`${d.toLowerCase().replace(/\/$/, '')}/`);
-const inScratch = (p) => noDots(p) && SCRATCH_DIRS.some((d) => under(p, d));
-const inCwd = (p, cwd) => noDots(p) && !/\.factory/i.test(cwd) && (/^[A-Za-z]:\/|^\//.test(p) ? under(p, fwd(cwd)) : true);
-const writable = (p, cwd) => p === '/dev/null' || inScratch(fwd(p)) || inCwd(fwd(p), cwd);
+// kinds; the class of a command is the set of its segment kinds. The only gains left: read-only commands (output only
+// to /dev/null), factory CLI data, and a heredoc that is data. No file write target is ever a gain.
+const writable = (p) => p === '/dev/null' || (WIN && /^nul$/i.test(p));
 
 /** Top-level segments split on unquoted ; && || | and newlines; null on substitutions, groups or heredocs. */
 function splitTop(input) {
@@ -289,15 +290,19 @@ function splitTop(input) {
 
 const unquote = (w) => w.replace(/^"([^"]*)"$|^'([^']*)'$/, '$1$2');
 const SEGMENT_KINDS = {
-  read: (w) => /^(?:cat|head|tail|ls|grep|jq|wc|echo|stat|type|get-content|gc|test-path|select-string)$/i.test(w[0]),
-  'sort-diff-read': (w) => /^(?:sort|diff)$/.test(w[0]) && !w.some((a) => /^-[^-]*[oT]|^--(?:output|temporary|compress)/.test(a)),
-  'gzip-to-stdout': (w) => /^(?:gzip|gunzip)$/.test(w[0]) && w.some((a) => /^-[a-z]*c[a-z]*$/.test(a)),
-  'copy-out': (w, cwd) => w[0] === 'cp' && w.length >= 3 && !w.slice(1).some((a) => /^-[a-zA-Z]*[lstdTixeLpPH]|^--(?:link|symbolic|target|backup|preserve|parents)/.test(a))
-    && writable(unquote(w[w.length - 1]), cwd),
-  'sed-in-place-scratch': (w, cwd) => w[0] === 'sed' && /^s\/[^/]*\/[^/]*\/g?$/.test(unquote(w.find((a, i) => i > 0 && !/^-/.test(a)) || ''))
-    && w.slice(1).filter((a) => !/^-/.test(a)).slice(1).every((a) => writable(unquote(a), cwd)),
-  factory: (w) => /^factory(?:\.cmd)?$/i.test(w[0]) || (/^python3?$/.test(w[0]) && w[1] === '-m' && w[2] === 'factory'),
+  'read-only': (w) => /^(?:cat|head|tail|ls|grep|jq|wc|echo|stat|type|get-content|gc|test-path|select-string)$/i.test(w[0])
+    || (/^(?:sort|diff)$/.test(w[0]) && !w.some((a) => /^-[^-]*[oT]|^--(?:output|temporary|compress)/.test(a)))
+    || (/^(?:gzip|gunzip)$/.test(w[0]) && w.some((a) => /^-[a-z]*c[a-z]*$/.test(a)))
+    || (w[0] === 'sed' && !w.some((a) => /^-[^-]*i|^--in-place/.test(a)) && /^s\/[^/]*\/[^/]*\/[gI0-9]*$/.test(unquote(w.find((a, i) => i > 0 && !/^-/.test(a)) || ''))),
+  'factory-data': (w) => /^factory(?:\.cmd)?$/i.test(w[0]) || (/^python3?$/.test(w[0]) && w[1] === '-m' && w[2] === 'factory'),
 };
+// A file write the shell or the command makes: cp/Copy-Item, sed -i, or a redirection to anything but /dev/null or NUL.
+// Quoted strings are data (a quoted redirection target is still a target: it becomes Q).
+function writesFile(input) {
+  const cmd = input.replace(/"[^"]*"|'[^']*'/g, 'Q');
+  return /(?:^|[\s;&|(])(?:cp|copy-item|cpi|copy)\s/i.test(cmd) || /(?:^|[\s;&|(])sed\s(?:[^;&|\n]*\s)?(?:-[^-\s]*i|--in-place)/.test(cmd)
+    || [...cmd.matchAll(/\d?>>?\s*(&?\S*)/g)].some((m) => !/^&\d$/.test(m[1]) && !writable(m[1]));
+}
 
 /** The class of a command (sorted segment kinds) or null when one segment fits no kind or redirects outside a safe root. */
 function classOf(cmd, c) {
@@ -308,12 +313,12 @@ function classOf(cmd, c) {
   const kinds = new Set();
   for (const seg of segs) {
     const outs = [...seg.matchAll(/(?:^|\s)\d?>>?\s*(\S+)/g)].map((m) => m[1]).filter((t) => !/^&\d$/.test(t));
-    if (!outs.every((t) => writable(unquote(t), c.cwd))) return null;
+    if (!outs.every((t) => writable(unquote(t)))) return null;
     const w = (seg.replace(/(?:^|\s)\d?>>?\s*\S+/g, ' ').match(/"[^"]*"|'[^']*'|\S+/g) || []);
     if (!w.length) return null;
-    const kind = Object.keys(SEGMENT_KINDS).find((k) => SEGMENT_KINDS[k](w, c.cwd));
+    const kind = Object.keys(SEGMENT_KINDS).find((k) => SEGMENT_KINDS[k](w));
     if (!kind) return null;
-    if (outs.length && !/read|gzip/.test(kind)) return null; // redirections only on readers
+    if (outs.length && kind !== 'read-only') return null; // redirections (to /dev/null) only on readers
     kinds.add(kind);
   }
   return [...kinds].sort().join('+');
@@ -323,6 +328,7 @@ const auditCorpus = require('./fixtures/audit-corpus.cjs');
 
 function differential(entries, c) {
   const gained = [];
+  const writing = [];
   const byClass = {};
   let baselineDenied = 0;
   for (const cmd of entries) {
@@ -332,25 +338,37 @@ function differential(entries, c) {
     const cls = classOf(cmd, c);
     const safe = lib.provablySafe(cmd, c) || (cls === 'heredoc-data' && lib.provablySafe(lib.stripDataHeredoc(cmd), c))
       || (cls === 'heredoc-data' && !decide(baseline, lib.stripDataHeredoc(cmd), c));
+    // a heredoc body is data: only its first line can write
+    if (writesFile(cls === 'heredoc-data' ? cmd.split('\n')[0] : cmd)) writing.push(cmd);
     if (!(safe && cls)) gained.push(cmd);
     else byClass[cls] = (byClass[cls] || 0) + 1;
   }
-  return { gained, byClass, baselineDenied };
+  return { gained, writing, byClass, baselineDenied };
 }
+
+test('the gain check sees every file write form', () => {
+  for (const w of ['cp a b', 'x && cp a b', 'Copy-Item a b', 'sed -i s/a/b/ f', 'sed -n -i s/a/b/ f', 'cat a > b', 'cat a >> /tmp/b', 'cat a 2> b',
+    'cat a > nul.txt', 'cat a > "b"']) assert.ok(writesFile(w), w);
+  for (const r of ['cat a', 'cat a > /dev/null', 'cat a 2>/dev/null', 'cat a 2>&1', 'sed -n s/a/b/ f', 'factory run human r "x; cp a b > c"']) {
+    assert.ok(!writesFile(r), r);
+  }
+});
 
 test('differential (own corpus): every baseline denial allowed now is provably safe and in a checked class', () => {
   const entries = corpus().map((e) => e.cmd);
-  const { gained, byClass, baselineDenied } = differential(entries, hctx(lib));
+  const { gained, writing, byClass, baselineDenied } = differential(entries, hctx(lib));
   assert.ok(entries.length > 3000, `corpus too small: ${entries.length}`);
   assert.deepEqual([...new Set(gained)], [], `${gained.length} of ${baselineDenied} baseline denials are now allowed outside the classes`);
+  assert.deepEqual([...new Set(writing)], [], 'a gain writes a file (cp, sed -i or a redirection to a file)');
   process.stdout.write(`# differential own corpus ${entries.length}, baseline denied ${baselineDenied}, allowed now by class ${JSON.stringify(byClass)}, unexplained 0\n`);
 });
 
 test('differential (audit corpus): every baseline denial allowed now is provably safe and in a checked class', () => {
   const entries = auditCorpus(HOME).map((p) => p.cmd);
-  const { gained, byClass, baselineDenied } = differential(entries, auditCtx);
+  const { gained, writing, byClass, baselineDenied } = differential(entries, auditCtx);
   assert.ok(entries.length > 6000, `corpus too small: ${entries.length}`);
   assert.deepEqual([...new Set(gained)], [], `${gained.length} of ${baselineDenied} baseline denials are now allowed outside the classes`);
+  assert.deepEqual([...new Set(writing)], [], 'a gain writes a file (cp, sed -i or a redirection to a file)');
   process.stdout.write(`# differential audit corpus ${entries.length}, baseline denied ${baselineDenied}, allowed now by class ${JSON.stringify(byClass)}, unexplained 0\n`);
 });
 

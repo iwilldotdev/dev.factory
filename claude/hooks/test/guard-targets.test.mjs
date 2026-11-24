@@ -14,9 +14,7 @@ const ALLOW = [
   `head -c 300 ${RUN}/evidence/CHK-1.json`,
   `ls ${RUN}`,
   `python -c "import json; print(json.load(open('${RUN}/remote/issue.json'))['key'])"`,
-  `cp ${STORAGE} ${SCRATCH}/state.json`,
-  `cp ${RUN}/run.json ${SCRATCH}/run.json`,
-  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`,
+  `sed -i s/a/b/ ${SCRATCH}/f.txt && cat ${RUN}/run.json`, // the frozen baseline allows it (no grammar involved)
   `git checkout main && cat ${STORAGE}`,
   `git -C /other/repo checkout main -- src/a.ts`,
   `factory run human acme-dev-1 "user: delete discover-task.spec.ts; rm -rf x then cp a ${RUN}/run.json"`,
@@ -24,11 +22,16 @@ const ALLOW = [
   `python -m factory run human acme-dev-1 "user: remove it" --note "rm a"`,
   `rm ${SCRATCH}/old.json && ls ${RUN}/evidence`,
   `cat ${RUN}/run.json | head -3; touch ${SCRATCH}/x`,
+  // the workaround the deny message names: a reader redirected out, as its own command
+  `cat ${STORAGE} > ${SCRATCH}/state.json`, `cat ${RUN}/remote/issue.json > ${SCRATCH}/issue.json`,
 ];
 
-// Documented false positives (once allowed on this branch): python -c, git and a run-folder write target are outside
-// the provably-safe grammar, so the coarse denial stands. Use separate commands or the Edit/Write tools.
+// Documented false positives (once allowed on this branch): python -c, git, cp, sed -i and every file write target are
+// outside the provably-safe grammar, so the coarse denial stands. Use `cat <file> > <dest>` as its own command, the
+// Read tool, or the Edit/Write tools.
 const STILL_DENIED = [
+  `cp ${STORAGE} ${SCRATCH}/state.json`,
+  `cp ${RUN}/run.json ${SCRATCH}/run.json`,
   `python -c "import json,sys; d=json.load(open('${RUN}/remote/issue.json')); sys.stdout.write(d['key'])"`,
   `sed -i s/a/b/ ${SCRATCH}/f.txt ${RUN}/remote/x.json`,
   `cd /other/repo && git checkout -b topic && cp ${RUN}/evidence/CHK-1.json ${SCRATCH}/c.json`,

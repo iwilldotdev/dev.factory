@@ -132,8 +132,8 @@ class HarnessTests(FactoryCase):
         commands = set(build_parser()._subparsers._group_actions[0].choices)
         for name in set(re.findall(r"`factory ([a-z]+)", text)):
             self.assertIn(name, commands)
-        subs = {"media": {"seen", "unseen"}, "run": {"start", "close", "retype", "repos", "delete"}}
-        for name, sub in re.findall(r"`factory (run|media) ([a-z]+)", text):
+        subs = {"media": {"seen", "unseen"}, "run": {"start", "close", "retype", "repos", "delete", "branch"}, "plan": {"example", "amend"}}
+        for name, sub in re.findall(r"`factory (run|media|plan) ([a-z]+)", text):
             self.assertIn(sub, subs[name])
         self.assertNotIn("TODO", text)
 

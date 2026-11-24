@@ -25,6 +25,16 @@ jobs:
       - name: Entry point works from another directory
         run: factory --version
         working-directory: ${{ runner.temp }}
+      - name: Smoke init and status from the installed CLI in a temporary directory
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          d="$(mktemp -d)"
+          cd "$d"
+          factory init --name smoke
+          factory status
+          factory status --config
+          factory check
       - name: Test suite (parallel, 180 s budget)
         run: python tests/run_tests.py --budget 180
       - name: Upload test output

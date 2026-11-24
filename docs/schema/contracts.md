@@ -208,6 +208,8 @@ Common fields on every event:
 | `type` | Extra fields |
 |---|---|
 | `run_started` | `ticket`, `kind`, `repos` |
+| `retype` | `kind`, `previous`: the run kind changed, so `gate intake` has to pass again [L-32] |
+| `repos` | `repos`: the affected repos were (re)declared |
 | `contract` | `kind`, `id`, `path`, `source`, `raw_sha256` |
 | `media` | `attachment`, `state` (`seen` or `unseen`), `file` or `question` |
 | `question` | `id` (`Q-n`), `text`, `ref` |

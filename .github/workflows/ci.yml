@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [v1, main]
+  pull_request:
+
+jobs:
+  python:
+    name: python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the CLI
+        run: python -m pip install .
+      - name: Entry point works from another directory
+        run: factory --version
+        working-directory: ${{ runner.temp }}
+      - name: Test suite (parallel, 180 s budget)
+        run: python tests/run_tests.py --budget 180
+      - name: Upload test output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-output-${{ matrix.os }}-${{ matrix.python }}
+          path: .tmp/test-output
+  # The Node browser runner job joins this workflow with M4.

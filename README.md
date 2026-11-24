@@ -143,6 +143,7 @@ Without the app's session tool, for example in the plain CLI, the same batch run
 |---|---|
 | `factory run list` | Every run with its phase |
 | `factory run status <run>` | Phase, loops, open blockers, owner session and the next required action |
+| `factory run mirror-diff <run> [--json]` | Hotfix runs: whether each mirror branch carries the same changes as the base fix (exit 0 equal, 1 divergent, with the divergent files and hunks); `gate build` and `ship plan` enforce it |
 | `factory env check <ws> [--run <run>] [--target <t>]` | Whether the env is healthy, stale, or blocked by a port or the lease (exit 0/1/3/4); runs `env.preflight` after the health probe. Hotfix runs: `env up ... --run <run> --target <mirror>` serves the mirror worktree, `prove <run> --target <mirror>` proves only that target |
 | `factory env seed\|reset-data <ws> <repo> --run <run>` | Run `env.seed.cmd` / `env.seed.reset` with `FACTORY_DATA_PREFIX=UAT<ticket digits>`; `prove` resets once before the runtime batch |
 | `factory workspace list` / `workspace show <ws>` | Workspaces and their config, with secrets redacted |

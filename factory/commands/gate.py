@@ -8,7 +8,7 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .. import integrity, shots
+from .. import integrity, mirrordiff, shots
 from ..collectors.test import weak_pattern_reason
 from ..core import (FactoryError, GateFailed, _dep_run_ids, code_repos, ensure_owner, event, evidence_id, git, git_dirty,
                     git_head, hotfix_of, load_evidence, node_file, now,
@@ -811,6 +811,7 @@ def _build(run_id, run, ws) -> list[str]:
             errors.extend(commits_errors(path, base, ws, alias, rec.get("branch"), own=own, origin_head=origin,
                                          allow=inherited_allow(run, ws, alias),
                                          merged_heads=tuple(merged_mr_heads(run))))
+    errors.extend(mirrordiff.errors(run, ws))  # hotfix with mirror branches: same changes as the base fix
     return errors
 
 
@@ -1238,6 +1239,11 @@ def cmd_gate(args) -> int:
     phases, evals = machine(run)
     if phase not in evals:
         raise FactoryError(f"{run.get('kind')} runs have no gate for phase {phase!r}; phases: {', '.join(evals)}")
+    allow_mirror = getattr(args, "allow_mirror_divergence", None)
+    if allow_mirror is not None:
+        if phase != "build":
+            raise FactoryError("--allow-mirror-divergence applies to gate build (and ship plan)")
+        mirrordiff.record_allowance(run, ws, allow_mirror)
     ws_changed = integrity.workspace_error(run) if phase not in ("intake", "plan") else None
     if ws_changed:  # before any loop/cap logic: caps read from a changed workspace.json are not trusted
         event(run, "gate_fail", phase=phase, reasons=[ws_changed])
@@ -1327,4 +1333,6 @@ def register(sub) -> None:
     p = sub.add_parser("gate", help="check exit criteria of a phase and advance")
     p.add_argument("run")
     p.add_argument("phase", choices=list(EVALUATORS))
+    p.add_argument("--allow-mirror-divergence", type=int, metavar="DECISION",
+                   help="hotfix, gate build: a user decision \"mirror diff: <reason>\" that allows the current mirror divergence")
     p.set_defaults(func=cmd_gate)

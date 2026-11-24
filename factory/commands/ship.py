@@ -6,7 +6,7 @@ import json
 import string
 from pathlib import Path
 
-from .. import fetches, shots
+from .. import fetches, mirrordiff, shots
 from ..core import (
     FactoryError,
     GateFailed,
@@ -338,6 +338,7 @@ def _description(run: dict, workspace: dict, alias: str, target: str, deps: list
     lines += _followup_lines(run["id"])
     if cross:
         lines += ["", "## Hotfix mirror", ""] + cross
+    lines += mirrordiff.description_lines(run, alias, target)
     if deps:
         lines += ["", "## Dependencies", ""]
         lines += [f"Depends on {{mr_url:{a}:{t}}}" for a, t in deps]
@@ -375,9 +376,12 @@ def _needs_user(mode: str, kind: str, draft: bool = True) -> bool:
 
 
 def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] | None = None,
-               jira_mode: str | None = None) -> dict:
+               jira_mode: str | None = None, allow_mirror: int | None = None) -> dict:
     run = run_load(run_id)
     workspace = workspace_load(run["workspace"])
+    if allow_mirror is not None:
+        mirrordiff.record_allowance(run, workspace, allow_mirror)
+        run_save(run)
     acs = read_json(run_dir(run_id) / "acs.json")
     ship = workspace.get("ship") or {}
     mode = (workspace.get("autonomy") or {}).get("ship", "ask")
@@ -393,6 +397,7 @@ def build_plan(run_id: str, allow_behind: bool = False, internal_deps: set[str] 
         raise FactoryError(f"ship jira mode {jira_mode!r} is not one of: {', '.join(JIRA_MODES)}")
 
     errors = integrity_errors(run_id, run, workspace) + check_dependencies(run, internal_deps)
+    errors += mirrordiff.errors(run, workspace)
     for alias in repos:
         for target in targets:
             wt = target_worktree(run, workspace, alias, target)
@@ -577,7 +582,8 @@ def update_description(run_id: str, repo: str | None = None, target: str | None 
 # ---------- CLI ----------
 
 def _cmd_plan(args) -> int:
-    plan = build_plan(args.run, args.allow_behind, jira_mode=getattr(args, "jira", None))
+    plan = build_plan(args.run, args.allow_behind, jira_mode=getattr(args, "jira", None),
+                      allow_mirror=getattr(args, "allow_mirror_divergence", None))
     if getattr(args, "json", False):
         print(json.dumps(plan, indent=2, ensure_ascii=False))
         return 0
@@ -623,6 +629,8 @@ def register(sub) -> None:
     pl = ssub.add_parser("plan")
     pl.add_argument("run")
     pl.add_argument("--allow-behind", action="store_true")
+    pl.add_argument("--allow-mirror-divergence", type=int, metavar="DECISION",
+                    help="hotfix: a user decision \"mirror diff: <reason>\" that allows the current mirror divergence")
     pl.add_argument("--jira", choices=["none", "comment", "transition"],
                     help="Jira actions to plan (default: workspace ship.jira, else comment+transition)")
     pl.set_defaults(func=_cmd_plan)

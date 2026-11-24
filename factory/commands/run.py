@@ -550,12 +550,37 @@ def cmd_mirror(args) -> int:
         run_save(run)
         raise GateFailed([text,
                           f"worktree left mid-cherry-pick at {worktree}: a builder resolves the files, `git add` them and runs "
-                          "`git cherry-pick --continue`; never --abort or reset; then `factory run unblock`"])
+                          "`git cherry-pick --continue`; never --abort or reset; then `factory run unblock`",
+                          "resolve by reproducing the base diff: adapt only what the mirror branch structurally requires (moved "
+                          "files, import paths); no reformatting, no relocated tests; formatter in check mode only, never write "
+                          f"mode on a whole file; then run `factory run mirror-diff {run['id']}` (the gates fail on any divergence)"])
     event(run, "mirror", repo=alias, target=target, status="ok", commits=len(shas))
     run_save(run)
     _emit(args, {"target": target, "branch": name, "worktree": str(worktree), "commits": len(shas)},
           f"{alias}: mirrored {len(shas)} commit(s) to {target} on {name} at {worktree}")
     return 0
+
+
+def cmd_mirror_diff(args) -> int:
+    """Read-only: do the mirror branches carry the same changes as the base fix? Exit 0 equal, 1 divergent."""
+    from .. import mirrordiff
+    run = run_load(args.run)
+    ws = workspace_load(run["workspace"])
+    if not hotfix_of(run):
+        raise FactoryError("run mirror-diff is for hotfix runs (run start --hotfix)")
+    report = mirrordiff.compute(run, ws)
+    if report is None:
+        raise FactoryError("no mirror worktree to compare yet (create it with the run mirror command)")
+    allowed = (not report["equal"]) and mirrordiff.allowance_valid(run, report)
+    if getattr(args, "json", False):
+        print(json.dumps({**mirrordiff.public(report), "allowed_by_decision":
+                          run["mirror_allow"]["decision"] if allowed else None}, indent=2, ensure_ascii=False))
+    elif report["equal"]:
+        print("OK mirror diff equal: the mirror branches carry the same changes as the base fix")
+    else:
+        print("DIVERGENT mirror diff" + (f" (allowed by user decision #{run['mirror_allow']['decision']})" if allowed else ""))
+        print("\n".join(mirrordiff.render(report)))
+    return 0 if report["equal"] else 1
 
 
 # ---------- decide / block / unblock / human ----------
@@ -1056,6 +1081,11 @@ def register(sub) -> None:
     p.add_argument("--to", required=True)
     p.add_argument("--name")
     p.set_defaults(func=cmd_mirror)
+    p = rs.add_parser("mirror-diff", help="hotfix, read-only: compare the net change of the base branch with each mirror branch "
+                                          "(exit 0 equal, 1 divergent)")
+    p.add_argument("run")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_mirror_diff)
     p = rs.add_parser("decide")
     p.add_argument("run")
     p.add_argument("text")

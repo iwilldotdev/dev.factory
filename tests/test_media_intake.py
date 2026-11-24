@@ -42,7 +42,7 @@ class MediaIntakeTests(FactoryCase):
         self.assertEqual(rc, 1)
         self.assertIn("bug.png", out)
         self.assertIn("jira_download_issue_attachment", out)
-        self.assertIn("remote/media/bug.png", out)
+        self.assertIn("remote/media/11-bug.png", out)
 
     def test_image_downloaded_and_seen_passes(self):
         self.issue(PNG)
@@ -51,6 +51,23 @@ class MediaIntakeTests(FactoryCase):
         self.manifest({"name": "bug.png", "id": "11", "type": "image/png", "source": "u", "seen": True,
                        "file": "remote/media/bug.png"})
         self.assertEqual(self.gate()[0], 0)
+
+    def test_same_filename_two_ids_need_two_entries(self):
+        a = {"id": "21", "filename": "image.png", "mimeType": "image/png"}
+        b = {"id": "22", "filename": "image.png", "mimeType": "image/png"}
+        self.issue(a, b)
+        (self.rd / "remote" / "media").mkdir(parents=True)
+        (self.rd / "remote" / "media" / "21-image.png").write_bytes(b"x")
+        self.manifest({"name": "image.png", "id": "21", "seen": True, "file": "remote/media/21-image.png"})
+        rc, out = self.gate()
+        self.assertEqual(rc, 1)
+        self.assertEqual(out.count("is not in remote/media/manifest.json"), 1)
+        self.assertIn("22-image.png", out)
+        from factory import media
+        run = core.run_load(self.rid)
+        self.assertEqual(len(media.fetches(self.rid, run)), 1)
+        self.assertTrue(media.fetches(self.rid, run)[0]["args"]["save_to"].endswith("22-image.png"))
+        self.assertNotEqual(media.attachments(self.rid, run)[0]["file"], media.attachments(self.rid, run)[1]["file"])
 
     def test_seen_without_file_fails(self):
         self.issue(PNG)

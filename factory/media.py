@@ -32,6 +32,12 @@ def _safe(name: str, mime: str) -> str:
     return base if not ext or base.lower().endswith(ext) else base + ext
 
 
+def _save_name(a: dict, name: str, mime: str) -> str:
+    """`<id>-<safe name>`: two attachments with the same filename never share a file."""
+    safe = _safe(name, mime)
+    return f"{a['id']}-{safe}" if a.get("id") else safe
+
+
 def attachments(run_id: str, run: dict) -> list[dict]:
     """image/* and video/* attachments listed in the saved issue of each ticket."""
     out: list[dict] = []
@@ -50,7 +56,7 @@ def attachments(run_id: str, run: dict) -> list[dict]:
                 continue
             name = str(a.get("filename") or a.get("id") or "")
             out.append({"ticket": t["key"], "name": name, "id": str(a.get("id") or ""), "type": mime,
-                        "source": str(a.get("content") or ""), "file": f"{MEDIA_DIR}/{_safe(name, mime)}"})
+                        "source": str(a.get("content") or ""), "file": f"{MEDIA_DIR}/{_save_name(a, name, mime)}"})
     return out
 
 
@@ -68,10 +74,22 @@ def _manifest(run_id: str) -> tuple[list[dict], str | None]:
     return [i for i in items if isinstance(i, dict)], None
 
 
-def _entry(items: list[dict], att: dict) -> dict | None:
-    for i in items:
-        if (att["id"] and str(i.get("id") or "") == att["id"]) or (att["name"] and i.get("name") == att["name"]):
-            return i
+def _entry(items: list[dict], att: dict, atts: list[dict] | None = None) -> dict | None:
+    """The manifest entry of an attachment: by id. By name only for an attachment without id, or for an entry
+    without id when no other attachment of the issue has that name (so one entry never covers two attachments)."""
+    if att["id"]:
+        for i in items:
+            if str(i.get("id") or "") == att["id"]:
+                return i
+    elif att["name"]:
+        for i in items:
+            if i.get("name") == att["name"]:
+                return i
+        return None
+    if att["name"] and not any(o is not att and o["name"] == att["name"] for o in atts or []):
+        for i in items:
+            if not i.get("id") and i.get("name") == att["name"]:
+                return i
     return None
 
 
@@ -96,7 +114,7 @@ def errors(run_id: str, run: dict) -> list[str]:
     questions = [str(b.get("text") or "") for b in run.get("blockers") or [] if b.get("kind") == "question"]
     for a in atts:
         what = f"{a['ticket']} attachment {a['name']!r} ({a['type']})"
-        e = _entry(items, a)
+        e = _entry(items, a, atts)
         if e is None:
             out.append(f"{what} is not in {MANIFEST}: " + (
                 f"download it to {a['file']} (FETCH below), look at it, and record it with seen: true"
@@ -119,8 +137,9 @@ def fetches(run_id: str, run: dict) -> list[dict]:
     """dev.mcp downloads for the images not yet in the manifest as seen."""
     items, _ = _manifest(run_id)
     out = []
-    for a in attachments(run_id, run):
-        e = _entry(items, a)
+    atts = attachments(run_id, run)
+    for a in atts:
+        e = _entry(items, a, atts)
         if a["type"].startswith("image/") and a["id"] and not (e and e.get("seen") is True and _file_ok(run_id, e.get("file"))):
             out.append(fetch_item("jira_download_issue_attachment", attachmentId=a["id"],
                                   save_to=abs_path(run_dir(run_id) / a["file"]), overwrite=True))

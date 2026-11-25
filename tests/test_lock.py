@@ -174,6 +174,23 @@ class BudgetTests(M2Case):
         self.retarget("checks passed: VALUE=2 *")
         self.assertIn("already consumed", self.fails("plan", "amend", "--reason", "reuse", "--decision", "Q-1"))
 
+    def test_the_decision_that_unblocks_a_spent_budget_pays_for_the_next_loop_once(self):
+        """`factory next` says `unblock B-n --decision Q-n`; that decision must pay the loop it was asked for, not deadlock the run."""
+        self.events_run.append({"type": "loop", "kind": "review", "decision": None, "counts": True})
+        self.events_run.append({"type": "loop", "kind": "review", "decision": None, "counts": True})
+        self.retarget("checks passed: VALUE=2$")
+        self.assertIn("loop budget exhausted", self.fails("plan", "amend", "--reason", "third", code=1))
+        self.ok("ask", "One more loop?")
+        self.ok("answer", "Q-1", "--user-said", "yes, one more")
+        self.ok("unblock", "B-1", "--decision", "Q-1")
+        self.ok("plan", "amend", "--reason", "the loop the user allowed")
+        self.assertEqual(self.loops_of()[-1]["decision"], "Q-1")
+        self.retarget("checks passed: VALUE=2 *$")
+        self.assertIn("loop budget exhausted", self.fails("plan", "amend", "--reason", "and one more", code=1))
+
+    def loops_of(self):
+        return [e for e in self.events(self.run_dir) if e["type"] == "loop"]
+
 
 if __name__ == "__main__":
     unittest.main()

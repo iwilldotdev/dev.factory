@@ -80,6 +80,10 @@ def spend(run: Run, cfg: dict, st: dict, kind: str, decision: str | None, actor:
     """Spend one loop of the single budget (`amend` or `review`). Without a recorded user decision a spent budget refuses and
     blocks the run; a decision is consumed once and closes the open budget blocker [L-135, L-136]."""
     check_decision(st, decision)
+    if decision is None:  # the user's decision that unblocked a spent budget pays for the next loop, once
+        used = {e.get("decision") for e in st["loops"]}
+        decision = next((b["decision"] for b in st["blockers"].values() if not b["open"] and b.get("decision") not in (None, *used)
+                         and (b.get("reason") or "").startswith(BUDGET)), None)
     cap = cfg["autonomy"]["max_loops"]
     if decision is None and loops_used(st) >= cap:
         msg = f"{BUDGET}: {loops_used(st)} of {cap} loops used (autonomy.max_loops); the user has to decide before another {kind}"

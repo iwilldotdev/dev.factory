@@ -135,7 +135,7 @@ def derive(events: list[dict]) -> dict:
         elif t == "blocker":
             st["blockers"][ev["id"]] = {"id": ev["id"], "kind": ev.get("kind"), "reason": ev.get("reason"), "open": True}
         elif t == "unblock" and ev.get("blocker") in st["blockers"]:
-            st["blockers"][ev["blocker"]]["open"] = False
+            st["blockers"][ev["blocker"]].update(open=False, decision=ev.get("decision"))
         elif t == "gate":
             st["gates"][ev["name"]] = {"result": ev.get("result"), "reasons": ev.get("reasons", []), "at": i,
                                        "diagnosis": ev.get("diagnosis")}

@@ -79,7 +79,8 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     bh = {r: behind(Path(git.current(st, r)["path"]), by[r]["base"], by[r]["remote"]) for r in pl["repos"]}
     late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r, b in bh.items() if b["count"]]
     if late and not allow_behind:
-        raise FactoryError(f"{'; '.join(late)}: {"rebase the run branch onto the base" if cfg["ship"]["base_update"] == "rebase" else "merge the base"} first, or ask the user and pass --allow-behind --decision <Q-n> [L-108]")
+        how = "rebase the run branch onto the base" if cfg["ship"]["base_update"] == "rebase" else "merge the base"
+        raise FactoryError(f"{'; '.join(late)}: {how} first, or ask the user and pass --allow-behind --decision <Q-n> [L-108]")
     if late:
         if decision is None:
             raise FactoryError("--allow-behind needs --decision <Q-n|D-n> with the user's recorded answer [L-126]")

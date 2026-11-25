@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from dev_factory import env as envmod, envproc, quality
+from dev_factory.util import fwd
 from tests.helpers import PY, git, head_of, tmpdir
 from tests.m2_support import M2Case, check_cmd, cmd
 from tests.m3_support import ShipCase
@@ -65,11 +66,12 @@ class BaselineNoiseTests(M2Case):
 
 class EnvSharingTests(unittest.TestCase):
     def test_a_pid_of_a_live_env_named_in_a_failure_is_pointed_out(self):
-        live = [{"repo": "api", "pid": 4321, "cwd": "C:/wt/R-1/api"}]
+        root = tmpdir("sharing ")
+        live = [{"repo": "api", "pid": 4321, "cwd": fwd(root / "api")}]
         with mock.patch.object(envmod, "live_of_run", return_value=live):
             self.assertEqual(envmod.pid_in(None, None, 'The file is locked by: "Api (4321)"'), (4321, "api"))
             self.assertIsNone(envmod.pid_in(None, None, "Ran 43210 tests in 4321 ms"))
-            warn = envmod.sharing(None, None, {"api": Path("C:/wt/R-1/api"), "web": Path("C:/wt/R-1/web")})
+            warn = envmod.sharing(None, None, {"api": root / "api", "web": root / "web"})
         self.assertEqual(len(warn), 1)
         self.assertIn("env api (pid 4321) serves from the worktree of api", warn[0])
 

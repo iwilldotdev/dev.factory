@@ -2,6 +2,8 @@
 import ast
 import re
 import subprocess
+import sys
+import tokenize
 import unittest
 from pathlib import Path
 
@@ -97,6 +99,28 @@ class SizeTests(unittest.TestCase):
         total = sum(len(p.read_text(encoding="utf-8").splitlines()) for p in (ROOT / "browser" / "src").glob("*.js"))
         self.assertGreater(total, 100)
         self.assertLessEqual(total, 900)
+
+    @unittest.skipIf(sys.version_info < (3, 12), "the 3.12 tokenizer is what finds them; 3.11 fails to import such code anyway")
+    def test_no_f_string_needs_python_3_12(self):
+        """requires-python is >=3.11: an f-string field may not reuse the enclosing quote, nor hold a backslash or a comment."""
+        bad = []
+        for path in source_files() + sorted((ROOT / "tests").glob("*.py")):
+            stack: list[list] = []  # [quote, brace depth] per open f-string
+            with open(path, encoding="utf-8") as fh:
+                for t in tokenize.generate_tokens(fh.readline):
+                    if t.type == tokenize.FSTRING_START:
+                        quote = t.string.lstrip("rRfFbBuU")[0]
+                        if stack and stack[-1][1] > 0 and quote == stack[-1][0]:
+                            bad.append(f"{path.name}:{t.start[0]}")
+                        stack.append([quote, 0])
+                    elif t.type == tokenize.FSTRING_END:
+                        stack.pop()
+                    elif stack and t.type == tokenize.OP and t.string in "{}":
+                        stack[-1][1] += 1 if t.string == "{" else -1
+                    elif stack and stack[-1][1] > 0 and (t.type == tokenize.COMMENT or t.type == tokenize.STRING and (
+                            t.string.lstrip("rRbBuU")[0] == stack[-1][0] or "\\" in t.string)):
+                        bad.append(f"{path.name}:{t.start[0]}")
+        self.assertEqual(bad, [], "f-string syntax that Python 3.11 rejects")
 
     def test_adapter_text_is_at_most_100_lines(self):
         from dev_factory import harness

@@ -47,7 +47,8 @@ def problems(c: dict, here: str) -> list[str]:
 
 
 def _tail_tree(path: Path) -> list[str]:
-    return sorted({str(path), fwd(path), str(path).replace("\\", "\\\\")}, key=len, reverse=True)
+    back = str(path).replace("/", "\\")  # a Windows path in the output, whatever the platform reading it
+    return sorted({str(path), fwd(path), back, back.replace("\\", "\\\\")}, key=len, reverse=True)
 
 
 def normalize(text: str, trees: list[Path]) -> str:
@@ -217,8 +218,9 @@ def run_check(check: dict, ctx) -> dict:
     details = {"scope": scope, "new": new[:50], "total": len(ids), "baseline_stable": len((ctx.baseline or {}).get("stable", [])),
                "quarantined": len((ctx.baseline or {}).get("quarantined", [])), **({"warning": w} if (w := warning(check, res.exit, ids, text)) else {})}
     if new:
+        at = (ctx.baseline or {}).get("branch_point", ctx.branch_point)[:7]
         return {**base, "result": "fail", "kind": "assert", "details": details,
-                "reason": f"{len(new)} new failure id(s) beyond the baseline at {(ctx.baseline or {}).get("branch_point", ctx.branch_point)[:7]}: " + "; ".join(new[:3])[:300]}
+                "reason": f"{len(new)} new failure id(s) beyond the baseline at {at}: " + "; ".join(new[:3])[:300]}
     return {**base, "result": "pass", "kind": None, "reason": "", "details": details}
 
 

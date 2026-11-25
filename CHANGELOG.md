@@ -29,6 +29,13 @@ Every signal below is generic: exit codes, parsed ids, line counts, git status, 
 - `factory ingest change|pipeline --example` prints a valid contract, and a rejected contract prints the same example (states, draft as a flag, pipelines as ids).
 - `factory ship summary (--stdin | --file F)` writes `ship/summary.md` through the CLI with the ship plan's rules (nothing is written when they fail), for a role that cannot create a `.md` file.
 
+### CI fixes (the pipeline never passed on `main`)
+
+- Python 3.11: two f-strings reused their enclosing quote inside a field (3.12-only syntax), so the package did not import; `tests/test_structure.py` now rejects that syntax.
+- POSIX: killing a process tree falls back to the process itself when it leads no group, so a server started without its own session no longer survives its cleanup and holds a port for later tests.
+- Quality ids drop a Windows form of the worktree path on any platform.
+- Tests no longer assume Windows paths or a slow machine (`test_hygiene` env sharing, `test_metrics` check time).
+
 ## 1.0.0-alpha (2026-11-25)
 
 First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.

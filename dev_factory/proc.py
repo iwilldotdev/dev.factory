@@ -73,7 +73,10 @@ def kill_pid_tree(pid: int) -> None:
         try:
             os.killpg(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
-            pass
+            try:  # not a group leader (started without its own session): kill the process itself
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
 
 
 def kill_tree(proc: subprocess.Popen) -> None:

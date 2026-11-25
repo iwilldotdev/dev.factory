@@ -129,7 +129,8 @@ class M4Case(M2Case):
         """A server the factory did not start."""
         # the base interpreter: a Windows venv python.exe is a launcher whose child owns the port, so its pid is not the owner
         py = getattr(sys, "_base_executable", None) or PY
-        p = subprocess.Popen([py, SERVER, str(port)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen([py, SERVER, str(port)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             **({} if proc.WINDOWS else {"start_new_session": True}))  # its own group, so the cleanup kills it
         self.addCleanup(lambda: (proc.kill_pid_tree(p.pid), p.wait(timeout=10)))
         return p
 

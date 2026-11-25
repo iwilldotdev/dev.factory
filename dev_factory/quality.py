@@ -138,9 +138,11 @@ def find(st: dict, check_id: str, spec: str, bp: str) -> dict | None:
     return next((b for b in reversed(st["baselines"]) if b["check"] == check_id and b["spec_hash"] == spec and b["branch_point"] == bp), None)
 
 
-def baseline_for(b, c: dict, force: bool = False) -> tuple[dict | None, dict | None]:
+def baseline_for(b, c: dict, tree: Path | None = None, force: bool = False) -> tuple[dict | None, dict | None]:
     """(baseline, failure outcome) of a quality check in this batch: the recorded one, else one taken now and recorded [L-61]."""
     spec, bp = b.spec(c), b.lock["branch_points"][c["repo"]]
+    if tree is not None:  # after a merge of the base, the base commits are not this run's failures
+        bp = git.integration_point(tree, b.repos[c["repo"]], bp)
     have = None if force else find(b.run.state(), c["id"], spec, bp)
     if have:
         return have, None
@@ -178,7 +180,7 @@ def run_check(check: dict, ctx) -> dict:
                "quarantined": len((ctx.baseline or {}).get("quarantined", []))}
     if new:
         return {**base, "result": "fail", "kind": "assert", "details": details,
-                "reason": f"{len(new)} new failure id(s) beyond the baseline at {ctx.branch_point[:7]}: " + "; ".join(new[:3])[:300]}
+                "reason": f"{len(new)} new failure id(s) beyond the baseline at {(ctx.baseline or {}).get("branch_point", ctx.branch_point)[:7]}: " + "; ".join(new[:3])[:300]}
     return {**base, "result": "pass", "kind": None, "reason": "", "details": details}
 
 

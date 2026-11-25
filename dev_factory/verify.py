@@ -106,7 +106,7 @@ class Batch:
         bound, out = self.bind(c, tree, mode) if c["type"] in chk.RUNTIME else (None, None)
         base = None
         if c["type"] == "quality":
-            base, out = quality.baseline_for(self, c)  # taken once at the branch point and recorded [L-61]
+            base, out = quality.baseline_for(self, c, tree)  # taken once at the branch point and recorded [L-61]
         meta = {}
         if bound is not None:
             meta = {"heads": bound["heads"], "served": bound["served"], **({"warnings": bound["warnings"]} if bound["warnings"] else {}),

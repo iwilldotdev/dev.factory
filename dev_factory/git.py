@@ -138,6 +138,19 @@ def ahead(path: Path, base: str) -> int:
     return int(_once(("ahead", str(path), base), lambda: git(path, "rev-list", "--count", f"{base}..HEAD").out.strip()) or 0)
 
 
+def base_ref(path: Path, repo: dict) -> str:
+    """The base as last fetched (`<remote>/<base>`) when this clone has it, else the local branch: a local base branch is
+    often stale, and a run cut from it or measured against it sees the base's newer commits as its own."""
+    remote = f"{repo.get('remote', 'origin')}/{repo['base']}"
+    return remote if rev(path, remote) else repo["base"]
+
+
+def integration_point(path: Path, repo: dict, bp: str) -> str:
+    """The newest base commit HEAD contains: the branch point, or the base commit merged in later [L-61]."""
+    out = git(path, "merge-base", "HEAD", base_ref(path, repo), check=False).out.strip()
+    return out if out and out != bp and is_ancestor(path, bp, out) else bp
+
+
 def is_ancestor(path: Path, old: str, new: str) -> bool:
     key = ("ancestor", old, new)
     if key in _HISTORY:
@@ -220,7 +233,7 @@ def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: st
             raise FactoryError(f"the worktree of {repo['name']} already exists: {have['path']}")
         setup = run_setup(cfg, repo, Path(have["path"]))
         return run.append(_event(repo, Path(have["path"]), have["branch"], have["branch_point"], False, setup), actor)
-    base = base_ref or rev(main, repo["base"]) or rev(main, f"{repo.get('remote', 'origin')}/{repo['base']}")
+    base = base_ref or rev(main, f"{repo.get('remote', 'origin')}/{repo['base']}") or rev(main, repo["base"])
     if base is None:
         raise FactoryError(f"base branch {repo['base']!r} of repo {repo['name']} does not exist in {fwd(main)}")
     path = config.worktree_root(cfg) / run.id / repo["name"]

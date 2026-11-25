@@ -176,7 +176,8 @@ def cmd_plan(args) -> int:
     ev = lock.amend(run, proj.cfg, reasons, args.reason, args.decision, args.actor)
     a = ev["amend"]
     _out(args, ev, f"plan re-locked (seq {ev['seq']}); changed ACs: {', '.join(a['changed_acs']) or 'none'}; changed checks: "
-                   f"{', '.join(a['changed_checks']) or 'none'}; " + ("consumed " + a["decision"] if a["decision"] else "counts against the loop budget"))
+                   f"{', '.join(a['changed_checks']) or 'none'}; " + ("consumed " + a["decision"] if a["decision"] else "counts against the loop budget" if a["counts_loop"]
+                      else "project upkeep (standing checks only), no loop spent"))
     return 0
 
 

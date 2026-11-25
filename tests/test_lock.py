@@ -45,6 +45,12 @@ class DriftTests(M2Case):
         self.ok("plan", "amend", "--reason", "new default cap")
         self.assertEqual(self.gate("plan")[0], 0)
 
+    def test_an_amend_that_only_changes_standing_checks_is_upkeep_and_spends_no_loop(self):
+        self.write("factory.toml", self.TOML + '\n[[repo.check]]\nid = "lint"\nrun = "python -c pass"\n')
+        out = self.ok("plan", "amend", "--reason", "standing lint already fails at the branch point")
+        self.assertIn("web:lint", out)
+        self.assertIn("loops used: 0/3", self.ok("status"))
+
     def test_machine_facts_in_local_toml_do_not_move_the_lock(self):
         self.write(".factory/local.toml", f'worktree_root = {json.dumps(str(self.base / "elsewhere"))}\n')
         self.assertEqual(self.gate("plan")[0], 0)

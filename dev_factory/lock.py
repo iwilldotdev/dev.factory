@@ -112,7 +112,11 @@ def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | 
     acs, chk = changed(old, new)
     from .gates import reproduction_decision
     repro = reproduction_decision(plan, st) if plan.get("acs") and not any(a.get("reproduce", True) for a in plan["acs"]) else None
-    spend(run, cfg, st, "amend", decision, actor)
+    # Project upkeep (only standing checks from factory.toml changed) is not rework: it spends no loop, and the reviews and
+    # the change body still show it. Rework (an AC or a planned check) spends one [L-133, L-136].
+    upkeep = not acs and bool(chk) and all(":" in c for c in chk)
+    if not upkeep:
+        spend(run, cfg, st, "amend", decision, actor)
     # the lock consumes the decision it rests on, so `gate reproduce` accepts it and nothing else can reuse it [L-126]
     return lock_event(run, new, {"amend": {"reason": reason.strip(), "decision": decision, "changed_acs": acs, "changed_checks": chk,
-                                           "counts_loop": decision is None}, **({"decision": d} if (d := decision or repro) else {})}, actor)
+                                           "counts_loop": decision is None and not upkeep}, **({"decision": d} if (d := decision or repro) else {})}, actor)

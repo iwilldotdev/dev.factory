@@ -12,7 +12,7 @@ KINDS = ("ticket", "change", "change_list", "pipeline", "design_frame", "design_
 
 # A leaf is a type (str, or a tuple starting with e/r/nr) or T(type, default). Types: s str, c non-empty str,
 # i int, n number, b bool, ls list[str], lc list of non-empty str, ms str->str table, re regex, re+ list of
-# regexes, key secret-key list, ("e", *choices), ("r", lo, hi) int range, ("nr", lo, hi) number range.
+# regexes, sl a non-empty str or a list of them, key secret-key list, ("e", *choices), ("r", lo, hi) int range, ("nr", lo, hi) number range.
 # A dict is a table; [spec] is an array of tables; the key "*" matches any name.
 T = namedtuple("T", "type default")
 CHECK = {"id": "c", "run": "c", "cwd": "s", "expect_exit": T("i", 0), "expect_pattern": "re", "timeout_s": "i",
@@ -24,7 +24,7 @@ ENV = {"up": "c", "down": "c", "health": T("s", "/"), "base_url": "c", "ready_ti
        "env_patterns": T("re+", []), "shareable": T("b", False)}
 REPO = {"path": "c", "name": "c", "base": T("c", "main"), "remote": T("c", "origin"), "branch": T("c", "{kind}/{key}-{slug}"), "setup": "c",
         "files_from_main": T("ls", []), "commit_pattern": "re", "commit_forbidden_trailers": T("ls", []), "env": ENV, "check": [CHECK],
-        "mirror": [{"name": "c", "branch": "c"}]}
+        "mirror": [{"name": "c", "branch": "c"}], "remote_url": "sl", "notes": "s"}  # remote_url: matches another clone; notes: for the agent
 APPROX = {"px": T("n", 4), "color_delta_e": T("n", 6), "font_size_px": T("n", 2), "max_diff_ratio": T(("nr", 0, 1), 0.10)}
 SPEC = {
     "schema": ("e", 1),
@@ -76,6 +76,8 @@ def _leaf(value, t, path: str, errs: list[str]) -> None:
         errs.append(f"{path}: must be a number")
     elif t == "b" and not isinstance(value, bool):
         errs.append(f"{path}: must be true or false")
+    elif t == "sl" and not (isinstance(value, str) and value.strip()) and not (isinstance(value, list) and value and all(isinstance(x, str) and x.strip() for x in value)):
+        errs.append(f"{path}: must be a non-empty string or a list of them")
     elif t in ("ls", "lc", "key", "re+"):
         if not isinstance(value, list) or not all(isinstance(x, str) and (x or t == "ls") for x in value):
             errs.append(f"{path}: must be a list of {'' if t == 'ls' else 'non-empty '}strings")

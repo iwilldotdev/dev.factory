@@ -64,7 +64,8 @@ def load(root: Path) -> dict:
     """Effective config of the project at `root`: `repo` is the composed list, defaults filled, local applied."""
     root = Path(root).resolve()
     top = load_file(root / "factory.toml")
-    local_path = root / ".factory" / "local.toml"
+    from .home import is_home, state_dir
+    local_path = state_dir(root) / "local.toml"
     local = load_file(local_path, schema.LOCAL_SPEC) if local_path.is_file() else {}
     errs: list[str] = []
     keys = set(top.get("secrets", {}).get("keys", []))
@@ -100,7 +101,7 @@ def load(root: Path) -> dict:
     errs += semantic(cfg)
     if errs:
         raise FactoryError(f"{fwd(root / 'factory.toml')}:\n  " + "\n  ".join(errs))
-    cfg["_meta"] = {"dir": str(root), "mode": mode, "local": fwd(local_path) if local else None}
+    cfg["_meta"] = {"dir": str(root), "mode": mode, "local": fwd(local_path) if local else None, "home": is_home(root)}
     return cfg
 
 
@@ -196,6 +197,12 @@ def secrets_file(project_name: str) -> Path:
     return Path(base) / "dev.factory" / "secrets" / f"{project_name}.env"
 
 
+def secrets_path(cfg: dict) -> Path:
+    """A home workspace keeps its values in `<ws>/secrets.env`; a folder workspace reads the per-user file."""
+    meta = cfg.get("_meta") or {}
+    return Path(meta["dir"]) / "secrets.env" if meta.get("home") else secrets_file(cfg["project"]["name"])
+
+
 def read_secrets_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -216,7 +223,7 @@ def read_secrets_file(path: Path) -> dict[str, str]:
 def resolve_secrets(cfg: dict, keys: list[str] | None = None) -> tuple[dict[str, str], list[str]]:
     """Values for the named keys (environment first, then the user secrets file) and the names still missing [L-129]."""
     wanted = list(cfg["secrets"]["keys"] if keys is None else keys)
-    filed = read_secrets_file(secrets_file(cfg["project"]["name"]))
+    filed = read_secrets_file(secrets_path(cfg))
     values = {k: os.environ.get(k) or filed.get(k) for k in wanted}
     return {k: v for k, v in values.items() if v}, [k for k, v in values.items() if not v]
 
@@ -224,6 +231,8 @@ def resolve_secrets(cfg: dict, keys: list[str] | None = None) -> tuple[dict[str,
 def worktree_root(cfg: dict) -> Path:
     if cfg.get("worktree_root"):
         return Path(cfg["worktree_root"])
+    if (cfg.get("_meta") or {}).get("home"):
+        return Path(cfg["_meta"]["dir"]) / "worktrees"
     if os.name == "nt":
         cache = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:

@@ -26,7 +26,8 @@ class Project:
 
     @property
     def factory_dir(self) -> Path:
-        return self.dir / ".factory"
+        from .home import state_dir
+        return state_dir(self.dir)  # a home workspace keeps runs/ and env/ in its own folder
 
     @property
     def runs_dir(self) -> Path:
@@ -41,23 +42,42 @@ class Project:
         return sorted(p.name for p in self.runs_dir.iterdir() if (p / "events.jsonl").is_file())
 
 
-def find_root(start: Path | None, explicit: str | None) -> Path:
-    """`--project` wins; otherwise climb from the cwd to the first factory.toml [L-141]."""
+def find_root(start: Path | None, explicit: str | None, workspace: str | None = None, ask=None) -> tuple[Path, str | None]:
+    """`--project`, then `--workspace`, then climb from the cwd to the first factory.toml [L-141], then the home
+    workspaces that list this repository by path or remote. Returns the root and the repo matched by remote only."""
+    from . import home
     if explicit:
         root = Path(explicit).resolve()
         if not (root / "factory.toml").is_file():
             raise FactoryError(f"no factory.toml in {fwd(root)}")
-        return root
+        return root, None
+    if workspace:
+        root = home.factory_home() / workspace
+        if not (root / "factory.toml").is_file():
+            raise FactoryError(f"no workspace {workspace!r} in {fwd(home.factory_home())} (workspaces: {', '.join(home.names()) or 'none'})")
+        return root, None
     here = Path(start or os.getcwd()).resolve()
     for cand in (here, *here.parents):
         if (cand / "factory.toml").is_file():
-            return cand
-    raise FactoryError(f"no factory.toml found from {fwd(here)} upward; run factory init or pass --project <dir>")
+            return cand, None
+    found = home.matches(*home.here(here))
+    if found:
+        name, by_remote = home.choose(found, ask)
+        return home.factory_home() / name, by_remote
+    raise home.NoWorkspace(f"no workspace for {fwd(here)}: no factory.toml upward and no workspace in {fwd(home.factory_home())} "
+                       "lists this repository; run factory (the setup interview) or pass --workspace NAME")
 
 
-def discover(explicit: str | None = None, start: Path | None = None) -> Project:
-    root = find_root(start, explicit)
-    return Project(root, config.load(root))
+def discover(explicit: str | None = None, start: Path | None = None, workspace: str | None = None, ask=None) -> Project:
+    root, by_remote = find_root(start, explicit, workspace, ask)
+    cfg = config.load(root)
+    if by_remote:  # another clone of a listed repo: work in this clone when the recorded path is not on this machine
+        from .home import here
+        top = here(Path(start or os.getcwd()))[0]
+        for r in cfg["repo"]:
+            if r["name"] == by_remote and top and not Path(r["path"]).is_dir():
+                r["path"] = str(top)
+    return Project(root, cfg)
 
 
 def _slug(text: str, lower: bool = False) -> str:
@@ -133,7 +153,7 @@ def check(project: Project) -> tuple[list[str], list[str]]:
     warns += runner_needs(project)
     _, missing = config.resolve_secrets(cfg)
     if missing:
-        warns.append("secrets not set (environment or " + fwd(config.secrets_file(cfg["project"]["name"])) + "): "
+        warns.append("secrets not set (environment or " + fwd(config.secrets_path(cfg)) + "): "
                      + ", ".join(missing))
     return errs, warns
 

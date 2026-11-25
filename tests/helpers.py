@@ -54,6 +54,9 @@ def rmtree(path: Path, tries: int = 20) -> bool:
     return not Path(path).exists()
 
 
+os.environ["FACTORY_HOME"] = str(tmpdir("fhome "))  # no test ever reads or writes the user's real workspaces
+
+
 def case_root() -> Path:
     """One temp root per test process: every case runs at the same path, so a finished tree copied back needs no path rewriting."""
     if not _CASE_ROOT:
@@ -133,7 +136,7 @@ class FactoryCase(unittest.TestCase):
         self.proj.mkdir()
         env = {"HOME": str(self.base / "home"), "USERPROFILE": str(self.base / "home"),
                "XDG_CONFIG_HOME": str(self.base / "config"), "XDG_CACHE_HOME": str(self.base / "cache"),
-               "LOCALAPPDATA": str(self.base / "cache")}
+               "LOCALAPPDATA": str(self.base / "cache"), "FACTORY_HOME": str(self.base / "fhome")}
         patcher = mock.patch.dict(os.environ, env)
         patcher.start()
         self.addCleanup(patcher.stop)

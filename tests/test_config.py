@@ -76,7 +76,7 @@ class DiscoveryTests(FactoryCase):
         self.assertIn("project demo", self.ok("status", "--config", cwd=sub))
         other = self.base / "elsewhere"
         other.mkdir()
-        self.assertIn("no factory.toml found", self.fails("status", "--config", cwd=other, project=False))
+        self.assertIn("no factory.toml upward", self.fails("status", "--config", cwd=other, project=False))
         self.assertIn("project demo", self.ok("status", "--config", "--project", str(self.proj), cwd=other, project=False))
 
     def test_explicit_project_without_a_config_is_an_error(self):

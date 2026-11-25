@@ -49,4 +49,4 @@ bundled = "<checkout>/browser/src/cli.js"
 
 `factory check` warns while a plan needs the runner and it is missing.
 
-On a fresh Linux machine (or a CI image) Chromium also needs its system libraries: run `npx playwright install --with-deps chromium` instead of the plain `install chromium` in that file (it needs root or sudo). On Windows and macOS the plain command is enough.
+On a fresh Linux machine (or a CI image) Chromium also needs its system libraries: add `--with-deps` to the browser install step in that file (`... install --with-deps chromium`; it needs root or sudo). On Windows and macOS the plain command is enough.

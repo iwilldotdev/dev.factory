@@ -317,7 +317,7 @@ Command overhead is at most 1 s, excluding checks. The CLI installs through the 
 
 ## 15. Test strategy
 
-- **Budget:** the Python suite runs in at most 180 s in parallel on Windows and Linux CI, per proposed decision 16 [L-162, L-173].
+- **Budget:** the Python suite runs in at most 300 s in parallel on Windows and Linux CI (decision 16 set 180 s; the owner raised it on 2026-11-25 because Windows runners vary from 124 s to 203 s on the same suite) [L-162, L-173].
 - **Runner:** a stdlib runner pools modules with a hard per-module timeout and full output to a file [L-44, L-174].
 - **Isolation:** temp directories, no network, port 0 only [L-174].
 - **Fixtures:**

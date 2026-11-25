@@ -35,6 +35,7 @@ Every signal below is generic: exit codes, parsed ids, line counts, git status, 
 - POSIX: killing a process tree falls back to the process itself when it leads no group, so a server started without its own session no longer survives its cleanup and holds a port for later tests.
 - Quality ids drop a Windows form of the worktree path on any platform.
 - Tests no longer assume Windows paths or a slow machine (`test_hygiene` env sharing, `test_metrics` check time).
+- The suite budget is 300 s (CI and `tests/run_tests.py`), raised from 180 s by the owner: the same suite took 124 s and 203 s on two Windows runners.
 
 ## 1.0.0-alpha (2026-11-25)
 

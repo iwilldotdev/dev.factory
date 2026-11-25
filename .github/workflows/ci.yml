@@ -35,8 +35,8 @@ jobs:
           factory status
           factory status --config
           factory check
-      - name: Test suite (parallel, 180 s budget)
-        run: python tests/run_tests.py --budget 180
+      - name: Test suite (parallel, 300 s budget)
+        run: python tests/run_tests.py --budget 300
       - name: Upload test output
         if: failure()
         uses: actions/upload-artifact@v4

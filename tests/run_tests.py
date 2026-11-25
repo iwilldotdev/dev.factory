@@ -43,7 +43,7 @@ def main() -> int:
     ap.add_argument("patterns", nargs="*", help="run only modules whose name contains one of these")
     ap.add_argument("-j", "--jobs", type=int, default=min(os.cpu_count() or 2, 8))
     ap.add_argument("--timeout", type=float, default=120, help="hard cap per module in seconds")
-    ap.add_argument("--budget", type=float, default=180, help="fail when the whole run takes longer than this")
+    ap.add_argument("--budget", type=float, default=300, help="fail when the whole run takes longer than this")
     ap.add_argument("--tests-dir", type=Path, default=ROOT / "tests")
     ap.add_argument("--out", type=Path, default=ROOT / ".tmp" / "test-output")
     ap.add_argument("--list", action="store_true", help="print the modules and exit")

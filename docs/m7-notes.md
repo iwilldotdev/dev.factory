@@ -58,3 +58,14 @@ L-161 is the only M7 `test` row (`test_adapters.py`, `M7_COVERED`). L-130, L-149
 - Mirror changes are not read back by the ship gate (m6 open question 1): still open and disclosed.
 - Hook (m1) is documented in `hook.py` as a guard against accidents, not a sandbox: it normalises paths and handles `cd <run dir> &&` and `$VAR/` targets as best effort; arbitrary indirection (an `eval`, a script that builds the path) is still out of its reach by design.
 - Same-diff gate (m2): binary, added and deleted files now count. The moved-line limit stays: the net-count signature keeps no position, so one line applied in another function of the same file is "equal" (documented in `mirrordiff.signature`).
+
+## Follow-ups after the independent review (APPROVE at bef770d)
+
+Three review rounds; no blocker or major is open. Minor follow-ups, not fixed for the alpha:
+
+- `gate ship` is not idempotent after a post-ship refresh: the second re-run fails and sends the run back to the ship phase (`ship.py`).
+- `plan amend --decision D-n` consumes the decision through the loop event, not the lock, so `gate reproduce` keeps failing until a second decision is recorded; `plan amend` without `--decision` leaves D-n unconsumed and reusable.
+- The reproduction-decision keyword `reprod` also matches words that ask for a reproduction (accepted under L-126).
+- Hook: some reads (`grep "rm -rf"`, `sed -n`, `node script.js` on artifacts) are still denied, and deleting a whole run directory with `rm -rf` is allowed. Out of scope by design: `pushd`, `cd` into the runs directory then `cp`, `[IO.File]`.
+- Mirror diff: a binary deleted on both sides from different old blobs may show as divergent (not reproduced).
+- Full suite wall time is about 131 s on the owner's machine: under the 180 s cap, over the 120 s target.

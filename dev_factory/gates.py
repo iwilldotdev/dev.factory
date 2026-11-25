@@ -196,7 +196,9 @@ def verify_reasons(run: Run, project, st: dict, recorded: bool = False) -> list[
             out.append(f"{c['id']}: the served process was started at another commit than the one it was checked at [L-13, L-85]")
         elif rec["result"] != "pass":
             if not recorded:
-                out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})")
+                out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})"
+                           + ("; if it already fails at the branch point on code this run does not touch, give it type = \"quality\" in factory.toml"
+                              " so that only new failures count [L-60]" if ":" in c["id"] and c["type"] == "cmd" else ""))
         else:
             passing |= {*c["ac"]}
         if c.get("red_green") and rec is not None:

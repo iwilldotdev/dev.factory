@@ -27,7 +27,7 @@ A cooperative model can still be lazy. It may call an AC done from reading code,
 ### Run flow
 
 ```mermaid
-flowchart LR
+flowchart TB
   I[intake] -->|gate intake| P[plan]
   P -->|gate plan + lock| R{bug?}
   R -- yes --> RE[reproduce on base]

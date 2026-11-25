@@ -91,6 +91,24 @@ class ReviewRunTests(ReviewRunCase):
         self.assertEqual([e["type"] for e in self.events(self.run_dir) if e["type"] in ("ship_planned", "ship_verified")], [])
         self.assertEqual(json.loads(self.ok("next", "--json"))["kind_of_action"], "none")
 
+    def test_a_change_that_fails_its_checks_is_reviewed_and_reported_not_ok(self):
+        """Review M2: failing checks at the change head still lead to a review (CHANGES only) and a not-ok report."""
+        self.started()
+        self.write_plan(self.run_dir, {"schema": 1, "kind": "feature", "repos": ["web"], "acs": [{"id": "AC-1", "text": "VALUE is 3", "source": "ticket:description"}],
+                                       "checks": [{"id": "CHK-1", "type": "cmd", "repo": "web", "ac": ["AC-1"], "run": f'"{PY}" check.py 3',
+                                                   "expect_pattern": "checks passed: VALUE=3"}]})
+        self.ok("gate", "plan")
+        self.assertEqual(self.phase(), "verify")
+        self.cli("verify")
+        self.assertEqual(self.phase(), "review")
+        self.assertIn("unproven", self.record("code", "APPROVE", code=2))
+        self.record("code", "CHANGES", findings=[{"id": "F1", "severity": "major", "file": "app.py:1", "text": "AC-1 fails", "ac": "AC-1"}])
+        self.record("qa", "CHANGES", findings=[{"id": "F2", "severity": "major", "file": "app.py:1", "text": "AC-1 fails", "ac": "AC-1"}])
+        self.assertEqual(self.phase(), "report")
+        rep = self.write("rep.json", json.dumps({"verdict": "not-ok", "summary": "AC-1 is unproven"}), root=self.base)
+        self.ok("review", "report", "--file", str(rep))
+        self.assertEqual(self.phase(), "done")
+
     def test_an_ok_report_plans_the_approval_and_a_head_that_moves_asks_for_a_new_report(self):
         self.started()
         self.plan()

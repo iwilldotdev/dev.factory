@@ -141,8 +141,9 @@ def reproduce_reasons(run: Run, project, st: dict, strict: bool = True) -> tuple
     return diagnosis_reasons(run), recs
 
 
-def verify_reasons(run: Run, project, st: dict) -> list[str]:
-    """Every effective check passes at its repo's current HEAD from a clean worktree under the locked spec [L-01, L-07, L-08, L-09]."""
+def verify_reasons(run: Run, project, st: dict, recorded: bool = False) -> list[str]:
+    """Every effective check passes at its repo's current HEAD from a clean worktree under the locked spec [L-01, L-07, L-08, L-09].
+    With `recorded` (review runs) a check needs a record at HEAD whatever its result: a change that fails its checks is still reviewed."""
     out = lock.problems(run, project.cfg, st)
     if out:
         return out
@@ -186,12 +187,13 @@ def verify_reasons(run: Run, project, st: dict) -> list[str]:
         elif rheads is not None and any(v["sha"] != rec["heads"].get(r) for r, v in rec.get("served", {}).items()):
             out.append(f"{c['id']}: the served process was started at another commit than the one it was checked at [L-13, L-85]")
         elif rec["result"] != "pass":
-            out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})")
+            if not recorded:
+                out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})")
         else:
             passing |= {*c["ac"]}
         if c.get("red_green") and rec is not None:
             out += _red_green_reasons(st, c, lk, plan, path, bp)
-    for a in plan["acs"]:
+    for a in [] if recorded else plan["acs"]:
         if a["id"] in passing:
             continue
         if a["id"] in by_human and (plan["kind"] == "bug" or a.get("design")):

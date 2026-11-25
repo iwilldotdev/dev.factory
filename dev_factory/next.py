@@ -34,8 +34,10 @@ def phase(run: Run, project: Project, st: dict) -> str:
     if gates.is_bug(run, st) and not gates.passed(run, project, st, "reproduce"):
         return "reproduce"
     review_run = st["kind"] == "review"  # intake, plan, verify, review, report: it ships nothing
-    if not gates.passed(run, project, st, "verify"):
-        return "verify" if review_run else "build"
+    if review_run and gates.verify_reasons(run, project, st, recorded=True):
+        return "verify"
+    if not review_run and not gates.passed(run, project, st, "verify"):
+        return "build"
     if review_run:
         from . import review_run as rr
         heads = rv.heads_of(st, st["repos"])

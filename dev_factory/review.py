@@ -142,9 +142,10 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
     if kind not in BOUND:
         raise FactoryError(f"invalid review kind {kind!r}; valid kinds: code, qa")
     st = run.state()
-    blocking = gates.verify_reasons(run, project, st)
+    by_change = st["kind"] == "review"  # a review run judges a change as it is: its checks need a record at HEAD, not a pass
+    blocking = gates.verify_reasons(run, project, st, recorded=by_change)
     if blocking:
-        raise FactoryError("a review needs a locked plan and a passing verify first:\n" + "\n".join(f"  - {r}" for r in blocking))
+        raise FactoryError("a review needs a locked plan and a " + ("verify record at HEAD" if by_change else "passing verify") + " first:\n" + "\n".join(f"  - {r}" for r in blocking))
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
     earlier = [e for e in st["reviews"] if e.get("kind") == kind]
     round_no = len(earlier) + 1
@@ -152,6 +153,8 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
     data, errs = parse(data, kind, plan, round_no, earlier, rules)
     if errs:
         raise FactoryError("review rejected (nothing recorded):\n" + "\n".join(f"  - {e}" for e in errs))
+    if by_change and data["verdict"] == "APPROVE" and (unproven := gates.verify_reasons(run, project, st)):
+        raise FactoryError("review rejected (nothing recorded): an AC is unproven at the change head, so the verdict is CHANGES:\n" + "\n".join(f"  - {r}" for r in unproven))
     heads, repos = heads_of(st, plan["repos"]), {}
     for r, prefix in data["repos"].items():
         if not heads[r].startswith(prefix.lower()):

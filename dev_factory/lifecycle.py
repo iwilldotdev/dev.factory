@@ -105,11 +105,17 @@ def _force(func, path, _exc):
     func(path)
 
 
-def delete(run: Run, confirmed: bool) -> list[str]:
+def delete(run: Run, confirmed: bool, decision: str | None = None) -> list[str]:
     """Remove one run directory (no archive, no parent/child protocol); return the worktrees the user should remove [L-105]."""
     if not confirmed:
         raise FactoryError("run delete removes the whole run directory; pass --yes")
-    trees = [w["path"] for w in run.state()["worktrees"] if not w.get("throwaway")]
+    st = run.state()
+    spent = lock.loops_used(st) + sum(1 for b in st["blockers"].values() if b["open"])
+    if spent and decision is None:  # deleting would wipe the loop budget and the blockers: only the user may decide that
+        raise FactoryError(f"run {run.id} has spent {lock.loops_used(st)} loop(s) or has open blockers; deleting it resets them. "
+                           "Pass --decision <D-n> with the user's recorded decision to delete it anyway")
+    lock.check_decision(st, decision)
+    trees = [w["path"] for w in st["worktrees"] if not w.get("throwaway")]
     shutil.rmtree(run.dir, **{"onexc" if sys.version_info >= (3, 12) else "onerror": _force})
     return trees
 

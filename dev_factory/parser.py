@@ -77,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         else:
             sp.add_argument("run_id", nargs="?")
             sp.add_argument("--yes", action="store_true", help="confirm the removal")
+            sp.add_argument("--decision", help="the user's recorded decision (D-n), needed when the run spent loops or has open blockers")
     sp = add("ask", cmd_human, "open a question for the user", [scoped])
     sp.add_argument("text")
     sp.add_argument("--ref", help="e.g. attachment:<id>")

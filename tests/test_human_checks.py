@@ -57,6 +57,15 @@ class ConfirmTests(HumanCase):
         self.assertEqual([e["check"] for e in self.events(self.run_dir) if e["type"] == "confirm"], ["CHK-2"])
         self.assertEqual(json.loads(self.ok("metrics", "--json"))["human_events"], {"confirm": 1})
 
+    def test_the_same_words_at_a_new_commit_are_not_a_new_confirmation(self):
+        """Review m5: a confirmation reused verbatim at another commit is refused until the user says something now."""
+        self.pending()
+        self.confirm()
+        self.commit("extra.txt", "x\n")
+        self.ok("verify")
+        self.assertIn("earlier commit", self.fails("confirm", "CHK-2", "--user-said", "yes, it reads Saved in Portuguese"))
+        self.confirm("yes, still reads Saved in Portuguese")
+
     @lesson("L-24")
     def test_a_new_commit_asks_the_user_again(self):
         """L-24: the confirmation is bound to the commits the user saw; a new commit makes the check pending again."""

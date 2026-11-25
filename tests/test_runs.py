@@ -131,6 +131,18 @@ class DeleteTests(FactoryCase):
         self.assertTrue(other.exists())
         self.assertEqual([p.name for p in run.parent.iterdir()], ["B-2"])
 
+    def test_delete_never_wipes_spent_loops_or_blockers_without_the_users_decision(self):
+        """Review m8: deleting a run resets its loop budget and blockers, so it needs a recorded decision."""
+        from dev_factory.run import Run
+        run = self.start("A-1")
+        Run(run.parent, "A-1").append({"type": "blocker", "id": "B-1", "kind": "infra", "reason": "env down"})
+        self.assertIn("--decision", self.fails("run", "delete", "A-1", "--yes"))
+        self.assertTrue(run.exists())
+        self.assertIn("not recorded", self.fails("run", "delete", "A-1", "--yes", "--decision", "D-1"))
+        Run(run.parent, "A-1").append({"type": "decision", "id": "D-1", "user_said": "yes, delete it"})
+        self.ok("run", "delete", "A-1", "--yes", "--decision", "D-1")
+        self.assertFalse(run.exists())
+
     def test_the_cli_never_moves_or_archives_runs_on_its_own(self):
         """L-104: closing a run leaves its directory where it is."""
         run = self.start("A-1")

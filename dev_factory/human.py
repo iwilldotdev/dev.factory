@@ -101,6 +101,8 @@ def confirm_check(run: Run, project, check_id: str, said: str, actor: str | None
     if w is None or git.dirty(Path(w["path"])):
         raise FactoryError(f"repo {check['repo']}: commit the worktree first; a confirmation is bound to the commit the user saw [L-24]")
     heads = review.heads_of(st, plan["repos"])
+    if any(c.get("check") == check_id and c["heads"] != heads and c["user_said"].strip().lower() == said.strip().lower() for c in st["confirms"]):
+        raise FactoryError(f"{check_id}: these are the words the user gave at an earlier commit; show them the new commit, ask again and record what they say now [L-24]")
     run.append({"type": "confirm", "check": check_id, "user_said": said, "heads": heads}, actor)
     out = {"cmd": f"human: {check['text']}", "exit": None, "duration_s": 0.0, "output": said, "result": "pass", "kind": None, "reason": ""}
     return evidence.append(run, check, lk["spec_hashes"][check_id], "verify", heads[check["repo"]], Path(w["path"]), True, out,

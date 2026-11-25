@@ -13,6 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli_composite import cmd_claim, cmd_epic, cmd_mirror, cmd_review_run
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
+    from .guide import cmd_setup
     from .harness import IDS
     from .hook import cmd_hook
     p = argparse.ArgumentParser(prog="factory", description=DESC)
@@ -39,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--scope", default="project", choices=("project", "user"), help="project: write into the directory; user: into the host's user home (no project)")
     sp.add_argument("--hooks", action="store_true", help="also merge the optional hook entry into the host settings (the chat harness)")
     add("check", cmd_check, "validate the configuration")
+    sp = add("setup", cmd_setup, "guided setup: checklist of the project config, or workspace facts with --discover")
+    sp.add_argument("--discover", nargs="?", const="", metavar="DIR", help="print JSON facts of every git repo in DIR (default: the configured repos, else the cwd)")
     sp = add("status", cmd_status, "status of a run, or of the project with --config", [scoped])
     sp.add_argument("run_id", nargs="?")
     sp.add_argument("--config", action="store_true", help="show the effective configuration")

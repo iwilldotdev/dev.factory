@@ -13,7 +13,9 @@ Exit 0 = ok, 1 = a gate or check failed (the printed reasons are your to-do list
 ## The loop
 
 1. No run yet: `factory runs`; a matching open run is resumed, otherwise `factory run start <KEY> [--kind feature|bug|hotfix]` (a ticket of type bug is a bug run).
-   No `factory.toml` in the project: run `factory init` and ask the user for the repos and checks. An epic: `factory run start <EPIC> --kind epic`.
+   No `factory.toml`: `factory setup --discover [DIR]` (facts per repo); look at this session's MCP servers and CLIs for tracker, SCM and design tools
+   (an adapter, or `source: agent` + `factory ingest`); ask ONE consolidated round; write `factory.toml` (`factory init` = skeleton); `factory setup` until
+   nothing required is missing; `factory check`. Never copy config from elsewhere. An epic: `factory run start <EPIC> --kind epic`.
 2. Run `factory next` (add the run id when several are open). Do exactly its action, or delegate it to the role it names. Run `factory next` again.
 3. Print `factory-run: <run-id>` once. Keep the app task list on the run phases and advance it at every gate.
 4. Stop only for: a question the user must answer, a blocker, a decision needed at a gate, or the end ("the run is closed" / feedback gate passed).

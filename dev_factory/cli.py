@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__, git
 from .util import FactoryError, build_identity, fwd
 
-READS = {"next", "status", "runs", "gate", "review", "ship", "confirm", "waive", "metrics", "log"}  # commands that never change a worktree
+READS = {"next", "status", "runs", "gate", "review", "ship", "confirm", "waive", "metrics", "log", "setup"}  # commands that never change a worktree
 
 
 def _out(args, payload, text: str) -> None:

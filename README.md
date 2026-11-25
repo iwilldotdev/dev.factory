@@ -171,8 +171,12 @@ factory init --harness claude-code --hooks # plus the optional pre-tool hook ent
 factory init --harness claude-code --scope user  # skill and agent in ~/.claude, no project created
 factory init --harness agents-md           # any host that reads AGENTS.md
 factory init --repo ../api --repo ../web   # workspace: one --repo per member
+factory setup --discover ..                # JSON facts of every git repo there: remotes, bases, stacks, commands, ports
+factory setup                              # checklist of factory.toml: done / missing / optional, with the key and an example
 factory check                              # validate configuration, secrets, reviewer identities, runner
 ```
+
+- `factory setup` only reads. `--discover` helps write the first `factory.toml` from the workspace itself (it never copies config from anywhere and never prints a credential); the checklist exits 1 while something required is missing. In the chat the skill does this for you: discovery, one question round, `factory.toml`, the checklist, then `factory check`.
 
 - `init` never overwrites `factory.toml`. Inside an existing project, `init --harness ...` refreshes the adapter only (do this after a CLI upgrade). Re-running is safe: a changed generated file is first saved as `<name>.factory-bak-<n>`, and a file the CLI did not write is left alone.
 - `--harness` accepts `claude-code`, `agents-md` or `none`. `claude-code` writes `.claude/skills/factory/SKILL.md`, `.claude/agents/factory-worker.md` (scout, author, builder and reviewer roles) and a short managed block in `CLAUDE.md`. `agents-md` writes the whole protocol into a block of `AGENTS.md` for any host that reads it (project scope only). Exact files: [`docs/install.md`](docs/install.md).
@@ -274,7 +278,7 @@ Every command takes `--project DIR`, `--json` and `--actor ACTOR` (a free-text a
 
 | Phase | Commands |
 |---|---|
-| **Project** | `init`, `check`, `status [--config]`, `runs`, `log [--tail N]`, `-V` |
+| **Project** | `init`, `setup [--discover [DIR]]`, `check`, `status [--config]`, `runs`, `log [--tail N]`, `-V` |
 | **Run** | `run start\|retype\|repos\|branch\|close\|delete`, `claim`, `next [--session] [--takeover]`, `wait --file\|--cmd\|--url` |
 | **Intake** | `fetch <kind> <id>`, `ingest <kind> --raw F --contract F [--stdin]`, `ingest --check`, `media seen\|unseen`, `ask`, `answer Q-n --user-said`, `decide --user-said`, `human --kind`, `block --kind --reason`, `unblock`, `gate intake` |
 | **Plan** | `plan example`, `plan amend --reason [--decision]`, `design add\|check\|expect\|review\|refresh`, `env up\|down\|health\|status\|logs\|seed\|reset`, `gate plan` |

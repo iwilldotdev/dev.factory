@@ -1,7 +1,8 @@
 """`factory hook pre-tool`: the optional host hook that refuses hand edits of a run's events and evidence [L-160, L-161].
 A guard against accidents, not a sandbox: paths are normalised (`./`, `../`, `//`, backslashes, case), a `cd <run dir> && ...` and a
 `$VAR/events.jsonl` target are caught on a best-effort basis, and an interpreter is refused only when it also shows a write. The digests,
-the plan lock and the gates stay authoritative [L-17]."""
+the plan lock and the gates stay authoritative [L-17]. Out of scope: `pushd`, `cd <runs dir> && cp x R1/events.jsonl`, .NET file calls,
+and a `cp`/`mv` that only reads a protected source (refused anyway)."""
 from __future__ import annotations
 
 import json
@@ -17,8 +18,9 @@ CD_RUN = re.compile(r"\bcd\s+[\"']?(\S*\.factory/runs/[^/\s\"']+)", re.I)
 REDIRECT = re.compile(r">>?\s*[\"']?\S*(?:" + PROTECTED.pattern + "|" + VAR_TARGET.pattern + ")", re.I)
 VERB = (r"tee|rm|mv|cp|sed|truncate|dd|ln|touch|install|rmdir|del|erase|ren|move|copy|(?:set|add|clear)-content|out-file|"
         r"remove-item|move-item|copy-item|new-item")  # a verb counts at the start of a command, not as a word inside an argument
-WRITERS = re.compile(r"(?:^|[;&|(\n]|\bsudo|\bxargs)\s*(?:" + VERB + r")\b|"
-                     r"\b(?:python3?|node|perl|ruby)\b.*(?:open\(|write|unlink|remove|rename|rmtree|copy|appendfile|\bfs\.)", re.I)
+WRITERS = re.compile(r"(?:^|[;&|(\n\"']|\b(?:sudo|xargs|env|command|exec|nohup))\s*(?:[\w.~-]*/)*(?:" + VERB + r")\b|"
+                     r"\b(?:python3?|node|perl|ruby)\b.*(?:open\(|write|unlink|remove|rename|rmtree|copy|appendfile|\bfs\.|\s[\w./-]+\.(?:py|js|pl|rb)\b)", re.I)
+COMMENT = re.compile(r"(\"[^\"]*\"|'[^']*')|\s#.*$", re.M)  # a `#` inside quotes is text, not a comment
 PATH_KEYS = ("file_path", "notebook_path", "save_to", "path")
 
 
@@ -40,10 +42,10 @@ def reason(payload) -> str | None:
             return f"{args[key]} is a run file that only the factory CLI writes"
     cmd = args.get("command")
     if isinstance(cmd, str):
-        cmd = norm(re.sub(r"\s#.*$", "", cmd, flags=re.M))
+        cmd = norm(COMMENT.sub(lambda m: m.group(1) or "", cmd))
         if (cd := CD_RUN.search(cmd)):  # relative targets after `cd <run dir>` mean that run's files
             cmd = re.sub(r"(?<![\w/.$-])(?=" + TARGETS + ")", cd.group(1) + "/", cmd, flags=re.I)
-        if REDIRECT.search(cmd) or ((PROTECTED.search(cmd) or VAR_TARGET.search(cmd)) and WRITERS.search(cmd)):
+        if REDIRECT.search(cmd) or any((PROTECTED.search(s) or VAR_TARGET.search(s)) and WRITERS.search(s) for s in re.split(r"[;&|\n]+", cmd)):
             return "the command writes a run file (events, artifacts, reviews, contracts or raw) by hand"
     return None
 

@@ -148,10 +148,13 @@ class Adapters(FactoryCase):
                 {"file_path": f"C:\\p\\.FACTORY\\runs\\R\\Events.jsonl"},
                 {"command": f"cd {r[:-1]} && echo x >> events.jsonl"}, {"command": f"cd {r} && rm -rf artifacts"},
                 {"command": f"P=/p/{r}; echo x >> $P/events.jsonl"},
-                {"command": f"python -c \"open('{r}events.jsonl', 'a').write('x')\""}]
+                {"command": f"python -c \"open('{r}events.jsonl', 'a').write('x')\""},
+                {"command": f"echo \"a #b\" >> /p/{r}events.jsonl"}, {"command": f"bash -c \"cp x.json /p/{r}events.jsonl\""},
+                {"command": f"env cp x.json /p/{r}events.jsonl"}, {"command": f"/bin/cp x.json /p/{r}events.jsonl"},
+                {"command": f"python tools/append.py /p/{r}events.jsonl"}]
         allow = [{"command": f"python -m json.tool /p/{r}artifacts/CHK-1/1/output.txt"},
                  {"command": f"less /p/{r}artifacts/CHK-1/1/output.txt # copy later"},
-                 {"command": f"cd {r} && cat events.jsonl | head"}, {"command": f"node show.js /p/{r}raw/ticket/a.json"}]
+                 {"command": f"cd {r} && cat events.jsonl | head"}, {"command": f"rm -rf /tmp/scratch && ls /p/{r}artifacts"}, {"command": f"cat /p/{r}raw/ticket/a.json | python -c 'import sys; print(len(sys.stdin.read()))'"}]
         for key, items in (("deny", deny), ("allow", allow)):
             for args in items:
                 tool = "Write" if "file_path" in args else "Bash"

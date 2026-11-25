@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.0.0-alpha.2 (2026-11-25)
+
+Tag `1.0.0-alpha.2`, package version `1.0.0a2`. The first release whose CI passes on Python 3.11 to 3.13, Windows and Linux.
+
 ### Home workspaces and the guided entry (design: `docs/design/home-workspaces.md`)
 
 - Workspaces live in `~/.factory/<name>/` (`FACTORY_HOME` overrides): `factory.toml`, `secrets.env`, `scripts/`, `login/`, `runs/`, `env/`, `local.toml` and `worktrees/<run>/<repo>/`. The repositories are never written to. Folder workspaces keep working; their secrets stay in `~/.config/dev.factory/secrets/<project>.env`.

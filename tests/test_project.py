@@ -5,7 +5,7 @@ import tomllib
 import unittest
 
 from tests.helpers import FactoryCase, lesson
-from dev_factory import config, harness
+from dev_factory import __version__, config, harness
 from dev_factory.cli import build_parser
 
 
@@ -61,7 +61,7 @@ class VersionAndIsolationTests(FactoryCase):
     def test_version_prints_the_build_identity(self):
         """L-150: --version prints the version and the build it runs."""
         out = self.cli_subprocess("--version").stdout
-        self.assertRegex(out, r"^factory 1\.0\.0a1 \((git [0-9a-f]{12}|git unknown|release)\) python 3\.")
+        self.assertRegex(out, "^factory " + re.escape(__version__) + r" \((git [0-9a-f]{12}|git unknown|release)\) python 3\.")
 
     @lesson("L-148")
     def test_the_cli_never_imports_from_the_cwd(self):
@@ -72,7 +72,7 @@ class VersionAndIsolationTests(FactoryCase):
         res = self.cli_subprocess("--version", cwd=decoy)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertNotIn("DECOY", res.stdout + res.stderr)
-        self.assertIn("factory 1.0.0a1", res.stdout)
+        self.assertIn(f"factory {__version__} ", res.stdout)
 
     def test_help_and_no_arguments(self):
         """`factory` alone is the guided entry: in a workspace without a terminal it asks for the ticket (exit 4, JSON)."""

@@ -7,16 +7,16 @@ The CLI has no other dependency.
 
 ## Install the CLI
 
-Pick one. `<repo-url>` is the repository you cloned from; `1.0.0-alpha` is the tag.
+Pick one. `<repo-url>` is the repository you cloned from; `1.0.0-alpha.2` is the latest tag.
 
 ```
-pipx install "git+<repo-url>@1.0.0-alpha"
-uv tool install "git+<repo-url>@1.0.0-alpha"
-python -m venv ~/.venvs/factory && ~/.venvs/factory/bin/pip install "git+<repo-url>@1.0.0-alpha"   # Windows: Scripts\pip.exe
+pipx install "git+<repo-url>@1.0.0-alpha.2"
+uv tool install "git+<repo-url>@1.0.0-alpha.2"
+python -m venv ~/.venvs/factory && ~/.venvs/factory/bin/pip install "git+<repo-url>@1.0.0-alpha.2"   # Windows: Scripts\pip.exe
 ```
 
 The first two put a `factory` entry point on PATH (`pipx ensurepath`, or the uv tool directory). With a venv, put its `bin` (Windows: `Scripts`) on PATH or call it by full path.
-Check it: `factory --version` prints the version, the build and the Python it runs. The tag `1.0.0-alpha` installs as version `1.0.0a1` (the PEP 440 spelling of the same release).
+Check it: `factory --version` prints the version, the build and the Python it runs. The tag `1.0.0-alpha.2` installs as version `1.0.0a2` (the PEP 440 spelling of the same release).
 
 Upgrade: install the new tag again (`pipx install --force ...`, `uv tool install --force ...`). Pin a project to a CLI range with `[project] cli = ">=1.0.0a1,<1.1"` in `factory.toml`; `factory check` fails outside it.
 

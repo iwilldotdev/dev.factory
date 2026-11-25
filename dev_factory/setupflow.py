@@ -205,7 +205,7 @@ class Interview:
             up = next((f"{_runner(path)} {k}" for k in _scripts(f) if SERVE.match(k)), None)
             qs += [question(f"repo.{n}.env.up", f"Command that starts {n} locally for the checks", default=up),
                    question(f"repo.{n}.env.base_url", f"Local base URL of {n} (loopback)", default=f"http://127.0.0.1:{port}" if port else None),
-                   question(f"repo.{n}.env.health", f"Health path of {n} (answered when the env is up)", default="/")]
+                   question(f"repo.{n}.env.health", f"Health path of {n} (it answers once the env is up)", default="/")]
         cands = check_candidates(path, f)
         qs.append(question(f"repo.{n}.checks", f"Standing checks of {n} (commands that must pass on every change; or id=command)",
                            "multi", [(cid, cmd + (f" (vars {', '.join(f'{k}={v}' for k, v in env.items())})" if env else "")) for cid, cmd, env in cands]))

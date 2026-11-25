@@ -47,5 +47,21 @@ class SignatureTests(unittest.TestCase):
         self.assertFalse(compare()["equal"])
 
 
+    def test_binary_and_empty_files_are_part_of_the_comparison(self):
+        """Review m2: a binary change or a new empty file missing on the mirror used to look equal."""
+        repo = two_branches(START)
+        start = git("rev-parse", "HEAD", cwd=repo)
+        trees = {}
+        for name, files in (("b2", {"x.bin": b"\x00\x01\x02", "e.txt": b"", "same.bin": b"\x00\x09"}), ("m2", {"x.bin": b"\x00\x01\x03", "same.bin": b"\x00\x09"})):
+            trees[name] = repo.parent / f"{name}tree"
+            git("worktree", "add", "-q", "-b", name, str(trees[name]), start, cwd=repo)
+            for rel, data in files.items():
+                (trees[name] / rel).write_bytes(data)
+            git("add", "-A", cwd=trees[name])
+            git("commit", "-q", "-m", name, cwd=trees[name])
+        got = mirrordiff.compare(trees["b2"], start, trees["m2"], start)
+        self.assertEqual(got["divergent"], {"e.txt": "content", "x.bin": "content"})
+
+
 if __name__ == "__main__":
     unittest.main()

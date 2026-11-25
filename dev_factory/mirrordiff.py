@@ -12,7 +12,9 @@ IMPORT = re.compile(r"^\s*(import\b|from\s+\S+\s+import\b|export\b.*\bfrom\b|(?:
 
 def signature(path: Path, old: str, new: str) -> dict[str, dict[str, int]]:
     """{file: {line: net count}} of `git diff old..new`. Lines are compared without line ending and trailing whitespace, and a
-    line removed in one place and added in another cancels, so relocated hunks and whitespace-only rewrites are equal [L-96]."""
+    line removed in one place and added in another cancels, so relocated hunks and whitespace-only rewrites are equal [L-96].
+    Known limit: the same line applied in another function of the same file is "equal" (no position is kept). Added and deleted
+    files and binary blobs are part of the signature."""
     out: dict[str, dict[str, int]] = {}
     file, in_hunk = None, False
     for raw in git.git(path, "diff", "--no-color", "--no-renames", "-U0", f"{old}..{new}").out.splitlines():
@@ -23,6 +25,16 @@ def signature(path: Path, old: str, new: str) -> dict[str, dict[str, int]]:
         elif in_hunk and file and raw[:1] in "+-":
             net = out.setdefault(file, {})
             net[raw[1:].rstrip()] = net.get(raw[1:].rstrip(), 0) + (1 if raw[0] == "+" else -1)
+    rng = f"{old}..{new}"
+    for raw in git.git(path, "diff", "--no-renames", "--name-status", rng).out.splitlines():  # a new, deleted or empty file has no +/- line
+        status, _, f = raw.partition("\t")
+        if status[:1] in "AD":
+            out.setdefault(f, {})[f"<{status[:1]}>"] = 1
+    for raw in git.git(path, "diff", "--no-renames", "--numstat", rng).out.splitlines():  # a binary file has none either: compare its blob
+        added, _, rest = raw.partition("\t")
+        if added == "-":
+            f = rest.partition("\t")[2]
+            out.setdefault(f, {})[f"<binary {git.git(path, 'rev-parse', f'{new}:{f}').out.strip()}>"] = 1
     return {f: {k: v for k, v in net.items() if v} for f, net in out.items() if any(net.values())}
 
 

@@ -10,6 +10,13 @@
 - The intake gate points at `factory run repos <name>[,<name>]` (it works after start) and lists the configured repos; `factory next` asks for the repos once the ticket and its media are recorded.
 - Run branch slugs fold accents ("árvore" becomes "arvore") and are cut at a word boundary.
 - Autonomy in the generated prose: project config that is not product code is the orchestrator's to fix (then `factory check` and a line in the next report); intake is the only phase that asks the user, later phases decide and record the assumption in `notes/design.md`; envs start in the background once intake passes; a worker fixes the config cause of an env failure once before it returns blocked; automated proof is preferred and human checks are collected in one message; the user's language comes from their first message, or the ticket's when they only typed a command.
+- Found on the first real run (DEV-9160), fixed in place:
+  - A login spec may declare `"done": {"cookie": "<name>"}` or `{"url": "<regex>"}`: an app that redirects to another app after login no longer fails the same-origin rule.
+  - On Windows a dev server listening on `0.0.0.0` or `[::]` was never seen as up, so its env timed out; the probe now connects and talks to the address that accepts.
+  - A run is cut from and measured against the remote base (`<remote>/<base>`) when the clone has it: a stale local base made the run start behind, count the base's merged commits against `commit_pattern`, and count the base's lint findings as new. Quality baselines move to the base commit last merged in.
+  - A clean merge of the base (git recomputes the same tree) keeps an approved review; verify still re-runs every check at the new HEAD.
+  - `factory next` warns in build and review when the base moved, so the merge happens before the review; early UAT images are kept for the ship briefing.
+  - A `plan amend` that only changes standing checks of `factory.toml` is project upkeep and spends no loop; a failing standing `cmd` check that already fails at the branch point points to `type = "quality"`.
 
 ## 1.0.0-alpha
 

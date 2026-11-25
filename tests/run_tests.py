@@ -21,7 +21,10 @@ from dev_factory import proc  # noqa: E402  (tree kill is shared with the CLI)
 
 def run_module(path: Path, out_dir: Path, timeout: float) -> dict:
     log = out_dir / f"{path.stem}.log"
-    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1",
+               # no background git maintenance: its lock files appear and vanish while a fixture repo is copied
+               GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="false",
+               GIT_CONFIG_KEY_1="gc.auto", GIT_CONFIG_VALUE_1="0")
     kwargs = {"creationflags": 0x00000200 | 0x08000000} if proc.WINDOWS else {"start_new_session": True}
     start = time.monotonic()
     with open(log, "wb") as fh:

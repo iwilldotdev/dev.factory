@@ -86,7 +86,8 @@ def git(*args: str, cwd: Path) -> str:
     env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull,
                GIT_AUTHOR_DATE="2026-01-01T00:00:00Z", GIT_COMMITTER_DATE="2026-01-01T00:00:00Z")  # same inputs, same commit: snapshots can be reused
     out = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
-                          "-c", "init.defaultBranch=main", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                          "-c", "init.defaultBranch=main",
+                          "-c", "maintenance.auto=false", "-c", "gc.auto=0", *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                          capture_output=True, text=True, timeout=60)
     if out.returncode:
         raise RuntimeError(f"git {args} failed: {out.stderr}")

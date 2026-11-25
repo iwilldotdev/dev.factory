@@ -156,7 +156,7 @@ def derive(events: list[dict]) -> dict:
             st["loops"].append(ev)
         elif t == "evidence":
             st["evidence"].append(ev)
-            if ev.get("actor"):
+            if ev.get("actor") and ev.get("mode") != "uat":  # exploring the screens is the uat reviewer's own work, not a build
                 st["builders"].add(ev["actor"].strip().lower())
         elif t == "baseline":
             st["baselines"].append(ev)

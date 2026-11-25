@@ -17,6 +17,12 @@ class UatTests(UiCase):
         path.write_text(json.dumps(data), encoding="utf-8")
         return self.cli("review", "record", "--kind", kind, "--file", str(path))
 
+    def write_uat(self, head, explored):
+        path = self.base / "review-uat-final.json"
+        path.write_text(json.dumps({"verdict": "APPROVE", "reviewer": "rev-b", "repos": {"web": head[:7]}, "findings": [], "resolved": [],
+                                    "completeness": {"done": 1, "gap": 0, "not_checked": 0}, "explored": explored}), encoding="utf-8")
+        return path
+
     def test_a_change_with_a_screen_needs_a_uat_review_that_cites_exploration_runs_at_head(self):
         run = self.locked()
         self.ok("verify")
@@ -33,12 +39,13 @@ class UatTests(UiCase):
         (run / "uat").mkdir()
         (run / "uat" / "narrow.json").write_text(json.dumps({"actions": [{"goto": "/index.html"}]}), encoding="utf-8")
         self.assertIn("under", self.fails("uat", "run", "checks/s1.json"))
-        self.assertIn("UAT-narrow attempt 1: pass", self.ok("uat", "run", "uat/narrow.json"))
+        self.assertIn("UAT-narrow attempt 1: pass", self.ok("uat", "run", "uat/narrow.json", "--actor", "rev-b"))  # its own runs never disqualify it
         self.assertIn("also wrote the code or qa review", "".join(self.review("uat", "rev-a", head, explored=explored)[1:]))
         bad = [{"flow": "x", "observed": "y", "evidence": ["UAT-other"]}]
         self.assertIn("explored cites UAT-other", "".join(self.review("uat", "rev-b", head, explored=bad)[1:]))
         self.assertIn("explored:", "".join(self.review("uat", "rev-b", head)[1:]))  # a uat review without explored entries
-        self.assertEqual(self.review("uat", "rev-b", head, explored=explored)[0], 0)
+        code, out, err = self.cli("review", "record", "--kind", "uat", "--actor", "rev-b", "--file", str(self.write_uat(head, explored)))
+        self.assertEqual(code, 0, out + err)
         self.assertEqual(self.gate("review")[0], 0)
         self.assertEqual([e["mode"] for e in self.evidence(run) if e["check"] == "UAT-narrow"], ["uat"])
 

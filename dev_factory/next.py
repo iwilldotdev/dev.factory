@@ -105,11 +105,10 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
         _reproduce_action(project, run, st, reasons, set_, flag)
     elif ph == "build":
         trees = [Path(w["path"]) for r in st["repos"] if (w := git.current(st, r))]
-        waiting = [r for r in reasons if human.WAITING in r]
-        if waiting and len(waiting) == len(reasons):
-            first = waiting[0].split(":")[0]
-            set_("the commits are verified; only the user's confirmation is missing (ask for every human check in one message, show what each confirms, record their own words): "
-                 + "; ".join(r.split(": ", 1)[1].split(" [")[0] for r in waiting), "user", f'factory confirm {first} --user-said "<their words>"{flag}')
+        if (said_no := human.rejections(st, rv.heads_of(st, st["repos"]))):
+            set_("the user rejected a human check at the ship briefing: " + "; ".join(h["text"] for h in said_no) + ". Fix it in the worktree(s) as "
+                 "a fixup of the commit it corrects, commit, run verify; fresh reviews and the user's confirmation follow at the new HEAD",
+                 "command", f"factory verify{flag}", trees, "builder")
         elif reasons:
             set_(("run the checks at the change head: a review run builds nothing, and its worktree is the change, detached" if shown == "verify" else
                   "build: implement the change in the worktree(s), commit it, then run verify; verify must pass at the HEAD of every "
@@ -290,6 +289,14 @@ def _feedback_action(project: Project, run: Run, stage: str, set_, flag: str) ->
 
 def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: str) -> None:
     from . import mirror
+    asks = human.pending(run, project, st)  # a rejection spends a loop, so the run is back in build and next sends it to the builder
+    confirm_note = ("" if not asks else " In the same message as the push question, show the user each human check and record their answer: "
+                    + "; ".join(f"{c['id']}: {c['text']}" for c in asks) + " (factory confirm CHK-n --user-said \"<their words>\", or --rejected"
+                    " when they reject it; confirm before you push).")
+    if asks and stage in ("verify", "gate"):
+        set_("the human checks wait for the user's confirmation at this commit." + confirm_note, "user",
+             f'factory confirm {asks[0]["id"]} --user-said "<their words>"{flag}', [], "orchestrator")
+        return
     if stage == "plan" and (step := mirror.next_step(project, run, st, flag)):
         set_(f"hotfix: {step[0]}", "command", step[1], [], "builder")
     elif stage == "plan":
@@ -308,7 +315,7 @@ def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: s
              "ticket writes still ask)") + ". Create or update the change with the title, branches and body file named there, then read "
              "it back: save the provider payload and the change contract data (id, url, repo, title, description_md, source_branch, target_branch, "
              "head_sha as the full SHA, state, draft, reviewers, pipelines newest first) to the paths given, ingest them"
-             + (" (or let the configured adapter do it in ship verify)" if first["adapter"] else "") + ", then run ship verify",
+             + (" (or let the configured adapter do it in ship verify)" if first["adapter"] else "") + ", then run ship verify." + confirm_note,
              "user" if ask else "command", how, [Path(first["raw"]), Path(first["contract_file"]), run.dir / "ship" / "body.md"], "orchestrator")
     elif stage == "fix":
         set_("the change read back differs from the ship plan (see the reasons): fix the change with your own tools, or re-plan, read it "

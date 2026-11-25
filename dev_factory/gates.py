@@ -149,9 +149,10 @@ def reproduce_reasons(run: Run, project, st: dict, strict: bool = True) -> tuple
     return diagnosis_reasons(run), recs
 
 
-def verify_reasons(run: Run, project, st: dict, recorded: bool = False) -> list[str]:
+def verify_reasons(run: Run, project, st: dict, recorded: bool = False, humans: bool = False) -> list[str]:
     """Every effective check passes at its repo's current HEAD from a clean worktree under the locked spec [L-01, L-07, L-08, L-09].
-    With `recorded` (review runs) a check needs a record at HEAD whatever its result: a change that fails its checks is still reviewed."""
+    With `recorded` (review runs) a check needs a record at HEAD whatever its result: a change that fails its checks is still reviewed.
+    A `human` check is deferred: the user confirms it once, at the ship briefing on the final HEAD; `humans` asks for it now [L-24]."""
     out = lock.problems(run, project.cfg, st)
     if out:
         return out
@@ -183,7 +184,8 @@ def verify_reasons(run: Run, project, st: dict, recorded: bool = False) -> list[
                 by_human |= {*c["ac"]}
             else:
                 asked |= {*c["ac"]}
-                out.append(f"{c['id']}: {human.WAITING}: factory confirm {c['id']} --user-said \"<their words>\" ({c['text']}) [L-24]")
+                if humans:
+                    out.append(f"{c['id']}: {human.WAITING} at the ship briefing: factory confirm {c['id']} --user-said \"<their words>\" ({c['text']}) [L-24]")
             continue
         rheads = envmod.heads_of(project, st, c["repo"]) if c["type"] in RUNTIME else None
         rec = evidence.last(st, c["id"], "verify", lk["spec_hashes"][c["id"]], sha, None, rheads)
@@ -233,6 +235,7 @@ def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     if name in ("ship", "feedback") and not out:
         from . import mirror
         out = ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan) + mirror.reasons(run, project, st)
+        out += [r for r in verify_reasons(run, project, st, humans=True) if human.WAITING in r]  # confirmed once, on the final HEAD
     return out + feedback.reasons(run, project, st) if name == "feedback" and not out else out
 
 

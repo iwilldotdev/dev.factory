@@ -191,6 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("confirm", cmd_confirm, "record the user's confirmation of a human check or of an agent-written change or pipeline contract", [scoped])
     sp.add_argument("target", help="a human check id (CHK-3) or <kind>:<id>, e.g. change:42")
     sp.add_argument("--user-said", required=True)
+    sp.add_argument("--rejected", action="store_true", help="the user rejected the human check: a finding of the delivery, the run goes back to build (one loop)")
     sp = add("waive", cmd_confirm, "record the user's waiver of one pipeline", [scoped])
     sp.add_argument("target", help="pipeline:<id>")
     sp.add_argument("--user-said", required=True)

@@ -45,8 +45,8 @@ Plan and proof:
 - `factory verify [--check ID] [--fresh]` runs the checks at HEAD from a clean worktree and appends the evidence; `--scoped` is a cheap run that never
   satisfies a gate; `--estimate` lists what would run. Bug runs: `factory reproduce` runs the reproducing checks on the base, and `verify` proves red-green.
 - `factory gate reproduce|verify` only read evidence. Only `verify` and `reproduce` write evidence; a gate passes on records, never on a claim.
-- Prefer automated proof; a `human` check only when nothing automated can prove the AC. Collect the human checks in one message once everything automated
-  passes, then `factory confirm CHK-n --user-said "<their words>"` for each; a new commit asks again.
+- Prefer automated proof; a `human` check only when nothing automated can prove the AC. It does not hold verify or the reviews: ask for every human check
+  once, at the ship briefing, in the same message as the push question, then `factory confirm CHK-n --user-said "<their words>"` (or `--rejected`: a finding, one loop, back to build).
 - A `quality` check fails only on failure ids the baseline at the branch point lacks (`factory baseline`). `risk` medium or high needs `notes/design.md`.
 - Runtime and design checks: `factory env up|down|health|status|logs|seed|reset [repo]` (`env up --slot n` serves a parallel run on its own ports; choose
   the slot before the plan locks); start the envs the plan needs in the background as soon as intake passes; never stop an env you did not start.

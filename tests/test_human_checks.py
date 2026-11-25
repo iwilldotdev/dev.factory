@@ -35,27 +35,45 @@ class HumanCase(ShipCase):
 
 
 class ConfirmTests(HumanCase):
+    def ship_waits(self) -> str:
+        return "\n".join(self.gate("ship")[1])
+
+    def reviewed(self) -> None:
+        self.record("code", "APPROVE")
+        self.record("qa", "APPROVE", exercises=BOTH)
+        self.ok("gate", "review")
+
     @lesson("L-24")
-    def test_a_human_check_waits_for_the_user_and_a_confirmation_satisfies_the_verify_gate(self):
-        """L-24: verify never runs a human check; it is pending until `factory confirm --user-said` records the user's words at the current commits."""
+    def test_a_human_check_is_deferred_to_the_ship_briefing_and_confirmed_once(self):
+        """L-24: verify never runs a human check and no longer waits for it: the run goes through the reviews, the user is asked once
+        at the ship briefing, and the ship gate needs their words at the final commits."""
         self.pending()
         got, out, _ = self.cli("verify", "--json")
-        data = json.loads(out)
-        self.assertEqual(got, 0, "a pending human check does not fail verify")
-        self.assertEqual({r["check"]: r["result"] for r in data["results"]}, {"CHK-1": "pass", "CHK-2": "pending"})
-        code, text = self.gate_verify()
-        self.assertEqual(code, 1)
-        self.assertIn("CHK-2: waits for the user's confirmation: factory confirm CHK-2 --user-said", text)
+        self.assertEqual({r["check"]: r["result"] for r in json.loads(out)["results"]}, {"CHK-1": "pass", "CHK-2": "pending"})
+        self.assertEqual(self.gate_verify()[0], 0, "a pending human check is deferred, not a verify failure")
+        self.reviewed()
+        self.ship_plan()
         n = json.loads(self.ok("next", "--json"))
-        self.assertEqual((n["phase"], n["kind_of_action"], n["role"]), ("build", "user", "orchestrator"))
-        self.assertTrue(n["command"].startswith("factory confirm CHK-2 --user-said"), n["command"])
-        self.assertIn(TEXT, n["action"])
+        self.assertIn(f"CHK-2: {TEXT}", n["action"])
+        self.assertIn("confirm before you push", n["action"])
+        self.assertIn("CHK-2: waits for the user's confirmation at the ship briefing", self.ship_waits())
         self.assertIn("CHK-2", self.confirm())
         rec = self.evidence(self.run_dir, check="CHK-2")[-1]
         self.assertEqual((rec["result"], rec["human_heads"], rec["user_said"]), ("pass", {"web": self.head()}, "yes, it reads Saved in Portuguese"))
-        self.assertEqual(self.gate_verify()[0], 0)
-        self.assertEqual([e["check"] for e in self.events(self.run_dir) if e["type"] == "confirm"], ["CHK-2"])
+        self.assertNotIn("CHK-2", self.ship_waits())
         self.assertEqual(json.loads(self.ok("metrics", "--json"))["human_events"], {"confirm": 1})
+
+    @lesson("L-24")
+    def test_a_rejection_is_a_finding_that_spends_a_loop_and_sends_the_run_back_to_build(self):
+        """L-24: the user's no is a finding of the delivery: it spends one loop and the builder fixes it before the user is asked again."""
+        self.pending()
+        self.reviewed()
+        self.ship_plan()
+        self.assertIn("rejection of CHK-2", self.ok("confirm", "CHK-2", "--rejected", "--user-said", "no, it still says Saved in English"))
+        n = json.loads(self.ok("next", "--json"))
+        self.assertEqual((n["role"], n["command"]), ("builder", "factory verify"))
+        self.assertIn("still says Saved in English", n["action"])
+        self.assertEqual([e["kind"] for e in self.events(self.run_dir) if e["type"] == "loop"], ["human"])
 
     def test_the_same_words_at_a_new_commit_are_not_a_new_confirmation(self):
         """Review m5: a confirmation reused verbatim at another commit is refused until the user says something now."""
@@ -71,12 +89,11 @@ class ConfirmTests(HumanCase):
         """L-24: the confirmation is bound to the commits the user saw; a new commit makes the check pending again."""
         self.pending()
         self.confirm()
-        self.assertEqual(self.gate_verify()[0], 0)
+        self.assertNotIn("CHK-2", self.ship_waits())
         self.commit("extra.txt", "x\n")
         self.ok("verify")
-        code, text = self.gate_verify()
-        self.assertEqual(code, 1)
-        self.assertIn("CHK-2: waits for the user's confirmation", text)
+        self.reviewed()
+        self.assertIn("CHK-2: waits for the user's confirmation", self.ship_waits())
         self.assertIn("pending", self.ok("verify"))
 
     def test_a_confirmation_needs_the_users_words_a_human_check_and_a_clean_worktree(self):
@@ -104,11 +121,12 @@ class RuleTests(HumanCase):
         self.assertIn("a human check cannot reproduce a bug", text)
 
     @lesson("L-138", "L-24")
-    def test_a_pending_human_check_never_spends_a_review_loop(self):
-        """L-138, L-24: while the user has not confirmed, a review is refused before it can be recorded, so no loop is spent and nothing blocks."""
+    def test_a_pending_human_check_does_not_hold_the_reviews(self):
+        """L-138, L-24: the reviews go on while the user has not been asked; nothing blocks and no loop is spent waiting."""
         self.pending()
-        for kind in ("code", "qa"):
-            self.assertIn("a passing verify first", self.record(kind, "CHANGES", code=2, findings=[{"id": "F1", "severity": "major", "text": "toast"}]))
+        self.record("code", "APPROVE")
+        self.record("qa", "APPROVE", exercises=BOTH)
+        self.assertEqual(self.gate("review")[0], 0)
         self.assertEqual(self.loops(), [])
         self.assertEqual([e for e in self.events(self.run_dir) if e["type"] == "blocker"], [])
 

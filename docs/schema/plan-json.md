@@ -36,7 +36,7 @@ A standing `[[repo.check]]` with `type = "quality"` takes the same keys. The fai
 | `text` | string | yes | what the user is asked to confirm; shown in the change body next to their words |
 | `reason` | string | no | why no command can check it |
 
-`verify` never runs it: it is `pending` (exit stays 0) until `factory confirm <id> --user-said "<words>"` records a `human` evidence record bound to the HEAD of every planned repo. A new commit asks again. A bug plan refuses an AC whose only checks are human, and a design AC still needs its `visual` and `style` checks [L-24]. A pending human check blocks the verify gate, so no review can be recorded and no loop is spent [L-138].
+`verify` never runs it: it is `pending` (exit stays 0) until `factory confirm <id> --user-said "<words>"` records a `human` evidence record bound to the HEAD of every planned repo. A new commit asks again. A bug plan refuses an AC whose only checks are human, and a design AC still needs its `visual` and `style` checks [L-24]. A pending human check is deferred: it does not hold the verify gate or the reviews; the user is asked once at the ship briefing, and `gate ship` needs the confirmation at the final commits. `factory confirm <id> --rejected --user-said "<words>"` records a rejection: a finding of the delivery that spends one loop and sends the run back to build [L-24, L-138].
 
 ### Other types
 

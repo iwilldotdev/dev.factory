@@ -109,6 +109,39 @@ def confirm_check(run: Run, project, check_id: str, said: str, actor: str | None
                            project.cfg["checks"]["tail_lines"], {"human_heads": heads, "user_said": said}, actor)
 
 
+def reject_check(run: Run, project, check_id: str, said: str, actor: str | None) -> dict:
+    """The user rejected a human check at the ship briefing: a finding of the delivery that spends one loop and sends the run back
+    to build; a new commit moves the reviews and asks for the confirmation again [L-24, L-135]."""
+    from . import lock, plan as planmod, review
+    said = _said(said)
+    st = run.state()
+    plan = planmod.load_plan(run)[0]
+    check = next((c for c in planmod.effective_checks(plan, project.cfg) if c["id"] == check_id), None)
+    if check is None or check["type"] != "human":
+        raise FactoryError(f"{check_id} is not a human check of this plan")
+    heads = review.heads_of(st, plan["repos"])
+    lock.spend(run, project.cfg, st, "human", None, actor, {"heads": heads, "check": check_id})
+    return run.append({"type": "human", "kind": "rejection", "check": check_id, "text": f"{check_id} ({check['text']}): {said}",
+                       "user_said": said, "heads": heads}, actor)
+
+
+def pending(run: Run, project, st: dict) -> list[dict]:
+    """Human checks without the user's confirmation at the current commits: asked once, at the ship briefing [L-24]."""
+    from . import lock, plan as planmod, review
+    lk = lock.current(st)
+    if lk is None:
+        return []
+    plan = planmod.load_plan(run)[0]
+    heads = review.heads_of(st, plan["repos"])
+    return [c for c in planmod.effective_checks(plan, project.cfg) if c["type"] == "human" and c["repo"] in heads
+            and not confirmation(st, c, lk["spec_hashes"][c["id"]], heads[c["repo"]], heads)]
+
+
+def rejections(st: dict, heads: dict) -> list[dict]:
+    """Rejections of human checks given at the current commits: the builder still has to fix them."""
+    return [h for h in st["human"] if h.get("kind") == "rejection" and h.get("heads") == heads]
+
+
 def waive(run: Run, target: str, said: str, actor: str | None) -> dict:
     """A user waiver names one pipeline id; a newer pipeline is not covered [L-20]."""
     said = _said(said)

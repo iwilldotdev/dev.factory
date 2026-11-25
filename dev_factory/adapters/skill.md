@@ -65,7 +65,8 @@ High risk (auth, money, data, migration, concurrency, public contract, security)
 - Prefer automated proof (cmd, http, browser, visual, style, screenshot with assertions). A `human` check only when nothing automated can prove the AC.
 - Exploring the running app in a browser is allowed and useful. It produces findings or new `browser`/`http` checks through `plan amend`, and it is never a pass:
   a pass is a `verify` record. A surface you could not exercise stays "not checked" in every report.
-- Human checks: collect them all in one message once everything automated passes (with the screenshots), then `factory confirm CHK-n --user-said "<their words>"`.
+- Human checks: they do not hold verify or the reviews. Ask for all of them once, at the ship briefing with the push question (with the screenshots), then
+  `factory confirm CHK-n --user-said "<their words>"`, or `--rejected` when the user says no (a finding: one loop, back to the builder).
   A new commit asks again. Unseen media: `factory media unseen` after asking the user. A pipeline waiver is `factory waive pipeline:<id> --user-said`.
 - Bugs never skip reproduce: the author writes reproducing checks and `diagnosis.md`, `factory reproduce` and `gate reproduce` pass before any builder starts.
 

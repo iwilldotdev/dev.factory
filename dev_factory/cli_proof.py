@@ -37,6 +37,9 @@ def cmd_confirm(args) -> int:
         st = run.state()
         ev = human.confirm(run, args.target, args.user_said, review.heads_of(st, st["repos"]), args.actor)
         print(f"recorded the user's confirmation of {ev['contract']}")
+    elif getattr(args, "rejected", False):
+        ev = human.reject_check(run, proj, args.target, args.user_said, args.actor)
+        print(f"recorded the user's rejection of {ev['check']}: fix it, commit, verify; the reviews and the confirmation follow at the new HEAD")
     else:
         ev = human.confirm_check(run, proj, args.target, args.user_said, args.actor)
         print(f"recorded the user's confirmation of {ev['check']} at {ev['sha'][:7]}; a new commit asks again")

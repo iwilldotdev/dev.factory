@@ -126,6 +126,23 @@ class Adapters(FactoryCase):
         self.assertEqual(hook.run(json.dumps(allow[0])), "")
         self.assertIn("deny", hook.run("not json"))
 
+    def test_the_hook_normalises_paths_and_follows_cd_and_variables_but_lets_reads_through(self):
+        """Review m1: spelling tricks do not dodge the guard; reads by an interpreter or a word in a comment are not refused."""
+        r = ".factory/runs/R/"
+        deny = [{"file_path": f"/p/{r}./events.jsonl"}, {"file_path": f"/p/{r}../R/events.jsonl"}, {"file_path": "/p/.factory//runs/R/events.jsonl"},
+                {"file_path": f"C:\\p\\.FACTORY\\runs\\R\\Events.jsonl"},
+                {"command": f"cd {r[:-1]} && echo x >> events.jsonl"}, {"command": f"cd {r} && rm -rf artifacts"},
+                {"command": f"P=/p/{r}; echo x >> $P/events.jsonl"},
+                {"command": f"python -c \"open('{r}events.jsonl', 'a').write('x')\""}]
+        allow = [{"command": f"python -m json.tool /p/{r}artifacts/CHK-1/1/output.txt"},
+                 {"command": f"less /p/{r}artifacts/CHK-1/1/output.txt # copy later"},
+                 {"command": f"cd {r} && cat events.jsonl | head"}, {"command": f"node show.js /p/{r}raw/ticket/a.json"}]
+        for key, items in (("deny", deny), ("allow", allow)):
+            for args in items:
+                tool = "Write" if "file_path" in args else "Bash"
+                got = hook.reason({"tool_name": tool, "tool_input": args})
+                self.assertEqual(got is not None, key == "deny", (key, args))
+
     def test_the_hook_command_reads_the_tool_call_on_stdin(self):
         code, out, _ = self.cli("hook", "pre-tool", stdin=json.dumps({"tool_input": {"file_path": ".factory/runs/a/events.jsonl"}}), project=False, cwd=self.root)
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (0, "deny"))

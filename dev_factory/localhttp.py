@@ -30,9 +30,9 @@ def request(method: str, url: str, headers: dict | None = None, body: bytes | No
     """(status, lower-cased headers, body). Redirects are returned as they are. Raises OSError when nothing answers."""
     host, port, path, secure = split(url)
     cls = http.client.HTTPSConnection if secure else http.client.HTTPConnection
-    conn = cls(host, port, timeout=timeout)
+    conn = cls(reach(host, port) or host, port, timeout=timeout)  # the address that listens: "localhost" may resolve to ::1 first
     try:
-        conn.request(method, path, body=body, headers={"Connection": "close", **(headers or {})})
+        conn.request(method, path, body=body, headers={"Connection": "close", "Host": f"{host}:{port}", **(headers or {})})
         resp = conn.getresponse()
         return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read(8 << 20)
     except http.client.HTTPException as exc:
@@ -55,7 +55,20 @@ def port_free(host: str, port: int) -> bool:
 
 
 def listening(url: str) -> bool:
-    return not port_free(*split(url)[:2])
+    """Something accepts connections on the origin, on any address the host resolves to. A bind test is not enough: on Windows
+    a bind to 127.0.0.1 succeeds while a server listens on 0.0.0.0 or [::] (dev servers often do)."""
+    return reach(*split(url)[:2]) is not None
+
+
+def reach(host: str, port: int) -> str | None:
+    """The loopback address (of those `host` resolves to) that accepts a connection, or None. A loopback connect is accepted
+    in well under a millisecond, so a short timeout only bounds the wait on a closed port (Windows retries a refused SYN)."""
+    for family, kind, proto, _, addr in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM):
+        with socket.socket(family, kind, proto) as s:
+            s.settimeout(0.25)
+            if s.connect_ex(addr) == 0:
+                return addr[0]
+    return None
 
 
 def healthy(url: str, timeout: float = 5) -> bool:

@@ -2,6 +2,7 @@
 import json
 import unittest
 
+from tests.helpers import git
 from tests.test_ui import UiCase
 
 
@@ -48,6 +49,15 @@ class UatTests(UiCase):
         self.assertEqual(code, 0, out + err)
         self.assertEqual(self.gate("review")[0], 0)
         self.assertEqual([e["mode"] for e in self.evidence(run) if e["check"] == "UAT-narrow"], ["uat"])
+        tree = self.tree()
+        (tree / "tests").mkdir(exist_ok=True)
+        (tree / "tests" / "extra.test.js").write_text("// one more test\n", encoding="utf-8")
+        git("add", "-A", cwd=tree)
+        git("commit", "-q", "-m", "test: one more case", cwd=tree)
+        self.ok("verify")
+        reasons = "\n".join(self.gate("review")[1])
+        self.assertIn("the code review (round 1) is stale", reasons)
+        self.assertNotIn("the uat review", reasons, "a commit that only touches tests leaves the screens the UAT used as they were")
 
     def test_a_change_without_a_screen_takes_no_uat(self):
         from dev_factory import review

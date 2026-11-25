@@ -203,11 +203,19 @@ def load_file(path: Path):
         raise FactoryError(f"the review file is not valid JSON: {exc}") from exc
 
 
-def _same_change(st: dict, cfg: dict | None, r: str, old: str, new: str) -> bool:
-    """A HEAD move that leaves the reviewed change as it was: clean merges of the base, or the same patches rebased onto it."""
+TEST_PATH = re.compile(r"(^|/)(__tests__|tests?|spec|e2e)/|\.(test|spec)\.[^/]+$")
+
+
+def _same_change(st: dict, cfg: dict | None, r: str, old: str, new: str, kind: str = "") -> bool:
+    """A HEAD move that leaves the reviewed change as it was: clean merges of the base, or the same patches rebased onto it.
+    For the UAT also commits that touch only tests: the screens it used are unchanged."""
     path = Path(git.current(st, r)["path"])
     if git.clean_merges_only(path, old, new):
         return True
+    if kind == "uat" and old and git.is_ancestor(path, old, new):
+        files = git.git(path, "diff", "--name-only", old, new, check=False).out.split()
+        if files and all(TEST_PATH.search(f) for f in files):
+            return True
     repo = next((x for x in (cfg or {}).get("repo", []) if x["name"] == r), None)
     return repo is not None and git.rebased_only(path, old, new, git.base_ref(path, repo))
 
@@ -239,7 +247,7 @@ def reasons(st: dict, plan: dict, lk: dict, cfg: dict | None = None) -> list[str
         cmd = f"record one with factory review record --kind {kind} --file <review.json> (a fresh reviewer, not the builder)"
         if rv is None:
             out.append(f"no {kind} review: {cmd}")
-        elif rv["repos"] != heads and not all(h == rv["repos"].get(r) or _same_change(st, cfg, r, rv["repos"].get(r, ""), h) for r, h in heads.items()):
+        elif rv["repos"] != heads and not all(h == rv["repos"].get(r) or _same_change(st, cfg, r, rv["repos"].get(r, ""), h, kind) for r, h in heads.items()):
             moved = ", ".join(f"{r} {rv['repos'].get(r, '?')[:7]} -> {h[:7]}" for r, h in heads.items() if rv["repos"].get(r) != h)
             out.append(f"the {kind} review (round {rv['round']}) is stale, HEAD moved ({moved}): {cmd} [L-18]")
         elif rv["bound"].get(key) != lk[key]:

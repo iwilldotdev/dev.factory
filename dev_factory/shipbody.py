@@ -8,6 +8,7 @@ from .util import FactoryError
 
 LOCAL_LINK = re.compile(r"\]\((?:evidence/|artifacts/|[A-Za-z]:[\\/])|file://")  # run-local paths 404 in the SCM [L-144]
 EXCERPT = 10
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # terminal colors render as junk in the change body
 
 
 def title(cfg: dict, ticket: dict) -> str:
@@ -34,8 +35,21 @@ def rows(st: dict, checks: list[dict], lk: dict, heads: dict[str, str]) -> list[
             out.append({"ac": ac, "check": c["id"], "repo": c["repo"], "cmd": _short(rec["cmd"] if rec else c.get("run", c["type"])),
                         "exit": rec["exit"] if rec else None, "result": rec["result"] if rec else "none",
                         "ref": f"{c['id']} attempt {rec['attempt']} ({rec['hash'][:8]})" if rec else "-",
-                        "tail": rec["tail"].splitlines()[-EXCERPT:] if rec else []})
+                        "tail": _excerpt(rec) if rec else []})
     return out
+
+
+def _excerpt(rec: dict) -> list[str]:
+    """The last output lines without colors or the local worktree path; a quality check shows its count against the base instead."""
+    d = rec.get("details") or {}
+    if "new" in d and "total" in d:  # its raw output is the base's findings, which read as failures under a pass
+        lines = [f"{d['total']} finding(s), {d.get('baseline_stable', 0)} at the base, {len(d['new'])} new", *map(str, d["new"])]
+    else:
+        lines = ANSI.sub("", rec["tail"]).splitlines()
+    wt = (rec.get("worktree") or "").rstrip("/\\")
+    for root in {wt, wt.replace("/", "\\")} - {""}:  # the SCM shows repo-relative paths; a local path leaks the machine
+        lines = [ln.replace(root + "/", "").replace(root + "\\", "").replace(root, ".") for ln in lines]
+    return lines[-EXCERPT:]
 
 
 def table(rs: list[dict]) -> list[str]:

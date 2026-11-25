@@ -16,6 +16,8 @@
   - A run is cut from and measured against the remote base (`<remote>/<base>`) when the clone has it: a stale local base made the run start behind, count the base's merged commits against `commit_pattern`, and count the base's lint findings as new. Quality baselines move to the base commit last merged in.
   - A clean merge of the base (git recomputes the same tree) keeps an approved review; verify still re-runs every check at the new HEAD.
   - `factory next` warns in build and review when the base moved, so the merge happens before the review; early UAT images are kept for the ship briefing.
+  - The change body strips terminal colors and the local worktree path from output excerpts, and a `quality` check shows its count against the base (`N finding(s), M at the base, K new`) instead of the base's raw errors under a pass.
+  - Tests: the foreign port owner starts with the base interpreter, since a Windows venv `python.exe` is a launcher whose child holds the port.
   - A `plan amend` that only changes standing checks of `factory.toml` is project upkeep and spends no loop; a failing standing `cmd` check that already fails at the branch point points to `type = "quality"`.
 
 ## 1.0.0-alpha

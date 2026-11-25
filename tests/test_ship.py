@@ -55,7 +55,7 @@ class PlanTests(ShipCase):
     @lesson("L-144")
     def test_the_body_links_nothing_local_and_shows_a_short_trailing_excerpt(self):
         """L-144: the generated body has no run-folder link, and the excerpt is the last 10 output lines."""
-        noisy = "import sys\nprint('warning: noise')\n" * 1 + "for i in range(40):\n    print(f'warning {i}')\nprint('checks passed: VALUE=2')\n"
+        noisy = "import sys\nprint('warning: noise')\n" * 1 + "for i in range(40):\n    print(f'warning {i}')\nprint('\\x1b[32mok\\x1b[39m')\nprint('checks passed: VALUE=2')\n"
         self.commit_many({"noisy.py": noisy}, "feat: noisy check")
         plan = self.read_plan(self.run_dir)
         plan["checks"][0]["run"] = f'"{sys.executable}" noisy.py'
@@ -70,7 +70,12 @@ class PlanTests(ShipCase):
         self.assertNotIn(self.run_dir.as_posix(), text)
         block = text.split("```text")[1].split("```")[0].strip().splitlines()
         self.assertEqual(len(block), 10)
-        self.assertEqual(block[-1], "checks passed: VALUE=2")
+        self.assertEqual(block[-2:], ["ok", "checks passed: VALUE=2"])  # terminal colors are stripped
+        quality = {"tail": "C:\\wt\\r\\a.ts:1:1: base error\n", "worktree": "C:/wt/r",
+                   "details": {"new": [], "total": 283, "baseline_stable": 283}}
+        self.assertEqual(shipbody._excerpt(quality), ["283 finding(s), 283 at the base, 0 new"])
+        self.assertEqual(shipbody._excerpt({"tail": "C:\\wt\\r\\a.ts:1:1: x\nC:/wt/r/b.ts ok", "worktree": "C:/wt/r"}),
+                         ["a.ts:1:1: x", "b.ts ok"])  # no local worktree path reaches the SCM
         for bad in ("](evidence/x)", "](C:/x)", "file:///x", "](artifacts/x)"):
             self.assertTrue(shipbody.LOCAL_LINK.search(bad), bad)
 

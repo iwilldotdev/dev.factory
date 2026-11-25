@@ -63,7 +63,6 @@ class BehindTests(ShipCase):
         sp = self.ship_plan()
         self.assertEqual((sp["behind"]["web"]["count"], sp["behind"]["web"]["ref"]), (0, "main"))
         self.assertIn("run git fetch first", sp["behind"]["web"]["note"])
-        self.assertIn("0 commit(s) behind main", (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8"))
         (self.proj / "base.txt").write_text("moved\n")
         git("add", "-A", cwd=self.proj)
         git("commit", "-q", "-m", "chore: base moved", cwd=self.proj)

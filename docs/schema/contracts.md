@@ -293,6 +293,7 @@ Common fields on every event:
 - `changed_values` is required for `code`, and `[]` must be explicit [L-39].
 - `repos` must be an object of `{repo: sha}` with prefixes of at least 7 hex characters; any other shape is refused with this example [L-107].
 - `resolved` entries are `round:id`; a bare id means the previous round [L-147].
+- A finding may carry `scope`: `"change"` (the default) or `"out"`. `gate review` fails while a minor finding of the delivery (`scope` `"change"`) is open: a delivery ships finished, so it is fixed and a later review lists it in `resolved` (a round of minor fixes spends no loop). `"out"` marks a finding that is not part of this delivery; it stays in the run and the briefing, never in the change.
 
 The stored event adds:
 
@@ -333,7 +334,7 @@ A finding whose `source` is already in a feedback record for the same heads is n
 
 ## 8. Ship plan (`ship/plan.json`, written by `factory ship plan`)
 
-`ship/body.md` is the change description: the AC list, the AC x check x status table (command, exit code, result, evidence id), the last 10 output lines per check, flaky attempts, changed values, up to 20 unresolved minors with a count, the reviews, and the commits-behind line. It never links into the run folder [L-144].
+`ship/body.md` is the change description, for a human reviewer who never sees the run: it is `ship/summary.md` as the orchestrator wrote it, in the project's language (ticket key and link, what changes, behaviour changed beyond the ticket, how it was tested in plain words). `ship plan` refuses a summary that is empty, misses the ticket key, links into the run folder or carries the run's bookkeeping (check, AC or decision ids, attempts, run paths, factory commands) [L-144]. The AC x check x status rows stay in `plan.json` and the Gate S briefing; `ship verify` checks that the change description is the planned body [L-153].
 
 `ship/plan.json` holds `heads`, `title`, `draft`, `mode` (`autonomy.ship`), `behind` per repo (`count`, `ref`, `note`; a note says when `git fetch` is needed first [L-108]), `rows` (the table, which `ship verify` looks for in the readback), and `intents`, each with an `id`, `intent` and `needs_user`:
 

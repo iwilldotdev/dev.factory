@@ -166,7 +166,11 @@ class NextTests(M3Case):
         n = self.nxt()
         self.assertEqual((n["role"], n["command"]), ("builder", "factory verify"))
         self.assertIn("qa review asked for changes", n["action"])
-        self.record("qa")
+        self.record("qa")  # an APPROVE that leaves the minor finding open: the delivery is not finished
+        n = self.nxt()
+        self.assertEqual((n["role"], n["command"]), ("builder", "factory verify"))
+        self.assertIn("minor finding(s) of the delivery are open", n["action"])
+        self.record("qa", resolved=["1:F1"])
         self.assertEqual(self.nxt()["command"], "factory gate review")
         self.ok("gate", "review")
         self.assertEqual(self.nxt()["phase"], "ship")

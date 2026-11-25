@@ -129,6 +129,7 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 | `transition_to` | string | none | required when `ticket` is `"transition"` or `"both"` |
 | `reviewers` | list of `{scm = "...", tracker = "..."}` | `[]` | both identities, validated by `factory check` [L-143] |
 | `require_pipeline` | bool | `false` | makes `gate ship` require a green pipeline contract [L-19, L-155] |
+| `base_update` | `"rebase"` or `"merge"` | `"rebase"` | how a moved base enters the run branch: a rebase keeps only the change's own commits (its push carries `force_with_lease` and asks the user); a review stays approved when the rebased commits carry the same patches |
 
 ## `[autonomy]`
 

@@ -54,9 +54,12 @@ Plan and proof:
 
 Review (after verify passes): `factory review example` prints the JSON. The reviewer writes one file per kind and runs
 `factory review record --kind code|qa --file <file>`; the code review lists `changed_values` (`[]` when none), the qa review one `exercises` entry per AC.
-A CHANGES review with a blocker or major finding spends a loop; fix, commit, verify, record a new review. `factory gate review` needs both APPROVE at the current commits.
+A CHANGES review with a blocker or major finding spends a loop; fix, commit, verify, record a new review. `factory gate review` needs both APPROVE at the current commits
+and no open finding of the delivery: minor ones are fixed too (a round of them spends no loop) unless the reviewer marks them `"scope": "out"`.
 
 Ship (after the review gate). The CLI never pushes or calls a remote; you run the intents with your own tools.
+- Write `<run>/ship/summary.md`, the change description for its human reviewer, in the project's language: ticket key and link, what changes for the user,
+  behaviour changed beyond the ticket, how it was tested in plain words; no check, AC or decision ids, evidence or run paths (the run keeps those).
 - `factory ship plan [--ticket none|comment|transition|both] [--update] [--pipeline]` writes the intents (push uses the repo's `remote`) and the body.
   Under `autonomy.ship = "ask"` ask before every intent; `draft-auto` allows a push and a draft change. Ticket writes always ask. Ready and merge are never automatic.
 - Save the change as the provider reports it and run `factory ingest change --raw <file> --contract <file>` (an adapter does it inside `factory ship verify`);

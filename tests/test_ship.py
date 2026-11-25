@@ -1,4 +1,5 @@
 """ship plan: neutral intents, autonomy, the change body, the behind count and --update."""
+import json
 import sys
 import unittest
 
@@ -7,6 +8,9 @@ from tests.helpers import git, lesson
 from tests.m3_support import ShipCase
 
 DRAFT_AUTO = '\n[ship]\nreviewers = [{ scm = "ana.lima", tracker = "5f1c2e" }]\nticket = "comment"\ntransition_to = "In Review"\n\n[autonomy]\nship = "draft-auto"\n'
+
+
+GOOD = "ABC-1 (https://tracker/ABC-1): overdue invoices are listed." + 2 * chr(10) + "## How it was tested" + chr(10) + "A unit test of the list." + chr(10)
 
 
 class PlanTests(ShipCase):
@@ -39,43 +43,21 @@ class PlanTests(ShipCase):
         self.write("factory.toml", self.TOML + '\n[ship]\ntitle = "{key}: {summary}"\n')
         self.assertEqual(self.ship_plan()["title"], "ABC-1: Show overdue invoices")
 
-    def test_the_body_has_the_ac_check_status_table_with_evidence_references(self):
-        self.ship_plan()
-        text = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        rec = [e for e in self.events(self.run_dir) if e["type"] == "evidence"][-1]
-        self.assertIn("| AC | Check | Command | Exit | Result | Evidence |", text)
-        row = next(ln for ln in text.splitlines() if ln.startswith("| AC-1 | CHK-1"))
-        self.assertIn(f"| 0 | pass | CHK-1 attempt {rec['attempt']} ({rec['hash'][:8]}) |", row)
-        self.assertIn("check.py 2", row)
-        self.assertIn("checks passed: VALUE=2", text)
-        self.assertIn("- AC-1: VALUE is 2", text)
-        self.assertIn("- code: round 1, APPROVE by fresh-reviewer", text)
-        self.assertEqual([r["result"] for r in self.sp()["rows"]], ["pass"])
-
     @lesson("L-144")
-    def test_the_body_links_nothing_local_and_shows_a_short_trailing_excerpt(self):
-        """L-144: the generated body has no run-folder link, and the excerpt is the last 10 output lines."""
-        noisy = "import sys\nprint('warning: noise')\n" * 1 + "for i in range(40):\n    print(f'warning {i}')\nprint('\\x1b[32mok\\x1b[39m')\nprint('checks passed: VALUE=2')\n"
-        self.commit_many({"noisy.py": noisy}, "feat: noisy check")
-        plan = self.read_plan(self.run_dir)
-        plan["checks"][0]["run"] = f'"{sys.executable}" noisy.py'
-        self.write_plan(self.run_dir, plan)
-        self.ok("plan", "amend", "--reason", "noisy check")
-        self.ok("verify")
-        self.approve_both()
-        self.ok("gate", "review")
-        self.ship_plan()
+    def test_the_body_is_the_reviewers_summary_and_the_evidence_table_stays_in_the_briefing(self):
+        """L-144: the change body is the human summary as written; ids, evidence and run paths are refused, the AC x check rows go to the user."""
+        for bad, why in (("", "missing or empty"), ("Overdue invoices are listed.", "does not name the ticket ABC-1"),
+                         ("ABC-1: see CHK-1 attempt 2.", "bookkeeping"), ("ABC-1: [log](artifacts/x.txt)", "inside the run folder"),
+                         ("ABC-1: run factory verify again.", "bookkeeping")):
+            self.write_summary(bad)
+            self.assertIn(why, self.fails("ship", "plan"))
+        self.write_summary(GOOD)
+        sp = self.ship_plan()
         text = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        self.assertIsNone(shipbody.LOCAL_LINK.search(text))
-        self.assertNotIn(self.run_dir.as_posix(), text)
-        block = text.split("```text")[1].split("```")[0].strip().splitlines()
-        self.assertEqual(len(block), 10)
-        self.assertEqual(block[-2:], ["ok", "checks passed: VALUE=2"])  # terminal colors are stripped
-        quality = {"tail": "C:\\wt\\r\\a.ts:1:1: base error\n", "worktree": "C:/wt/r",
-                   "details": {"new": [], "total": 283, "baseline_stable": 283}}
-        self.assertEqual(shipbody._excerpt(quality), ["283 finding(s), 283 at the base, 0 new"])
-        self.assertEqual(shipbody._excerpt({"tail": "C:\\wt\\r\\a.ts:1:1: x\nC:/wt/r/b.ts ok", "worktree": "C:/wt/r"}),
-                         ["a.ts:1:1: x", "b.ts ok"])  # no local worktree path reaches the SCM
+        self.assertEqual(text, GOOD)
+        self.assertEqual([(r["ac"], r["check"], r["result"]) for r in sp["rows"]], [("AC-1", "CHK-1", "pass")])
+        briefing = json.loads(self.ok("next", "--json"))["briefing"]
+        self.assertTrue(any(ln.strip().startswith("AC-1 x CHK-1: pass") for ln in briefing), briefing)
         for bad in ("](evidence/x)", "](C:/x)", "file:///x", "](artifacts/x)"):
             self.assertTrue(shipbody.LOCAL_LINK.search(bad), bad)
 
@@ -85,21 +67,20 @@ class PlanTests(ShipCase):
         self.assertFalse((self.run_dir / "ship" / "plan.json").exists())
 
     @lesson("L-146")
-    def test_unresolved_minors_from_every_round_are_listed_once_and_capped_at_20(self):
-        """L-146: minors of round 2 stay in the body after a clean round 3, de-duplicated, with a cap and a count."""
-        minors = [{"id": f"F{i}", "severity": "minor", "file": f"a.py:{i}", "text": f"rename thing {i}"} for i in range(1, 24)]
-        self.record("code", "CHANGES", findings=minors)
-        self.record("code", "APPROVE", resolved=["2:F3"])
-        self.record("qa", "CHANGES", findings=[{"id": "F1", "severity": "minor", "file": "a.py:1", "text": "rename thing 1"}])
-        self.record("qa", "APPROVE")
+    def test_a_delivery_ships_finished_open_minors_block_the_gate_unless_out_of_scope(self):
+        """L-146: a minor finding of the delivery is fixed before it ships; one the reviewer marks out of scope stays in the run, never in the change."""
+        self.record("code", "CHANGES", findings=[{"id": "F1", "severity": "minor", "file": "a.py:1", "text": "rename thing 1"},
+                                                  {"id": "F2", "severity": "minor", "text": "an old helper elsewhere", "scope": "out"}])
+        self.record("code", "APPROVE")
+        self.assertIn("1 minor finding(s) of the delivery are open: 2:F1 rename thing 1", self.fails("gate", "review", code=1))
+        self.assertEqual(len([e for e in self.events(self.run_dir) if e["type"] == "loop"]), 0, "a minor round spends no loop")
+        self.assertIn("scope", self.record("code", "APPROVE", code=2, findings=[{"id": "F9", "severity": "minor", "text": "x", "scope": "later"}]))
+        self.record("code", "APPROVE", resolved=["2:F1"])
         self.ok("gate", "review")
         self.ship_plan()
-        text = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        self.assertIn("## Follow-ups: 22 unresolved minor finding(s)", text)
-        self.assertEqual(text.count("rename thing 1 "), 1, "the same minor from two reviews is listed once")
-        self.assertNotIn("rename thing 3 (", text)
-        self.assertEqual(len([ln for ln in text.splitlines() if "(round" in ln and ln.startswith("- a.py")]), 20)
-        self.assertIn("- and 2 more", text)
+        self.assertNotIn("old helper", (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8"))
+        briefing = json.loads(self.ok("next", "--json"))["briefing"]
+        self.assertIn("  findings outside this delivery (kept in the run, not in the change): 1", briefing)
 
     def tree_branch(self) -> str:
         return git("rev-parse", "--abbrev-ref", "HEAD", cwd=self.tree())

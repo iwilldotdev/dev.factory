@@ -1,4 +1,5 @@
-"""The change-request title and body, and the Gate S briefing: AC x check x status with evidence references [L-142, L-144, L-146]."""
+"""The change-request title and body, and the Gate S briefing. The body is for the human reviewer of the change: what it does, in the
+project's words; the AC x check x evidence table is the user's, in the briefing and the run [L-142, L-144, L-146]."""
 from __future__ import annotations
 
 import re
@@ -7,8 +8,9 @@ from . import evidence, review
 from .util import FactoryError
 
 LOCAL_LINK = re.compile(r"\]\((?:evidence/|artifacts/|[A-Za-z]:[\\/])|file://")  # run-local paths 404 in the SCM [L-144]
-EXCERPT = 10
-ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # terminal colors render as junk in the change body
+# the run's bookkeeping means nothing to a reviewer of the change: ids of checks, ACs and decisions, attempts, the run folder
+JARGON = re.compile(r"\b(?:CHK|AC|Q|F|B|I)-\d+\b|\battempt \d+\b|\.factory[\\/]|\bfactory (?:verify|gate|next|review|run|ship)\b")
+SUMMARY = "summary.md"
 
 
 def title(cfg: dict, ticket: dict) -> str:
@@ -34,72 +36,29 @@ def rows(st: dict, checks: list[dict], lk: dict, heads: dict[str, str]) -> list[
         for ac in c["ac"] or ["-"]:
             out.append({"ac": ac, "check": c["id"], "repo": c["repo"], "cmd": _short(rec["cmd"] if rec else c.get("run", c["type"])),
                         "exit": rec["exit"] if rec else None, "result": rec["result"] if rec else "none",
-                        "ref": f"{c['id']} attempt {rec['attempt']} ({rec['hash'][:8]})" if rec else "-",
-                        "tail": _excerpt(rec) if rec else []})
+                        "ref": f"{c['id']} attempt {rec['attempt']} ({rec['hash'][:8]})" if rec else "-"})
     return out
 
 
-def _excerpt(rec: dict) -> list[str]:
-    """The last output lines without colors or the local worktree path; a quality check shows its count against the base instead."""
-    d = rec.get("details") or {}
-    if "new" in d and "total" in d:  # its raw output is the base's findings, which read as failures under a pass
-        lines = [f"{d['total']} finding(s), {d.get('baseline_stable', 0)} at the base, {len(d['new'])} new", *map(str, d["new"])]
-    else:
-        lines = ANSI.sub("", rec["tail"]).splitlines()
-    wt = (rec.get("worktree") or "").rstrip("/\\")
-    for root in {wt, wt.replace("/", "\\")} - {""}:  # the SCM shows repo-relative paths; a local path leaks the machine
-        lines = [ln.replace(root + "/", "").replace(root + "\\", "").replace(root, ".") for ln in lines]
-    return lines[-EXCERPT:]
-
-
-def table(rs: list[dict]) -> list[str]:
-    lines = ["| AC | Check | Command | Exit | Result | Evidence |", "|---|---|---|---|---|---|"]
-    return lines + [f"| {r['ac']} | {r['check']} | `{_cell(r['cmd'], 70).replace('`', chr(39))}` | {'' if r['exit'] is None else r['exit']} | "
-                    f"{r['result']} | {_cell(r['ref'])} |" for r in rs]
-
-
-def body(st: dict, ticket: dict, plan: dict, lk: dict, rs: list[dict], heads: dict, behind: dict) -> str:
-    """The change description; it names commands, results and evidence ids, never a path inside the run folder [L-144]."""
-    out = [f"## Summary", f"{ticket['id']}: {ticket['title'].strip()}" + (f" ({ticket['url']})" if ticket.get("url") else ""), "",
-           "## Acceptance criteria", ""]
-    acs = {a["id"]: a["text"] for a in plan["acs"]}
-    out += [f"- {i}: {_cell(t, 200)}" for i, t in acs.items()] + [""] + table(rs) + [""]
-    shown = set()
-    for r in rs:
-        if r["tail"] and r["check"] not in shown:
-            shown.add(r["check"])
-            out += [f"<details><summary>{r['check']}: last {len(r['tail'])} output lines</summary>", "", "```text", *r["tail"], "```", "</details>", ""]
-    flaky = [e for e in st["evidence"] if e.get("result") == "flaky" and e["sha"] == heads.get(e["repo"])]
-    if flaky:
-        out += ["## Flaky attempts", *[f"- {e['check']} attempt {e['attempt']} failed an assertion and passed on retry" for e in flaky], ""]
-    changed = (review.latest(st, "code") or {}).get("changed_values") or []
-    if changed:
-        out += ["## Changed values (code review)", *[f"- {c['file']}: {c['what']} ({c['why']})" for c in changed], ""]
-    asked = humans(st, heads)
-    if asked:
-        out += ["## Human checks (confirmed by the user)", *[f"- {k}: {_cell(e['cmd'].removeprefix('human: '), 120)}; the user said: {_cell(e['user_said'], 120)}" for k, e in asked.items()], ""]
-    minors = review.open_minors(st)
-    if minors:
-        out += [f"## Follow-ups: {len(minors)} unresolved minor finding(s)"]
-        out += [f"- {f.get('file', '')} {f['text']} (round {f['round']}, {f['review']} review)".replace("-  ", "- ") for f in minors[:review.CAP]]
-        out += ([f"- and {len(minors) - review.CAP} more"] if len(minors) > review.CAP else []) + [""]
-    seen: dict[str, str] = {}
-    for r in st["design_reviews"]:
-        seen[r["frame"]] = r["user_said"]
-    if seen:
-        out += ["## Design fidelity: approximate", *[f"- {f}: an approximate frame; the user reviewed it and said: {_cell(t, 120)}" for f, t in seen.items()], ""]
-    shots = [(c["id"], n) for c in plan["checks"] if c.get("type") == "screenshot" and (e := next((e for e in reversed(st["evidence"]) if e["check"] == c["id"]
-             and e["mode"] == "verify" and e["result"] == "pass" and e["sha"] == heads.get(c["repo"])), None)) for n in
-             [a.rsplit("/", 1)[-1] for a in e["artifacts"] if a.endswith(".png")]]
-    if shots:
-        out += ["## Screenshots (attach the images from the run's artifacts)", *[f"- {c}: {n}" for c, n in shots], ""]
-    out += ["## Review", *[f"- {k}: round {e['round']}, {e['verdict']} by {e['reviewer']}" for k in review.BOUND if (e := review.latest(st, k))], ""]
-    out += ["## Branches", *[f"- {r}: {h[:7]}, {b['count']} commit(s) behind {b['ref'] or 'the target'}" if b["count"] is not None
-                              else f"- {r}: {h[:7]}, behind count unknown ({b['note']})" for r, h in heads.items() for b in [behind[r]]]]
-    text = "\n".join(out).rstrip() + "\n"
+def body(summary: str, ticket: dict) -> str:
+    """The change description is the run's `ship/summary.md`, written for the human reviewer in the project's language; it is
+    refused while it is empty, misses the ticket key, links into the run folder or carries the run's bookkeeping [L-144]."""
+    text = summary.strip()
+    where = f"ship/{SUMMARY}"
+    if not text:
+        raise FactoryError(f"{where} is missing or empty: " + GUIDE)
+    if ticket["id"] not in text:
+        raise FactoryError(f"{where} does not name the ticket {ticket['id']}: start with the key and its link, then " + GUIDE)
     if LOCAL_LINK.search(text):
-        raise FactoryError("the generated change body links to a path inside the run folder [L-144]")
-    return text
+        raise FactoryError(f"{where} links to a path inside the run folder, which the SCM cannot open [L-144]")
+    if (m := JARGON.search(text)):
+        raise FactoryError(f"{where} carries the run's bookkeeping ({m.group(0)!r}); the reviewer of the change never sees the run: " + GUIDE)
+    return text + "\n"
+
+
+GUIDE = ("write it for the reviewer of the change, in the language of the project (its commits and ticket): the ticket key and link; "
+         "what changes for the user; behaviour that changes beyond the ticket (shared components, values a reviewer flagged); how it was "
+         "tested, in plain words (the kinds of tests added, how to try it by hand). No check, AC or decision ids, no evidence, no run paths.")
 
 
 def humans(st: dict, heads: dict) -> dict[str, dict]:
@@ -114,7 +73,8 @@ def briefing(sp: dict, rs: list[dict], st: dict) -> list[str]:
         if i["intent"] == "change_request":
             lines.append(f"  change {i['repo']}: {i['action']} {i['source_branch']} -> {i['target_branch']} at {sp['heads'][i['repo']][:7]}")
     lines += [f"  {r['ac']} x {r['check']}: {r['result']} ({r['ref']})" for r in rs]
-    lines.append(f"  follow-ups: {len(review.open_minors(st))} unresolved minor finding(s)")
+    out = [f for f in review.open_minors(st) if f.get("scope") == "out"]
+    lines.append(f"  findings outside this delivery (kept in the run, not in the change): {len(out)}")
     lines += [f"  ticket: {i['intent']} (needs the user)" for i in sp["intents"] if i["intent"].startswith("issue_")] or ["  ticket: no comment or transition"]
     lines.append(f"  approximate design frames: {', '.join(sorted({r['frame'] for r in st['design_reviews']})) or 'none'}; "
                  f"screenshots: {sum(1 for e in st['evidence'] if e['mode'] == 'verify' and e['result'] == 'pass' and any(a.endswith('.png') for a in e['artifacts']))} record(s) with images")

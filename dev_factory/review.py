@@ -48,15 +48,17 @@ def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict], rules
     acs = {a["id"] for a in plan["acs"]}
     findings = data.get("findings", [])
     if not (isinstance(findings, list) and all(isinstance(f, dict) for f in findings)):
-        errs.append("findings: must be a list of {id, severity, text, file?, ac?}")
+        errs.append("findings: must be a list of {id, severity, text, file?, ac?, scope?}")
         findings = []
     ids = set()
     for i, f in enumerate(findings):
         here = f"findings[{i}]"
-        errs += [f"{here}: unknown key {k!r}" for k in sorted(set(f) - {"id", "severity", "file", "text", "ac"})]
+        errs += [f"{here}: unknown key {k!r}" for k in sorted(set(f) - {"id", "severity", "file", "text", "ac", "scope"})]
         _strs(f, ("id", "text"), here, errs)
         if f.get("severity") not in SEVERITIES:
             errs.append(f"{here}.severity: must be one of {', '.join(SEVERITIES)}")
+        if f.get("scope", "change") not in ("change", "out"):
+            errs.append(f'{here}.scope: "change" (fixed before the delivery, the default) or "out" (not part of this delivery)')
         if f.get("ac") is not None and f["ac"] not in acs:
             errs.append(f"{here}.ac: {f['ac']!r} is not an AC of this plan")
         if f.get("id") in ids:
@@ -218,6 +220,10 @@ def reasons(st: dict, plan: dict, lk: dict, cfg: dict | None = None) -> list[str
             blocking = [f"{f['id']} ({f['severity']}) {f['text']}" for f in rv["findings"] if f["severity"] != "minor"]
             out.append(f"the {kind} review (round {rv['round']}) asked for changes: " + ("; ".join(blocking) or "see its findings")
                        + ". Fix, commit and run verify, then record a new review")
+    if not out and (todo := [f for f in open_minors(st) if f.get("scope", "change") == "change"]):
+        out.append(f"{len(todo)} minor finding(s) of the delivery are open: " + "; ".join(f"{f['round']}:{f['id']} {f['text'][:80]}" for f in todo[:5])
+                   + ". Fix them, commit and run verify; the next review lists them in resolved, or marks one \"scope\": \"out\" when it is not"
+                   " part of this delivery (a delivery ships finished, and its change carries no follow-ups)")
     code, qa = latest(st, "code"), latest(st, "qa")
     if plan.get("risk") == "high" and code and qa and norm(code["reviewer"]) == norm(qa["reviewer"]) and not out:
         out.append(f"risk is high: the code and qa reviews must come from two different reviewers, both {code['reviewer']!r} now; record one of them again with another reviewer")

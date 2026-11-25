@@ -60,11 +60,10 @@ class ReadbackTests(ShipCase):
             self.confirmed(**over)
             res = self.ship_verify(code=1)
             self.assertTrue(any(text in m for m in res["mismatches"]), (name, res["mismatches"]))
-        edited = sp["rows"][0]
         body = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        self.confirmed(description_md=body.replace(f"| {edited['ac']} | {edited['check']} |", "| edited by hand |"))
+        self.confirmed(description_md=body.replace("what changes", "edited by hand"))
         res = self.ship_verify(code=1)
-        self.assertIn("lacks the AC x check x status table rows: AC-1 x CHK-1 pass", res["mismatches"][0])
+        self.assertIn("the change description is not the planned body", res["mismatches"][0])
         self.confirmed()
         self.assertEqual(self.ship_verify()["result"], "pass")
 

@@ -169,7 +169,7 @@ class BugTests(E2E):
         self.assertEqual(gates, ["intake", "plan", "reproduce", "verify", "review", "ship"])
         self.assertEqual({e["mode"] for e in events if e["type"] == "evidence"}, {"reproduce", "verify", "red", "green"})
         body = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        self.assertIn("| AC-1 | CHK-1 |", body)
+        self.assertNotIn("CHK-1", body)  # the change speaks to its reviewer; the AC x evidence table stays in the run
         self.assertEqual([e["result"] for e in events if e["type"] == "ship_verified"], ["pass"])
 
 

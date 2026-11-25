@@ -115,8 +115,8 @@ class RuleTests(HumanCase):
 
 class ShipTests(HumanCase):
     @lesson("L-24")
-    def test_the_ship_body_and_the_briefing_list_the_human_checks_with_the_users_words(self):
-        """L-24: the change body and the Gate S briefing say what the user confirmed, in their words."""
+    def test_the_briefing_lists_the_human_checks_with_the_users_words(self):
+        """L-24: the Gate S briefing says what the user confirmed, in their words; the change body stays the reviewer's summary."""
         self.pending()
         self.confirm("yes, Saved in Portuguese")
         self.ok("gate", "verify")
@@ -125,9 +125,7 @@ class ShipTests(HumanCase):
         self.ok("gate", "review")
         self.ok("ship", "plan")
         body = (self.run_dir / "ship" / "body.md").read_text(encoding="utf-8")
-        self.assertIn("## Human checks (confirmed by the user)", body)
-        self.assertIn(f"CHK-2: {TEXT}; the user said: yes, Saved in Portuguese", body)
-        self.assertIn("| AC-2 | CHK-2 |", body)
+        self.assertNotIn("CHK-2", body)  # the user's confirmation is for the briefing, not the reviewer of the change
         n = json.loads(self.ok("next", "--json"))
         self.assertTrue(any("human check CHK-2: the user confirmed (yes, Saved in Portuguese)" in ln for ln in n["briefing"]), n["briefing"])
 

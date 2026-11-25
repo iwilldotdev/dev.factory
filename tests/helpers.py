@@ -162,6 +162,8 @@ class FactoryCase(unittest.TestCase):
         """Run the CLI in-process; returns (exit code, stdout, stderr)."""
         from dev_factory.cli import main
         argv = list(args)
+        if ("ship", "plan") in zip(argv, argv[1:]) and getattr(self, "summaries", True):
+            self.default_summaries()
         if project and cwd is None:
             cwd = self.proj
             if "--project" not in argv:
@@ -177,6 +179,13 @@ class FactoryCase(unittest.TestCase):
         finally:
             os.chdir(old_cwd)
         return code, out.getvalue(), err.getvalue()
+
+    def default_summaries(self) -> None:
+        """Every run gets the reviewer's summary that the ship plan needs, unless the test wrote its own."""
+        for run in (self.proj / ".factory" / "runs").glob("*"):
+            if run.is_dir() and not (run / "ship" / "summary.md").is_file():
+                (run / "ship").mkdir(exist_ok=True)
+                (run / "ship" / "summary.md").write_text(f"{run.name}: what changes, and a unit test that shows it.\n", encoding="utf-8")
 
     def ok(self, *args: str, **kw) -> str:
         code, out, err = self.cli(*args, **kw)

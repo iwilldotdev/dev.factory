@@ -73,6 +73,12 @@ class ShipCase(M3Case):
         self.approve_both()
         self.ok("gate", "review")
 
+    SUMMARY = "ABC-1: overdue invoices are listed.\n\nTested with a unit test of the overdue list.\n"
+
+    def write_summary(self, text: str | None = None) -> None:
+        (self.run_dir / "ship").mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "ship" / "summary.md").write_text(text if text is not None else self.SUMMARY, encoding="utf-8")
+
     def ship_plan(self, *flags: str) -> dict:
         self.ok("ship", "plan", *flags)
         return self.sp()

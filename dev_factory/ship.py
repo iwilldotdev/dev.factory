@@ -85,7 +85,9 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
         if p and not update:
             raise FactoryError(f"{r}: change {p['id']} already exists: plan its new body with factory ship plan --update")
     rs = shipbody.rows(st, planmod.effective_checks(pl, cfg), lk, heads)
-    text, ttl, draft = shipbody.body(st, ticket, pl, lk, rs, heads, bh), shipbody.title(cfg, ticket), cfg["ship"]["draft"]
+    summary = path_of(run, shipbody.SUMMARY)
+    text = shipbody.body(summary.read_text(encoding="utf-8") if summary.is_file() else "", ticket)
+    ttl, draft = shipbody.title(cfg, ticket), cfg["ship"]["draft"]
     intents: list[dict] = []
 
     def add(name: str, **kw) -> None:
@@ -150,11 +152,9 @@ def _compare(sp: dict, it: dict, d: dict, head: str) -> list[str]:
     if d["state"] != "open":
         out.append(f"{r}: the change is {d['state']}, not open")
     out += [f"{r}: reviewer {x} is not on the change [L-143]" for x in it["reviewers"] if x not in d.get("reviewers", [])]
-    lines = d["description_md"].splitlines()
-    miss = [f"{x['ac']} x {x['check']} {x['result']}" for x in sp["rows"] if not any(x["ac"] in ln and x["check"] in ln and x["result"] in ln for ln in lines)]
-    if miss:
-        out.append(f"{r}: the change description lacks the AC x check x status table rows: {', '.join(miss[:4])}"
-                   + (f" and {len(miss) - 4} more" if len(miss) > 4 else "") + " [L-153]")
+    planned = Path(sp["body_file"]).read_text(encoding="utf-8") if Path(sp["body_file"]).is_file() else ""
+    if " ".join(planned.split()) not in " ".join(d["description_md"].split()):
+        out.append(f"{r}: the change description is not the planned body ({sp['body_file']}): set it to that file, then read it back [L-153]")
     if shipbody.LOCAL_LINK.search(d["description_md"]):
         out.append(f"{r}: the change description links to a local path that the SCM cannot open [L-144]")
     return out

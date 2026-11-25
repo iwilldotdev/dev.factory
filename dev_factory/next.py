@@ -236,6 +236,9 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
     if asked:
         set_(f"the {' and '.join(asked)} review asked for changes (see the reasons): fix them in the worktree(s), commit, then run verify; "
              "a fresh review of the new commit follows", "command", f"factory verify{flag}", trees, "builder")
+    elif reasons and all("minor finding(s) of the delivery are open" in r for r in reasons):
+        set_(reasons[0].split(". Fix")[0] + ": fix them in the worktree(s), commit, then run verify; a fresh review lists them in resolved "
+             "(or marks one out of this delivery); a round of minor fixes spends no loop", "command", f"factory verify{flag}", trees, "builder")
     elif reasons and all(r.startswith("approx frame") for r in reasons):
         frames = [r.split()[2].rstrip(":") for r in reasons]
         set_("an approximate design frame needs the user's own design review: show the user the design image and the capture "
@@ -282,8 +285,8 @@ def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: s
         set_(f"hotfix: {step[0]}", "command", step[1], [], "builder")
     elif stage == "plan":
         update = " --update" if any(ship._existing(run, st, r) for r in st["repos"]) else ""
-        set_("write the ship plan: neutral intents (push, change request with its AC x check x status body, readback, ticket writes) for "
-             "the current commits; --ticket none|comment|transition|both picks the ticket writes, --pipeline adds a pipeline readback, "
+        set_(f"write ship/{shipbody.SUMMARY} first, the change description for its human reviewer (" + shipbody.GUIDE + "); then the ship "
+             "plan: neutral intents (push, change request with that body, readback, ticket writes) for the current commits; --ticket none|comment|transition|both picks the ticket writes, --pipeline adds a pipeline readback, "
              "--allow-behind --decision Q-n accepts a target that moved", "command", f"factory ship plan{update}{flag}", [], "orchestrator")
     elif stage == "execute":
         sp = ship.load(run)

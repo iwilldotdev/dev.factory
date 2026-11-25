@@ -279,7 +279,8 @@ class Interview:
             elif qid.startswith("providers.") and v:
                 doc.setdefault("providers", {}).setdefault(qid.split(".")[1], {})["fetch"] = v
         home.save(self.root, doc)
-        st["asked"] = sorted(set(st["asked"]) | set(now) - {"repo_name"})
+        no_env = {f"{q[:-2]}{x}" for q, v in val.items() if q.endswith(".env.up") and v is None for x in ("base_url", "health")}
+        st["asked"] = sorted(set(st["asked"]) | set(now) | no_env - {"repo_name"})  # no start command: no URL or health to ask
         self._save_state(st)
 
     def summary(self) -> dict:
@@ -366,8 +367,12 @@ def interactive(cwd: Path, workspace: str | None, explicit: str | None, ask, say
         batch = iv.next_questions()
         if not batch:
             return iv.summary()
+        got: dict = {}
+        for q in batch:  # no start command: its base URL and health are not asked
+            if not (q["id"].endswith((".env.base_url", ".env.health")) and got.get(q["id"].rsplit(".", 1)[0] + ".up", "x") in ("", "-", None)):
+                got[q["id"]] = prompt(q, ask, say)
         try:
-            iv.apply({q["id"]: prompt(q, ask, say) for q in batch})
+            iv.apply(got)
         except FactoryError as exc:
             errors += 1
             if errors > 3:

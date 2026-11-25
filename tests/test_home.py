@@ -162,6 +162,16 @@ class SetupTests(HomeCase):
             self.assertIn("asked at every run: repo api: target branches, standing checks", out)
             self.assertEqual((self.base / "fhome2" / "shop" / "factory.toml").read_text(encoding="utf-8"), by_json)
 
+    def test_skipping_the_env_start_command_skips_its_url_and_health(self):
+        self.at(self.web, "setup", "--answer", "workspace=shop", "--answer", "repo_name=web", "--json", code=4)
+        nxt = json.loads(self.at(self.web, "setup", "--answer", "repo.web.base=main", "--answer", "repo.web.targets=", "--answer", "repo.web.env.up=",
+                                 "--answer", "repo.web.checks=", "--answer", "repo.web.notes=", "--json", code=4))
+        self.assertFalse([q for q in nxt.get("questions", []) if ".env." in q["id"]], nxt)
+        with mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.base / "fhome4")}):
+            ask = feeder(["shop", "web", "main", "-", "-", "-", "-", "-", "-", "-"])
+            self.at(self.web, "setup", ask=ask)
+            self.assertNotIn("env", tomllib.loads((self.base / "fhome4" / "shop" / "factory.toml").read_text(encoding="utf-8"))["repo"][0])
+
     def test_workspace_names_are_unique_slugs(self):
         self.workspace("web", self.repo_entry(self.base / "x"))
         q = json.loads(self.at(self.web, "setup", "--questions", "--json", code=4))["questions"][0]
@@ -171,7 +181,7 @@ class SetupTests(HomeCase):
         self.assertIn("not a pending question: repo.web.base", self.at(self.web, "setup", "--answer", "repo.web.base=main", code=2))
 
     def test_a_terminal_without_a_workspace_runs_the_interview_then_asks_for_the_ticket(self):
-        ask = feeder(["shop", "", ""] + ["-"] * 8)  # workspace, name, base, then 8 skips
+        ask = feeder(["shop", "", ""] + ["-"] * 6)  # workspace, name, base, then 6 skips (no start command: no URL or health asked)
         with mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.base / "fhome3")}):
             out = self.at(self.web, ask=lambda p="": ask(p) if ask.queue else "ABC-7")
         self.assertIn("workspace shop saved", out)

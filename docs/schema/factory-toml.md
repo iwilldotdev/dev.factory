@@ -66,7 +66,7 @@ A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit sta
 
 ### `[[repo.check]]` (standing checks, optional)
 
-These run for every run that affects the repo. They are ordinary `cmd` checks with id `<repo>:<id>` [L-63]. Keys are the `cmd` check keys from `plan-json.md` (`id`, `run`, `cwd`, `expect_exit`, `expect_pattern`, `timeout_s`), minus `ac`.
+These run for every run that affects the repo. They are ordinary `cmd` checks with id `<repo>:<id>` [L-63]. Keys are the `cmd` check keys from `plan-json.md` (`id`, `run`, `cwd`, `expect_exit`, `expect_pattern`, `timeout_s`), minus `ac`, plus `vars`: a table of environment variables for the command, as the CI job sets them (e.g. `vars = { NODE_OPTIONS = "--max-old-space-size=3072" }`).
 
 | Key | Type | Default | Notes |
 |---|---|---|---|

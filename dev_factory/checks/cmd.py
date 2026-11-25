@@ -48,7 +48,7 @@ def classify(check: dict, code: int | None, timed_out: bool, text: str, mode: st
 def run_check(check: dict, ctx) -> dict:
     shown = redact(check["run"], ctx.secrets)
     try:
-        res = proc.run(check["run"], cwd=ctx.path / check["cwd"], env=proc.child_env(), timeout_s=check["timeout_s"], shell=True)
+        res = proc.run(check["run"], cwd=ctx.path / check["cwd"], env=proc.child_env(check.get("vars") or {}), timeout_s=check["timeout_s"], shell=True)
     except FactoryError as exc:
         return {"cmd": shown, "exit": None, "duration_s": 0.0, "output": str(exc), "result": "setup", "kind": "setup", "reason": str(exc)}
     text = redact(res.out + ("\n" if res.out and res.err else "") + res.err, ctx.secrets).replace("\r\n", "\n")

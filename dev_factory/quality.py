@@ -91,7 +91,7 @@ def quote(files: list[str]) -> str:
 
 def _execute(check: dict, tree: Path, line: str, secrets: list[str]):
     """(result fields when the run says nothing about the code, else None; the process result; the redacted text)."""
-    res = proc.run(line, cwd=tree / check["cwd"], env=proc.child_env(), timeout_s=check["timeout_s"], shell=True)
+    res = proc.run(line, cwd=tree / check["cwd"], env=proc.child_env(check.get("vars") or {}), timeout_s=check["timeout_s"], shell=True)
     text = redact(res.out + ("\n" if res.out and res.err else "") + res.err, secrets).replace("\r\n", "\n")
     bad = None
     if res.timed_out:

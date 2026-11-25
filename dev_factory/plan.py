@@ -185,7 +185,7 @@ def _norm(c: dict, cfg: dict, standing: bool) -> dict:
         out.update(plancheck.norm(c, cfg))
     else:
         out.update(run=c["run"], cwd=c.get("cwd") or ".", expect_exit=c.get("expect_exit", 0), expect_pattern=c.get("expect_pattern"))
-    for key in ("reproduce", "red_green", "mirror"):
+    for key in ("reproduce", "red_green", "mirror", "vars"):
         if c.get(key):
             out[key] = c[key]
     if c.get("files") and kind == "cmd":

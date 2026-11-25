@@ -1,5 +1,6 @@
 """Plan lock drift, `plan amend` and the loop budget."""
 import json
+import sys
 import unittest
 
 from dev_factory.run import Run
@@ -50,6 +51,14 @@ class DriftTests(M2Case):
         out = self.ok("plan", "amend", "--reason", "standing lint already fails at the branch point")
         self.assertIn("web:lint", out)
         self.assertIn("loops used: 0/3", self.ok("status"))
+
+    def test_a_standing_check_runs_with_its_vars_like_a_ci_job(self):
+        self.fix()
+        probe = "import os,sys; sys.exit(0 if os.environ.get('FACTORY_T') == 'on' else 3)"
+        self.write("factory.toml", self.TOML + f'\n[[repo.check]]\nid = "env"\nrun = {json.dumps(f"{sys.executable} -c " + json.dumps(probe))}\nvars = {{ FACTORY_T = "on" }}\n')
+        self.ok("plan", "amend", "--reason", "a standing check with vars")
+        self.assertIn("web:env", self.ok("verify"))
+        self.assertIn("pass", next(e for e in self.events(self.run_dir) if e.get("check") == "web:env")["result"])
 
     def test_machine_facts_in_local_toml_do_not_move_the_lock(self):
         self.write(".factory/local.toml", f'worktree_root = {json.dumps(str(self.base / "elsewhere"))}\n')

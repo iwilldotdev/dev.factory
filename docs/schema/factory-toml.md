@@ -135,7 +135,7 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `max_loops` | int, 0 to 10 | `3` | one budget for amends and review rounds [L-135, L-136] |
+| `max_loops` | int, 0 to 10 | `5` | one budget for amends and review rounds; each user decision allows one more [L-135, L-136] |
 | `ship` | `"ask"` or `"draft-auto"` | `"ask"` | |
 
 ## `[orchestration]`
@@ -257,7 +257,7 @@ ticket = "comment"
 reviewers = [{ scm = "ana.lima", tracker = "5f1c2e" }]
 
 [autonomy]
-max_loops = 3
+max_loops = 5
 ship = "draft-auto"
 
 [secrets]

@@ -20,7 +20,7 @@ Start and steer:
 Roles (without sub-agents, play them in turn; the rules do not change):
 - scout: reads ticket, media, code and history and returns facts with file:line; writes nothing in the repos.
 - author: writes plan.json, checks, `diagnosis.md`, `notes/design.md` and the payload files for `ingest`.
-- builder: edits the run worktrees and commits (commit header per `factory.toml`); never records a review. Pass `--actor builder-<n>`.
+- builder: edits the run worktrees and commits (commit header per `factory.toml`; fixes asked later as `git commit --fixup=<sha>`); never records a review. Pass `--actor builder-<n>`.
 - reviewer: a fresh context that wrote nothing in this run, pass `--actor reviewer-<n>`. The CLI refuses a review whose reviewer or actor built,
   verified or branched the run. The orchestrator never reviews its own edits, a resumed reviewer never re-judges a fix (a new round gets a new
   reviewer), and a green pipeline or another agent's claim is not evidence. Use the strongest model available; high risk needs two different reviewers.
@@ -62,6 +62,7 @@ a checks-only amend that closes them says so with `factory plan amend --reason "
 Ship (after the review gate). The CLI never pushes or calls a remote; you run the intents with your own tools.
 - Write `<run>/ship/summary.md`, the change description for its human reviewer, in the project's language: ticket key and link, what changes for the user,
   behaviour changed beyond the ticket, how it was tested in plain words; no check, AC or decision ids, evidence or run paths (the run keeps those).
+- Before ship, fold the fixups (`factory ship plan` names the command: `git -c sequence.editor=: rebase -i --autosquash <base>`), then `factory verify`.
 - `factory ship plan [--ticket none|comment|transition|both] [--update] [--pipeline]` writes the intents (push uses the repo's `remote`) and the body.
   Under `autonomy.ship = "ask"` ask before every intent; `draft-auto` allows a push and a draft change. Ticket writes always ask. Ready and merge are never automatic.
 - Save the change as the provider reports it and run `factory ingest change --raw <file> --contract <file>` (an adapter does it inside `factory ship verify`);

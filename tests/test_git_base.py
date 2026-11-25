@@ -62,6 +62,21 @@ class RemoteBaseTests(unittest.TestCase):
         self.commit("[X-3] - more work")
         self.assertFalse(git.rebased_only(self.dir, reviewed, sh(self.dir, "rev-parse", "HEAD"), "origin/pack"))
 
+    def test_a_fixup_passes_the_header_check_and_autosquash_keeps_the_tree(self):
+        sh(self.dir, "checkout", "-q", "-b", "fixups", "HEAD^1")  # the work without the merge
+        work = sh(self.dir, "rev-parse", "HEAD")
+        (self.dir / "f2.txt").write_text("[X-2] - work, fixed", encoding="utf-8")
+        sh(self.dir, "commit", "-q", "-am", "fixup! [X-2] - work")
+        before = sh(self.dir, "rev-parse", "HEAD")
+        self.assertEqual(git.commit_problems(self.dir, self.bp, "pack", r"^\[[^\]]+\] - .+", []), [])
+        self.assertEqual(len(git.fixups(self.dir, "pack")), 1)
+        sh(self.dir, "-c", "sequence.editor=:", "rebase", "-q", "-i", "--autosquash", "pack")
+        after = sh(self.dir, "rev-parse", "HEAD")
+        self.assertEqual(git.fixups(self.dir, "pack"), [])
+        self.assertEqual(sh(self.dir, "rev-list", "--count", "pack..HEAD"), "1")
+        self.assertTrue(git.same_tree(self.dir, before, after, "pack"))
+        self.assertFalse(git.same_tree(self.dir, work, after, "pack"), "the folded fix is a different tree than the unfixed work")
+
 
 if __name__ == "__main__":
     unittest.main()

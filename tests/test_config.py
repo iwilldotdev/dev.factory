@@ -25,7 +25,7 @@ class ValidationTests(FactoryCase):
         cfg = config.load(self.proj)
         self.assertEqual(cfg["checks"]["cmd_timeout_s"], 600)
         self.assertEqual(cfg["repo"][0]["base"], "main")
-        self.assertEqual(cfg["autonomy"], {"max_loops": 3, "ship": "ask"})
+        self.assertEqual(cfg["autonomy"], {"max_loops": 5, "ship": "ask"})
         self.assertEqual(cfg["limits"]["approx"]["color_delta_e"], 6)
         self.assertEqual(cfg["repo"][0]["branch"], "{kind}/{key}-{slug}")
 

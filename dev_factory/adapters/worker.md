@@ -43,7 +43,8 @@ lowers proof (a `human` check, no env, no design source) goes to the main sessio
 
 Implement the tasks in the run worktrees (the paths the request gives, never the main checkout). Follow `notes/design.md` and flag every deviation with
 the reason. Bugs: fix the root cause that `diagnosis.md` names, after the failing test exists; if the diagnosis looks wrong, return `blocked`.
-Commit per task with a header that matches the project's commit pattern and none of its forbidden trailers; leave the worktree clean. Iterate with
+Commit per task with a header that matches the project's commit pattern and none of its forbidden trailers; leave the worktree clean. A fix asked by a
+review, the UAT or feedback is `git commit --fixup=<sha of the commit it corrects>`, never a new "adjustments" commit: ship folds it in. Iterate with
 `factory verify --check CHK-n` or `--scoped`; the final `verify` belongs to the main session. Never record a review and never edit `plan.json` or the checks.
 
 ## reviewer

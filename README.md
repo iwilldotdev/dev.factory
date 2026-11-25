@@ -44,7 +44,7 @@ flowchart LR
 ```
 
 - **Plan lock.** `gate plan` hashes the plan, every check spec, declared fixtures, the proof-relevant config and the raw contracts. Drift fails every later gate until `factory plan amend --reason "..."`.
-- **Loop budget.** `[autonomy] max_loops` (default 3) is one budget for unapproved plan amends and review rounds that carry a blocker or major finding, plus feedback rounds. When it is spent the command refuses and the run blocks for the user; a recorded user decision (`--decision`) exempts one round. Build and verify iterations are free.
+- **Loop budget.** `[autonomy] max_loops` (default 5) is one budget for unapproved plan amends and review rounds that carry a blocker or major finding, plus feedback rounds. Rounds that only fix minor findings, and amends that only close them (`--resolves`), are free. When it is spent the command refuses and the run blocks for the user; each recorded user decision allows one more round. Build and verify iterations are free.
 - **Exit codes.** 0 ok, 1 a check or gate failed (the reasons are your to-do list), 2 usage, config or lock error, 3 environment failure.
 
 ### Components
@@ -263,7 +263,7 @@ draft = true
 ticket = "comment"                     # none | comment | transition | both
 
 [autonomy]
-max_loops = 3                          # one budget for plan amends and review rounds
+max_loops = 5                          # one budget for plan amends and review rounds
 ship = "ask"                           # ask | draft-auto (push and draft only; ready and merge are never automatic)
 
 [secrets]

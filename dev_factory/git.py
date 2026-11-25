@@ -328,6 +328,25 @@ def throwaway(project, run: Run, repo: dict, sha: str, label: str, actor: str | 
         remove_tree(main, path)
 
 
+FIXUP = re.compile(r"^(?:(?:fixup|squash|amend)! )+")
+
+
+def fixups(path: Path, base: str) -> list[str]:
+    """`fixup!`, `squash!` and `amend!` commits not folded yet: `git rebase --autosquash` folds them into their targets."""
+    out = git(path, "log", "--format=%h %s", f"{base}..HEAD", check=False).out.splitlines()
+    return [ln for ln in out if FIXUP.match(ln.split(" ", 1)[1] if " " in ln else "")]
+
+
+def same_tree(path: Path, old: str, new: str, ref: str) -> bool:
+    """`new` has exactly the tree `old` had, on the same base: commits folded or reworded, nothing else changed [L-18]."""
+    if not old or old == new:
+        return False
+    base_old = git(path, "merge-base", old, ref, check=False).out.strip()
+    base_new = git(path, "merge-base", new, ref, check=False).out.strip()
+    tree = lambda c: git(path, "rev-parse", f"{c}^{{tree}}", check=False).out.strip()
+    return bool(base_old) and base_old == base_new and tree(old) == tree(new) != ""
+
+
 def commit_problems(path: Path, bp: str, base: str, pattern: str | None, forbidden: list[str]) -> list[str]:
     """Commits in `branch_point..HEAD` (minus what the base already has) that break the header pattern or carry a
     forbidden trailer. A merge that only integrates the base skips the header check, never the trailer check [L-89, L-90]."""
@@ -343,6 +362,7 @@ def commit_problems(path: Path, bp: str, base: str, pattern: str | None, forbidd
         parents = parents.split()
         subject = body.strip().splitlines()[0] if body.strip() else ""
         integrates = len(parents) > 1 and base_sha and any(is_ancestor(path, p, base_sha) for p in parents[1:])
+        subject = FIXUP.sub("", subject)  # a fixup is folded into its target before ship; the target's header is what ships
         if pattern and not integrates and not re.search(pattern, subject):
             problems.append(f"{sha[:7]}: header {subject!r} does not match commit_pattern {pattern!r}")
         for key in forbidden:

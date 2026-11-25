@@ -38,7 +38,7 @@ SPEC = {
              "ticket": T(("e", "none", "comment", "transition", "both"), "none"), "transition_to": "c",
              "reviewers": [{"scm": "c", "tracker": "c"}], "require_pipeline": T("b", False),
              "base_update": T(("e", "rebase", "merge"), "rebase")},
-    "autonomy": {"max_loops": T(("r", 0, 10), 3), "ship": T(("e", "ask", "draft-auto"), "ask")},
+    "autonomy": {"max_loops": T(("r", 0, 10), 5), "ship": T(("e", "ask", "draft-auto"), "ask")},
     "orchestration": {"max_parallel": T("i", 1)},
     "feedback": {"ignore_authors": T("ls", [])},
     "metrics": {"tokens": "c", "idle_minutes": T("i", 30)},

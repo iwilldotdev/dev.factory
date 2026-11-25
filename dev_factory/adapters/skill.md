@@ -76,7 +76,8 @@ High risk (auth, money, data, migration, concurrency, public contract, security)
 
 ## Ship, feedback
 First write `<run>/ship/summary.md` (or have the author write it): the change description for a human reviewer who never sees the run, in the project's
-language: ticket key and link, what changes, behaviour changed beyond the ticket, how it was tested in plain words. Then `factory ship plan [--ticket none|comment|transition|both] [--update] [--pipeline]`; execute the intents of `ship/plan.json` in order with your own tools (the push uses
+language: ticket key and link, what changes, behaviour changed beyond the ticket, how it was tested in plain words. Fold the builders' `fixup!` commits
+(the command `factory ship plan` names), `factory verify`, then `factory ship plan [--ticket none|comment|transition|both] [--update] [--pipeline]`; execute the intents of `ship/plan.json` in order with your own tools (the push uses
 the intent's `remote`); save readbacks to files and `factory ingest change|pipeline --raw f --contract f` (`factory fetch change` when an adapter exists); then
 `factory ship verify`, `factory gate ship`. Show the Gate briefing from `factory next` (changes, AC x evidence, human checks) before asking. Feedback:
 `factory feedback` turns threads and failed jobs into findings and the run returns to build; `--dismiss F1|thread:<id> --decision Q-n` drops a thread only on a user decision.

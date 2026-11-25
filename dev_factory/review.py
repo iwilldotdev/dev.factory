@@ -220,7 +220,10 @@ def _same_change(st: dict, cfg: dict | None, r: str, old: str, new: str, kind: s
         if files and all(TEST_PATH.search(f) for f in files):
             return True
     repo = next((x for x in (cfg or {}).get("repo", []) if x["name"] == r), None)
-    return repo is not None and git.rebased_only(path, old, new, git.base_ref(path, repo))
+    if repo is None:
+        return False
+    ref = git.base_ref(path, repo)
+    return git.rebased_only(path, old, new, ref) or git.same_tree(path, old, new, ref)
 
 
 def kinds(plan: dict, cfg: dict | None) -> tuple[str, ...]:

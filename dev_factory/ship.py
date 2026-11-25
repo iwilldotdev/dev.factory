@@ -70,6 +70,12 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     pl, lk = planmod.load_plan(run)[0], lock.current(st)
     ticket = acquire.load(run, "ticket", st["ticket"])[0]["data"]
     heads, by = review.heads_of(st, pl["repos"]), {r["name"]: r for r in cfg["repo"]}
+    folds = {r: f for r in pl["repos"] if (f := git.fixups(Path(git.current(st, r)["path"]), git.base_ref(Path(git.current(st, r)["path"]), by[r])))}
+    if folds:  # the change ships its feature commits; the fixes reviewed on the way are folded into them first
+        raise FactoryError("fold the fixup commits into the commits they fix before ship, in each worktree: "
+                           + "; ".join(f"{r} ({len(f)}): git -c sequence.editor=: rebase -i --autosquash {git.base_ref(Path(git.current(st, r)['path']), by[r])}"
+                                       for r, f in folds.items())
+                           + ". The tree stays the same, so the reviews hold; run factory verify at the new HEAD, then plan again")
     bh = {r: behind(Path(git.current(st, r)["path"]), by[r]["base"], by[r]["remote"]) for r in pl["repos"]}
     late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r, b in bh.items() if b["count"]]
     if late and not allow_behind:

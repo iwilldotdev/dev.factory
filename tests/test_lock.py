@@ -50,7 +50,7 @@ class DriftTests(M2Case):
         self.write("factory.toml", self.TOML + '\n[[repo.check]]\nid = "lint"\nrun = "python -c pass"\n')
         out = self.ok("plan", "amend", "--reason", "standing lint already fails at the branch point")
         self.assertIn("web:lint", out)
-        self.assertIn("loops used: 0/3", self.ok("status"))
+        self.assertIn("loops used: 0/5", self.ok("status"))
 
     def test_a_checks_only_amend_that_closes_open_minor_findings_spends_no_loop(self):
         self.run_dir.joinpath("notes").mkdir(exist_ok=True)
@@ -108,7 +108,7 @@ class AmendTests(M2Case):
         self.assertEqual(lock["amend"], {"reason": "pattern was too loose", "decision": None, "changed_acs": [],
                                          "changed_checks": ["CHK-1"], "counts_loop": True})
         self.assertEqual([e["counts"] for e in self.events(self.run_dir) if e["type"] == "loop"], [True])
-        self.assertIn("loops used: 1/3", self.ok("status"))
+        self.assertIn("loops used: 1/5", self.ok("status"))
 
     @lesson("L-137")
     def test_a_checks_only_amend_keeps_the_core_hash_and_an_ac_change_moves_it(self):

@@ -109,7 +109,7 @@ A `spec_hash` covers the canonical check entry, the resolved defaults and comman
 
 Any drift fails every later gate and `verify` (`plan changed after lock` or `config changed after plan`) [L-131, L-132] until `factory plan amend --reason "<why>" [--decision Q-n]`. Amend re-validates and appends a new lock with the changed ids, the reason and the decision [L-133, L-134]. A checks-only amend keeps the code review [L-137].
 
-**Loop budget.** `autonomy.max_loops` (default 3) covers unapproved amends and review CHANGES rounds that have a blocker or major finding [L-135, L-138]. When it is exhausted, the command refuses and the run blocks for the user [L-136]. Counters are derived from events [L-134]. Build⇄verify iterations are not loops.
+**Loop budget.** `autonomy.max_loops` (default 5) covers unapproved amends and review CHANGES rounds that have a blocker or major finding [L-135, L-138]. When it is exhausted, the command refuses and the run blocks for the user [L-136]. Counters are derived from events [L-134]. Build⇄verify iterations are not loops.
 
 ## 7. Evidence, reuse and ordering
 

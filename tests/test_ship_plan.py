@@ -77,6 +77,21 @@ class BehindTests(ShipCase):
         self.assertEqual(self.ship_events("ship_planned")[-1]["decision"], "Q-1")
         self.assertIn("already consumed", self.fails("ship", "plan", "--allow-behind", "--decision", "Q-1"))
 
+    def test_fixup_commits_are_folded_before_ship_and_the_reviews_hold(self):
+        wt = self.tree()
+        subject = git("log", "-1", "--format=%s", cwd=wt)
+        git("commit", "-q", "--allow-empty", "-m", f"fixup! {subject}", cwd=wt)
+        self.ok("verify")
+        self.ok("gate", "review")  # same tree on the same base: the approved reviews hold
+        msg = self.fails("ship", "plan")
+        self.assertIn("fold the fixup commits", msg)
+        self.assertIn("rebase -i --autosquash", msg)
+        git("-c", "sequence.editor=:", "rebase", "-q", "-i", "--autosquash", "--keep-empty", "main", cwd=wt)
+        self.assertNotIn("fixup!", git("log", "--format=%s", "main..HEAD", cwd=wt))
+        self.ok("verify")
+        self.ok("gate", "review")
+        self.ship_plan()
+
     def test_a_rebased_branch_pushes_with_a_lease_on_the_pushed_sha_and_always_asks(self):
         wt = self.tree()
         self.assertNotIn("force_with_lease", self.ship_plan()["intents"][0])  # never pushed: a plain push

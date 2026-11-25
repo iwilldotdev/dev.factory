@@ -179,7 +179,8 @@ def _intake_action(project: Project, run: Run, st: dict, reasons: list[str], set
         set_("record every ticket media attachment: view each file (save it under the media folder first) or ask the user about it",
              "command", f"factory media seen <attachment-id> --file media/<file>{flag}", [run.dir / "media"], "any")
     elif not st["repos"]:
-        set_("declare the affected repos", "command", f"factory run repos <name>[,<name>]{flag}")
+        set_("the ticket and its media are recorded: declare the repos it affects (a scout reads the ticket and the code when unsure; repos: "
+             + ", ".join(r["name"] for r in project.cfg["repo"]) + ")", "command", f"factory run repos <name>[,<name>]{flag}", [], "any")
     else:
         set_("run the intake gate" if not reasons else "resolve the problems listed under reasons, then run the intake gate",
              "command", f"factory gate intake{flag}")

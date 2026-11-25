@@ -147,7 +147,7 @@ class RepoTests(FactoryCase):
         self.write("factory.toml", self.TOML + '\n[[repo]]\npath = "../b"\nname = "b"\n')
         run = self.start("ABC-1")
         self.ingest_ticket(run)
-        self.assertIn("no affected repo is declared", self.fails("gate", "intake", code=1))
+        self.assertIn("no affected repo is declared: factory run repos <name>[,<name>] (it works after start; repos: web, b)", self.fails("gate", "intake", code=1))
         self.ok("run", "repos", "web,b")
         self.ok("gate", "intake")
         self.assertIn("unknown repo ghost", self.fails("run", "repos", "ghost"))

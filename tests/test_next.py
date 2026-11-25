@@ -65,7 +65,10 @@ class NextTests(FactoryCase):
         self.write("factory.toml", self.TOML + '\n[[repo]]\npath = "../b"\nname = "b"\n')
         run = self.start("ABC-1")
         self.ingest_ticket(run)
-        self.assertIn("factory run repos", self.nxt()["command"])
+        n = self.nxt()
+        self.assertEqual(n["command"], "factory run repos <name>[,<name>]")
+        self.assertIn("the ticket and its media are recorded", n["action"])
+        self.assertIn("repos: web, b", n["action"])
 
     def test_open_questions_come_before_everything_and_name_the_answer_command(self):
         self.start("ABC-1")

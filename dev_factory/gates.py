@@ -45,7 +45,7 @@ def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
             out.append(f"ticket contract id {env['data']['id']!r} differs from the run ticket {st['ticket']!r}")
         out += media.reasons(run, st)
     if not st["repos"]:
-        out.append("no affected repo is declared: start the run with --repos <name>[,<name>]")
+        out.append(f"no affected repo is declared: factory run repos <name>[,<name>] (it works after start; repos: {', '.join(r['name'] for r in cfg['repo'])})")
     else:
         known = {r["name"] for r in cfg["repo"]}
         out += [f"affected repo {r!r} is not in factory.toml" for r in st["repos"] if r not in known]

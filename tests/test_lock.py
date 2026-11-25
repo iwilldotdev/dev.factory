@@ -59,8 +59,11 @@ class DriftTests(M2Case):
                                                                "resolved": [], "completeness": {}, "bound": {}, "lock_seq": 1, "independent_of": []})
         self.change_check(expect_pattern="checks passed: VALUE=2$")
         self.assertIn("not an open minor finding", self.fails("plan", "amend", "--reason", "x", "--resolves", "1:F9"))
+        self.write("factory.toml", self.TOML + "\n[autonomy]\nmax_loops = 0\n")
+        self.assertIn("loop budget exhausted", self.fails("plan", "amend", "--reason", "rework", code=1))  # raises the budget blocker
         self.assertIn("closes 1:F1, no loop spent", self.ok("plan", "amend", "--reason", "stronger check", "--resolves", "1:F1"))
-        self.assertIn("loops used: 0/3", self.ok("status"))
+        self.assertFalse(any(b["open"] for b in Run(self.proj / ".factory" / "runs", "ABC-1").state()["blockers"].values()),
+                         "the free amend leaves no budget blocker behind")
 
     def test_a_standing_check_runs_with_its_vars_like_a_ci_job(self):
         self.fix()

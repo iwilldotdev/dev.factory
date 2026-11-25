@@ -132,6 +132,7 @@ def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | 
     closing = _closing(st, resolves, acs, chk)  # closing minor findings of the delivery is part of finishing it, like a minor fix round
     if not upkeep and not closing:
         spend(run, cfg, st, "amend", decision, actor)
+
     # the lock consumes the decision it rests on, so `gate reproduce` accepts it and nothing else can reuse it [L-126]
     return lock_event(run, new, {"amend": {"reason": reason.strip(), "decision": decision, "changed_acs": acs, "changed_checks": chk,
                                            "counts_loop": decision is None and not upkeep and not closing,

@@ -144,6 +144,10 @@ def derive(events: list[dict]) -> dict:
         elif t == "plan_locked":
             st["locks"].append(ev)
             st["lock_at"] = i
+            if (ev.get("amend") or {}).get("counts_loop") is False:  # an amend that needed no loop makes a budget blocker moot
+                for b in st["blockers"].values():
+                    if b["open"] and (b.get("reason") or "").startswith("loop budget exhausted"):
+                        b["open"] = False
         elif t == "design_review":
             st["design_reviews"].append({**ev, "at": i})
         elif t == "design_refresh":

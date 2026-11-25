@@ -15,7 +15,7 @@ BANNED = ["".join(p) for p in (
     ("cla", "ude"), ("anthro", "pic"), ("open", "ai"), ("cod", "ex"), ("copi", "lot"), ("cur", "sor"), ("gem", "ini"),
     ("play", "wright"), ("pupp", "eteer"), ("sele", "nium"), ("cypr", "ess"), ("jenk", "ins"), ("sonar", "qube"), ("sla", "ck"),
     ("az", "ure"), ("n", "pm"), ("ya", "rn"), ("pn", "pm"), ("dot", "net"), ("pyt", "est"), ("je", "st"), ("es", "lint"), ("dock", "er"),
-    ("kuber", "netes"), ("mav", "en"), ("grad", "le"))]
+    ("kuber", "netes"), ("mav", "en"), ("grad", "le"), ("dev", "[._]mcp"))]
 # Decision 13: a harness adapter id may appear in the module that generates its file and in the test of that file only.
 HARNESS_ALLOW: dict[str, set[str]] = {"".join(("cla", "ude")): {"dev_factory/harness.py", "tests/test_harness.py", "tests/test_adapters.py", "docs/install.md", "docs/transition-from-v0.md", "README.md"}}
 # Decision 14: the bundled runner is a Node project with its own dependencies; its tool names may appear under browser/ only.

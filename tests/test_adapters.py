@@ -126,7 +126,7 @@ class Adapters(FactoryCase):
                 {"tool_name": "Bash", "tool_input": {"command": f"echo x >> {runs}events.jsonl"}},
                 {"tool_name": "Bash", "tool_input": {"command": f"rm -rf {runs}reviews"}},
                 {"tool_name": "PowerShell", "tool_input": {"command": f"Set-Content -Path '{runs}contracts/ticket.json' -Value x"}},
-                {"tool_name": "mcp__dev_mcp__any", "tool_input": {"save_to": f"/p/{runs}raw/a.json"}}]
+                {"tool_name": "mcp__tracker__any", "tool_input": {"save_to": f"/p/{runs}raw/a.json"}}]
         allow = [{"tool_name": "Write", "tool_input": {"file_path": f"/p/{runs}plan.json"}},
                  {"tool_name": "Write", "tool_input": {"file_path": f"/p/{runs}notes/design.md"}},
                  {"tool_name": "Bash", "tool_input": {"command": f"cat {runs}events.jsonl | head"}},

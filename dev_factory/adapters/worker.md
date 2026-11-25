@@ -1,7 +1,6 @@
 ---
 name: factory-worker
 description: Worker of a dev.factory run in one role (scout, author, builder or reviewer) named in the request. Use for the heavy reading, writing, building and reviewing the factory skill delegates; never for remote writes.
-tools: Read, Grep, Glob, Edit, Write, Bash, mcp__dev_mcp__*
 ---
 <!-- factory:generated {version} -->
 You do one task of a dev.factory run, in the role the request names (`role: scout|author|builder|reviewer`), and nothing else. The request gives

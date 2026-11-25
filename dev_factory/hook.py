@@ -10,7 +10,7 @@ import re
 import sys
 
 COMMAND = "factory hook pre-tool"  # the installed entry point, never a path into a working tree [L-149]
-ENTRY = {"matcher": "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__dev_mcp__.*", "hooks": [{"type": "command", "command": COMMAND}]}
+ENTRY = {"matcher": "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|mcp__.*", "hooks": [{"type": "command", "command": COMMAND}]}
 TARGETS = r"(?:events\.(?:jsonl|lock)|(?:artifacts|reviews|contracts|raw)(?:/|$|[\s\"']))"
 PROTECTED = re.compile(r"\.factory/runs/[^/\s\"']+/" + TARGETS, re.I)
 VAR_TARGET = re.compile(r"[$%]\{?\w+\}?%?/" + TARGETS, re.I)  # `$P/events.jsonl`: the variable may hold the run dir

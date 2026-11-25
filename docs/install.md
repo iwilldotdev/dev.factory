@@ -2,7 +2,7 @@
 
 dev.factory v1 is a standard Python application: install it from a git tag, apart from any working tree, so a branch under edit never serves a live run [L-149, L-130].
 
-Needs: Python 3.11 or later and `git`. Node 18 or later and a browser only when a plan uses `browser`, `visual`, `style` or `screenshot` checks (see the end).
+Needs: Python 3.11 or later and `git`. Node 20 or later (`engines.node` in `browser/package.json`) and a browser only when a plan uses `browser`, `visual`, `style` or `screenshot` checks (see the end).
 The CLI has no other dependency.
 
 ## Install the CLI
@@ -48,3 +48,5 @@ bundled = "<checkout>/browser/src/cli.js"
 ```
 
 `factory check` warns while a plan needs the runner and it is missing.
+
+On a fresh Linux machine (or a CI image) Chromium also needs its system libraries: run `npx playwright install --with-deps chromium` instead of the plain `install chromium` in that file (it needs root or sudo). On Windows and macOS the plain command is enough.

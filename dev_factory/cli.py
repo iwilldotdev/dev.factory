@@ -120,6 +120,8 @@ def cmd_next(args) -> int:
     text += [f"expects file: {f}" for f in n["files"]] + [f"role: {n['role']}"]
     if n["reasons"]:
         text += [f"pending gate {n['gate']} would fail:"] + [f"  - {r}" for r in n["reasons"]]
+    if n.get("base_note"):
+        text += [f"base: {n['base_note']}"]
     if n.get("uat"):
         text += [f"early UAT (does not block): {n['uat']['action']}"] + [f"  image: {i}" for i in n["uat"]["images"]]
     text += n.get("briefing", [])

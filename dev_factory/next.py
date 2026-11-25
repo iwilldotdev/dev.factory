@@ -140,6 +140,12 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
              "follow-ups, human checks); ready and merge stay with them", "none")
     if ph in ("review", "ship") and (uat := _uat(run, st)):
         out["uat"] = uat
+    if ph in ("build", "review"):  # a base that moved is merged before the review, not found at ship [L-108]
+        by = {r["name"]: r for r in project.cfg["repos"]}
+        late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r in st.get("repos", [])
+                if r in by and (w := git.current(st, r)) and (b := ship.behind(Path(w["path"]), by[r]["base"], by[r].get("remote", "origin")))["count"]]
+        if late:
+            out["base_note"] = "; ".join(late) + ": git fetch, merge the base into the run branch and verify again before the review"
     out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:
@@ -157,8 +163,8 @@ def _uat(run: Run, st: dict) -> dict | None:
     asked = any(h.get("text", "").startswith("uat:") for h in st["human"])
     if not shots or asked:
         return None
-    return {"action": "show these images to the user and ask whether the UI is what they expect; record their words with "
-                      "factory human --kind answer \"uat: <their words>\" (this does not block the run)", "images": sorted(set(shots))[-12:]}
+    return {"action": "show these images to the user and ask whether the UI is what they expect, at the ship briefing "
+                      "(questions belong to intake); record their words with factory human --kind answer \"uat: <their words>\" (never blocks the run)", "images": sorted(set(shots))[-12:]}
 
 
 def _intake_action(project: Project, run: Run, st: dict, reasons: list[str], set_, flag: str) -> None:

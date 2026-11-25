@@ -141,7 +141,7 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
     if ph in ("review", "ship") and (uat := _uat(run, st)):
         out["uat"] = uat
     if ph in ("build", "review"):  # a base that moved is merged before the review, not found at ship [L-108]
-        by = {r["name"]: r for r in project.cfg["repos"]}
+        by = {r["name"]: r for r in project.cfg["repo"]}
         late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r in st.get("repos", [])
                 if r in by and (w := git.current(st, r)) and (b := ship.behind(Path(w["path"]), by[r]["base"], by[r].get("remote", "origin")))["count"]]
         if late:

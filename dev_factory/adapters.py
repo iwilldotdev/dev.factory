@@ -10,10 +10,20 @@ BEGIN, END = "<!-- factory:begin -->", "<!-- factory:end -->"
 OWNED = "<!-- factory:generated"  # a whole file carries this line; a file without it is somebody else's and stays untouched
 
 
-def _save(path: Path, text: str) -> None:
+def _read(path: Path) -> str | None:
+    """The file's text with its own line endings (no newline translation), None when absent; not UTF-8 is a clear error."""
+    if not path.is_file():
+        return None
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FactoryError(f"{fwd(path)} is not UTF-8 text ({exc.reason} at byte {exc.start}); convert it or move it away, nothing was changed") from exc
+
+
+def _save(path: Path, text: str | bytes) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8", newline="\n")
+        path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
     except OSError as exc:  # a file another program holds open or a read-only folder: the old content stays [L-161]
         raise FactoryError(f"cannot write {fwd(path)}: {exc}; close the program that holds it, then run init again") from exc
 
@@ -23,13 +33,15 @@ def _backup(path: Path) -> str:
     while path.with_name(f"{path.name}.factory-bak-{n}").exists():
         n += 1
     dest = path.with_name(f"{path.name}.factory-bak-{n}")
-    _save(dest, path.read_text(encoding="utf-8"))
+    _save(dest, path.read_bytes())  # byte for byte
     return f"; the previous file is kept as {dest.name}"
 
 
 def put(path: Path, new: str, what: str) -> str:
     """Write `new` over an existing file after a backup; nothing changes when it is the same text."""
-    old = path.read_text(encoding="utf-8") if path.is_file() else None
+    old = _read(path)
+    if old and "\r\n" in old:  # keep the file's own line endings
+        new = new.replace("\r\n", "\n").replace("\n", "\r\n")
     if old == new:
         return f"unchanged {fwd(path)}"
     note = _backup(path) if old else ""
@@ -39,7 +51,7 @@ def put(path: Path, new: str, what: str) -> str:
 
 def put_block(path: Path, block: str) -> str:
     """The factory section of a host file: everything outside the markers stays as it is."""
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    text = _read(path) or ""
     block = block.rstrip("\n")
     if BEGIN in text and END in text:
         head, rest = text.split(BEGIN, 1)
@@ -50,7 +62,7 @@ def put_block(path: Path, block: str) -> str:
 
 
 def put_owned(path: Path, text: str) -> str:
-    if path.is_file() and OWNED not in path.read_text(encoding="utf-8"):
+    if path.is_file() and OWNED not in (_read(path) or ""):
         return f"skipped {fwd(path)}: it is not a generated file, so it was left alone"
     return put(path, text, "generated")
 
@@ -58,7 +70,7 @@ def put_owned(path: Path, text: str) -> str:
 def merge_hook(path: Path, event: str, entry: dict, prefix: str) -> str:
     """Add `entry` to `hooks.<event>` of a settings file; other keys and entries stay. Groups whose commands all start with `prefix` are ours."""
     try:
-        doc = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        doc = json.loads(_read(path) or "{}")
     except ValueError as exc:
         raise FactoryError(f"{fwd(path)} is not valid JSON ({exc}); fix it before adding hooks, nothing was changed") from exc
     hooks = doc.setdefault("hooks", {}) if isinstance(doc, dict) else None

@@ -20,6 +20,21 @@ class Adapters(FactoryCase):
     def read(self, rel, root=None):
         return ((root or self.root) / rel).read_text(encoding="utf-8")
 
+    def test_a_host_file_keeps_its_line_endings_and_bytes_and_a_non_utf8_file_is_a_clear_error(self):
+        """Review m3: CRLF outside the block survives, the backup is byte-exact, and bad bytes give a FactoryError, not a traceback."""
+        host = self.root / "CLAUDE.md"
+        original = "# mine\r\nline é\r\n".encode("utf-8")
+        host.write_bytes(original)
+        harness.write(self.root, "claude-code")
+        got = host.read_bytes()
+        self.assertTrue(got.startswith(original))
+        self.assertNotIn(b"\n", got.replace(b"\r\n", b""), "every newline is CRLF")
+        self.assertEqual((self.root / "CLAUDE.md.factory-bak-1").read_bytes(), original)
+        host.write_bytes(b"caf\xe9 not utf-8\n")
+        with self.assertRaisesRegex(FactoryError, "not UTF-8"):
+            harness.write(self.root, "claude-code")
+        self.assertEqual(host.read_bytes(), b"caf\xe9 not utf-8\n")
+
     def test_the_chat_harness_writes_a_skill_a_worker_and_a_short_block_with_at_most_100_lines_each(self):
         self.ok("init", "--project", str(self.root), "--harness", "claude-code", project=False)
         files = [SKILL, WORKER, "CLAUDE.md"]
@@ -100,7 +115,7 @@ class Adapters(FactoryCase):
         self.assertRaisesRegex(FactoryError, "not valid JSON", harness.write, self.root, "claude-code", "project", True)
         self.assertEqual(settings.read_text(encoding="utf-8"), "{not json")
         settings.write_text("{}", encoding="utf-8")
-        with mock.patch("pathlib.Path.write_text", side_effect=PermissionError("locked by another program")):
+        with mock.patch("pathlib.Path.write_bytes", side_effect=PermissionError("locked by another program")):
             self.assertRaisesRegex(FactoryError, "cannot write", harness.write, self.root, "claude-code", "project", True)
         self.assertRaisesRegex(FactoryError, "no user scope and no hooks", harness.write, self.root, "agents-md", "project", True)
 

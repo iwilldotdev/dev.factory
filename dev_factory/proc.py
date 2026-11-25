@@ -166,8 +166,13 @@ def run(argv: list[str] | str, *, cwd: Path, env: dict[str, str], timeout_s: flo
         secs = time.monotonic() - start
 
         def grab(fh) -> bytes:
+            n = fh.seek(0, 2)
             fh.seek(0)
-            return fh.read(_CAP)
+            if n <= _CAP:
+                return fh.read()
+            head = fh.read(_CAP // 2)  # keep both ends: the summary of a verbose run is at the end
+            fh.seek(n - _CAP // 2)
+            return head + b"\n[... output truncated by the factory ...]\n" + fh.read()
         out = grab(fout)
         return Result(None if timed_out else proc.returncode, out.decode("utf-8", "replace"),
                       grab(ferr).decode("utf-8", "replace"), secs, timed_out, out)

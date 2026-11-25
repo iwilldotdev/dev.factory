@@ -86,6 +86,14 @@ class ProcTests(unittest.TestCase):
     def py(self, code: str, timeout: float = 20, env=None):
         return proc.run([sys.executable, "-c", code], cwd=tmpdir(), env=proc.child_env(env), timeout_s=timeout)
 
+    def test_a_long_output_keeps_its_end(self):
+        """Review m7: the cap keeps the first and the last bytes, so a verbose suite still shows its summary."""
+        with mock.patch.object(proc, "_CAP", 1000):
+            r = self.py("print('a' * 5000); print('SUMMARY 3 passed')")
+        self.assertIn("SUMMARY 3 passed", r.out)
+        self.assertIn("truncated", r.out)
+        self.assertLess(len(r.out), 1200)
+
     @lesson("L-44")
     def test_stdin_is_closed(self):
         """L-44: a child that reads stdin sees end of file at once instead of hanging."""

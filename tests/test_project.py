@@ -129,12 +129,14 @@ class HarnessTests(FactoryCase):
         """L-171, L-160: at most 100 lines, generated from the CLI, and every `factory <command>` it names exists."""
         text = harness.agents_md_section()
         self.assertLessEqual(len(text.splitlines()), 100)
+        text += harness.text("skill.md") + harness.text("worker.md")  # the chat harness files name only real commands too
         commands = set(build_parser()._subparsers._group_actions[0].choices)
         for name in set(re.findall(r"`factory ([a-z]+)", text)):
             self.assertIn(name, commands)
         subs = {"media": {"seen", "unseen"}, "run": {"start", "close", "retype", "repos", "delete", "branch"}, "plan": {"example", "amend"},
-                "review": {"example", "record"}, "ship": {"plan", "verify"}}
-        for name, sub in re.findall(r"`factory (run|media|plan|review|ship) ([a-z]+)", text):
+                "review": {"example", "record", "queue", "start", "report", "fix"}, "ship": {"plan", "verify"},
+                "epic": {"plan", "status", "ship"}}
+        for name, sub in re.findall(r"`factory (run|media|plan|review|ship|epic) ([a-z]+)", text):
             self.assertIn(sub, subs[name])
         self.assertNotIn("TODO", text)
 

@@ -36,6 +36,12 @@ def cmd_init(args) -> int:
     if args.harness not in harness.IDS:
         raise FactoryError(f"unknown harness {args.harness!r}; available: {', '.join(harness.IDS)}")
     root = Path(args.project or args.project_pre or os.getcwd()).resolve()
+    if args.scope == "user":  # the user's host home only: no project is created here
+        if args.harness == "none":
+            raise FactoryError("--scope user installs a harness adapter: name one with --harness")
+        done = harness.write(root, args.harness, "user", args.hooks)
+        _out(args, {"done": done, "not_imported": []}, "\n".join(done))
+        return 0
     doc = local = None
     notes: list[str] = []
     name = args.name
@@ -48,7 +54,7 @@ def cmd_init(args) -> int:
         for r in doc["repo"]:
             r.setdefault("base", args.base)
     done = project.init(root, name, args.repo or ["."], args.base, doc, local)
-    done += harness.write(root, args.harness)
+    done += harness.write(root, args.harness, "project", args.hooks)
     if args.import_file:
         from . import config
         try:

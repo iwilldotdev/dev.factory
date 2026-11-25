@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
     from .harness import IDS
+    from .hook import cmd_hook
     p = argparse.ArgumentParser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
     p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
@@ -35,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", action="append", metavar="PATH", help="repo path (repeat for a workspace; default .)")
     sp.add_argument("--base", default="main", help="base branch of the repos (default main)")
     sp.add_argument("--harness", default="none", help="write a harness adapter: " + ", ".join(IDS))
+    sp.add_argument("--scope", default="project", choices=("project", "user"), help="project: write into the directory; user: into the host's user home (no project)")
+    sp.add_argument("--hooks", action="store_true", help="also merge the optional hook entry into the host settings (the chat harness)")
     sp.add_argument("--import", dest="import_file", metavar="FILE", help="convert a v0 workspace or project file")
     add("check", cmd_check, "validate the configuration")
     sp = add("status", cmd_status, "status of a run, or of the project with --config", [scoped])
@@ -228,6 +231,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cmd")
     sp.add_argument("--url")
     sp.add_argument("--timeout", type=float, default=60, metavar="S")
+    sp = add("hook", cmd_hook, "host hook entry point (installed by init --hooks): reads the tool call on stdin")
+    sp.add_argument("event", choices=("pre-tool",))
     sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
     sp.add_argument("name")
     return p

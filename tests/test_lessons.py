@@ -30,6 +30,8 @@ M4_COVERED = {
 M5_COVERED = {"L-24", "L-60", "L-61", "L-62", "L-176", "L-183", "L-189"}
 # Lessons that M6 (hotfix mirror and the same-diff gate, epics, review runs, claims, slots) covers.
 M6_COVERED = {"L-41", "L-78", "L-88", "L-91", "L-92", "L-93", "L-95", "L-96", "L-97", "L-98", "L-99", "L-100", "L-184", "L-185"}
+# Lessons that M7 (harness adapters with hooks) covers. L-130, L-149, L-160, L-169 and L-170 are by-design; L-01 and L-168 stay in M2 and M1.
+M7_COVERED = {"L-161"}
 
 
 def rows() -> dict[str, str]:
@@ -72,11 +74,11 @@ class LessonTests(unittest.TestCase):
                     bad.append(f"{file}::{name}: docstring does not cite {lid}")
         self.assertEqual(bad, [])
 
-    def test_the_m1_to_m6_lessons_are_all_covered_by_a_tagged_test(self):
+    def test_the_m1_to_m7_lessons_are_all_covered_by_a_tagged_test(self):
         tagged = {lid for _, _, ids, _ in tags() for lid in ids}
-        covered = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED | M5_COVERED | M6_COVERED
+        covered = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED | M5_COVERED | M6_COVERED | M7_COVERED
         earlier = M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED | M5_COVERED
-        self.assertEqual((M1_COVERED & M2_COVERED) | (M3_COVERED & (M1_COVERED | M2_COVERED)) | (M4_COVERED & (M2_COVERED | M3_COVERED)) | (M5_COVERED & (M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED)) | (M6_COVERED & earlier), set())
+        self.assertEqual((M1_COVERED & M2_COVERED) | (M3_COVERED & (M1_COVERED | M2_COVERED)) | (M4_COVERED & (M2_COVERED | M3_COVERED)) | (M5_COVERED & (M1_COVERED | M2_COVERED | M3_COVERED | M4_COVERED)) | (M6_COVERED & earlier) | (M7_COVERED & (earlier | M6_COVERED)), set())
         self.assertEqual(sorted(covered - tagged), [])
         self.assertEqual(sorted(tagged - covered), [], "add new tagged lessons to the milestone set so they cannot silently disappear")
 

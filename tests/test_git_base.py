@@ -45,6 +45,13 @@ class RemoteBaseTests(unittest.TestCase):
     def test_the_baseline_point_moves_to_the_merged_base(self):
         self.assertEqual(git.integration_point(self.dir, self.repo, self.bp), sh(self.dir, "rev-parse", "origin/pack"))
 
+    def test_a_clean_merge_of_the_base_keeps_the_reviewed_change(self):
+        merged = sh(self.dir, "rev-parse", "HEAD")
+        reviewed = sh(self.dir, "rev-parse", "HEAD^1")
+        self.assertTrue(git.clean_merges_only(self.dir, reviewed, merged))
+        self.commit("[X-3] - more work")  # a commit of its own is new code to review
+        self.assertFalse(git.clean_merges_only(self.dir, reviewed, sh(self.dir, "rev-parse", "HEAD")))
+
 
 if __name__ == "__main__":
     unittest.main()

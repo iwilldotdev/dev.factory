@@ -151,6 +151,21 @@ def integration_point(path: Path, repo: dict, bp: str) -> str:
     return out if out and out != bp and is_ancestor(path, bp, out) else bp
 
 
+def clean_merges_only(path: Path, old: str, new: str) -> bool:
+    """`new` adds to `old` only merges that git makes by itself (the recomputed tree is the commit's tree, no conflict):
+    integrating the base then leaves the reviewed change as it was, and verify re-runs every check at the new HEAD [L-18]."""
+    if old == new or not is_ancestor(path, old, new):
+        return False
+    for sha in git(path, "log", "--first-parent", "--format=%H", f"{old}..{new}").out.split():
+        parents = git(path, "rev-list", "--parents", "-n", "1", sha).out.split()[1:]
+        if len(parents) != 2:
+            return False
+        res = git(path, "merge-tree", "--write-tree", *parents, check=False)
+        if res.exit != 0 or res.out.split()[:1] != [git(path, "rev-parse", f"{sha}^{{tree}}").out.strip()]:
+            return False
+    return True
+
+
 def is_ancestor(path: Path, old: str, new: str) -> bool:
     key = ("ancestor", old, new)
     if key in _HISTORY:

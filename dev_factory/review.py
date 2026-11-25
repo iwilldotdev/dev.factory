@@ -200,7 +200,8 @@ def reasons(st: dict, plan: dict, lk: dict) -> list[str]:
         cmd = f"record one with factory review record --kind {kind} --file <review.json> (a fresh reviewer, not the builder)"
         if rv is None:
             out.append(f"no {kind} review: {cmd}")
-        elif rv["repos"] != heads:
+        elif rv["repos"] != heads and not all(h == rv["repos"].get(r) or git.clean_merges_only(Path(git.current(st, r)["path"]), rv["repos"].get(r, ""), h)
+                                                 for r, h in heads.items()):
             moved = ", ".join(f"{r} {rv['repos'].get(r, '?')[:7]} -> {h[:7]}" for r, h in heads.items() if rv["repos"].get(r) != h)
             out.append(f"the {kind} review (round {rv['round']}) is stale, HEAD moved ({moved}): {cmd} [L-18]")
         elif rv["bound"].get(key) != lk[key]:

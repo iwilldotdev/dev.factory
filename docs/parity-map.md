@@ -165,7 +165,7 @@ The rest grows existing modules within their caps. Proposed caps are in `m0-deci
 | M4 | Workspace, env (data, warm-up, port diagnosis, login users), `http` (sessions), `browser` (batching), design (`visual`, `style`, approx), screenshots, UAT, `wait` (delivered; decisions in `docs/m4-notes.md`) | |
 | M5 | Feedback loop, human checks, quality baseline, delta and scoped, rules, risk and design note, estimates, metrics report and tokens | |
 | M6 | Composite runs: hotfix and mirror with the same-diff gate, epics, review runs, claim, parallel children, env slots and shareable (delivered; decisions in `docs/m6-notes.md`) | yes (parity review) |
-| M7 | Harness adapters with optional hooks, installation, transition note, `1.0.0-alpha` = full parity | |
+| M7 | Harness adapters with optional hooks, installation, transition note, `1.0.0-alpha` = full parity (delivered; decisions in `docs/m7-notes.md`) | yes (independent review, then the owner tags) |
 
 **Rationale for the order:**
 

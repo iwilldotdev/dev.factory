@@ -248,6 +248,8 @@ Total: 190 rows. By destination:
 | `by-design` | 47 |
 | `out-of-alpha` | 0 |
 
+Status at `1.0.0-alpha` (M7): 0 lessons pending. All 143 `test` rows have a tagged test (`tests/test_lessons.py`, sets M1 to M7); the 47 `by-design` rows need none.
+
 ### The ten lessons that matter most for the alpha design
 
 1. L-17 / L-109 to L-115: regex and grammar write guards are bypassable by construction (six audit rounds, hundreds of probes); v1 trusts evidence bound to spec hash, SHA and clean worktree, and keeps hooks optional.

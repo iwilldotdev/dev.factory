@@ -20,6 +20,11 @@ class AutonomyTests(ShipCase):
         self.assertEqual(change["reviewers"], ["ana.lima"])
         self.assertEqual(next(i for i in sp["intents"] if i["intent"] == "issue_transition")["to"], "In Review")
 
+    def test_the_push_intent_names_the_remote_of_the_repo_and_defaults_to_origin(self):
+        self.assertEqual([i["remote"] for i in self.ship_plan()["intents"] if i["intent"] == "push"], ["origin"])
+        self.write("factory.toml", (self.TOML + DRAFT_AUTO).replace('name = "web"\n', 'name = "web"\nremote = "upstream"\n'))
+        self.assertEqual([i["remote"] for i in self.ship_plan()["intents"] if i["intent"] == "push"], ["upstream"])
+
     def test_a_non_draft_change_always_asks_even_in_draft_auto(self):
         self.write("factory.toml", self.TOML + DRAFT_AUTO.replace("[ship]\n", "[ship]\ndraft = false\n"))
         sp = self.ship_plan()

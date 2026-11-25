@@ -89,7 +89,7 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     for r in pl["repos"]:
         w, p = git.current(st, r), prev[r]
         if p is None or p["head_sha"] != heads[r]:
-            add("push", repo=r, remote="origin", branch=w["branch"], sha=heads[r])
+            add("push", repo=r, remote=by[r]["remote"], branch=w["branch"], sha=heads[r])
         add("change_request", repo=r, action="update" if p else "create", change_id=p["id"] if p else None, source_branch=w["branch"],
             target_branch=by[r]["base"], title=ttl, draft=draft, body_file=fwd(path_of(run, "body.md")),
             reviewers=[x["scm"] for x in cfg["ship"].get("reviewers", [])])
@@ -105,7 +105,7 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     from . import mirror  # a hotfix: one more change per mirror, titled with its own target ticket key [L-100]
     for m in mirror.applied(st):
         sha = git.head(Path(m["path"]))
-        add("push", repo=m["repo"], remote="origin", branch=m["branch"], sha=sha, target=m["target"])
+        add("push", repo=m["repo"], remote=by[m["repo"]]["remote"], branch=m["branch"], sha=sha, target=m["target"])
         add("mirror_change_request", repo=m["repo"], target=m["target"], sha=sha, source_branch=m["branch"], target_branch=m["target_branch"],
             title=shipbody.title(cfg, {**ticket, "id": m["ticket"]}), draft=draft, body_file=fwd(path_of(run, "body.md")))
     if mode in ("comment", "both"):

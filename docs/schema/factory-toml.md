@@ -35,6 +35,7 @@ Composition rules (DESIGN §2):
 | `path` | string, relative to this file | — | yes | R (`"."`), W | L may override via `[repo.<name>]` |
 | `name` | string `^[A-Za-z0-9._-]+$` | basename of the path | no | R, W | unique; used in plan, evidence and the env lock |
 | `base` | string | `"main"` | no | R, W | this repo's base branch [L-94] |
+| `remote` | string | `"origin"` | no | R, W | the git remote of this repo that `ship plan` names in its `push` intents (the CLI never pushes; the harness does). Refs the CLI reads locally (`origin/<base>`) are unchanged |
 | `branch` | template: `{kind}`, `{key}`, `{slug}` | `"{kind}/{key}-{slug}"` | no | R, W | run branch name |
 | `setup` | command string | none | no | R, W | runs in every new worktree and throwaway worktree; failure blocks the check, never counts as a result [L-06, L-72] |
 | `files_from_main` | list of repo-relative paths | `[]` | no | R, W | gitignored files copied into worktrees [L-64, L-65] |

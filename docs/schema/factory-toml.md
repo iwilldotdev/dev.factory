@@ -2,6 +2,20 @@
 
 `factory.toml` is versioned and written by people. `.factory/local.toml` is per machine and unversioned. The CLI reads both with `tomllib` and rejects unknown keys (exit 2, with the key path) [L-156].
 
+## Where the file lives
+
+- **Home workspace** (the default, written by `factory setup`): `$FACTORY_HOME/<name>/factory.toml`, with `FACTORY_HOME` defaulting to `~/.factory`.
+  The folder name is the workspace name and equals `[project] name` (unique by construction). The same folder holds `secrets.env`,
+  `setup.json` (the interview's asked or skipped questions), `scripts/`, `login/`, `runs/<run>/`, `env/`, `local.toml` (instead of
+  `.factory/local.toml`) and `worktrees/<run>/<repo>/` (the default `worktree_root`). `[[repo]] path` is an absolute path there.
+- **Folder workspace:** a `factory.toml` in a repo or a directory above it, with `.factory/` beside it, as below.
+- **Resolution order:** `--project DIR`; `--workspace NAME`; the climb from the cwd; the home workspaces with a `[[repo]]` whose `path` is the
+  current repository's top folder or whose `remote_url` equals one of its remotes. Remote URLs compare after normalisation: the scheme, `git@host:` vs
+  `https://host/`, user names, a trailing `.git` or `/`, and the case of the host are ignored. Two or more matches are an error that lists them
+  (a terminal asks which). A repo matched by remote whose recorded `path` is missing on this machine is used from the current clone.
+- `factory config set <key> <value>` writes one key (`repo.<name>.<key>` for a repo) after the schema and the semantic rules accept the
+  result; an unknown key or a wrong type is refused and the file is left as it was. It rewrites the file, so comments are not kept.
+
 Levels used below:
 
 - **R**: a repo's own file (`[[repo]] path = "."`)
@@ -41,6 +55,8 @@ Composition rules (DESIGN §2):
 | `files_from_main` | list of repo-relative paths | `[]` | no | R, W | gitignored files copied into worktrees [L-64, L-65] |
 | `commit_pattern` | regex | none | no | R, W | see decision 6; checked over `branch_point..HEAD` only, and not over commits the base already has [L-89, L-90] |
 | `commit_forbidden_trailers` | list of trailer names (e.g. `Co-Authored-By`) | `[]` | no | R, W | a commit in the same range that carries one fails the check, merges included [L-90] |
+| `remote_url` | string or list of strings | none | no | R, W | the repo's remote URLs (recorded by `factory setup`, without credentials); another clone or machine of the repo finds the home workspace through them |
+| `notes` | string | none | no | R, W | free-text instructions for the agent (the setup interview's last per-repo question) |
 
 A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit standing check `<repo>:commits`; `verify` runs it like any other check, so its result is evidence bound to the SHA.
 
@@ -172,7 +188,8 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 Each key resolves in this order:
 
 1. An environment variable with the same name.
-2. `${XDG_CONFIG_HOME:-~/.config}/dev.factory/secrets/<project.name>.env`, one `KEY=value` per line, `#` comments allowed. The same path is used on Windows, under the user profile.
+2. A home workspace: its `secrets.env`, one `KEY=value` per line, `#` comments allowed.
+   A folder workspace: `${XDG_CONFIG_HOME:-~/.config}/dev.factory/secrets/<project.name>.env`, same format. The same path is used on Windows, under the user profile.
 
 `factory check` reports missing keys by name, never values. Values reach children only as env vars and are redacted (`***`) from stored tails.
 
@@ -180,7 +197,7 @@ Each key resolves in this order:
 
 | Key | Type | Notes |
 |---|---|---|
-| `worktree_root` | path | default `<user cache dir>/dev.factory/worktrees/<project.name>`, which keeps worktrees out of the repo tree (decision 7) |
+| `worktree_root` | path | default `<workspace>/worktrees` for a home workspace, else `<user cache dir>/dev.factory/worktrees/<project.name>`, which keeps worktrees out of the repo tree (decision 7) |
 | `[repo.<name>] path` | path | where this member lives on this machine |
 | `[repo.<name>.env] base_url`, `health`, `vars` | as above | ports and hosts |
 | `[checks.browser] runner`, `bundled`, `headless` | template / path / bool | local runner paths |

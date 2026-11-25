@@ -47,7 +47,7 @@ flowchart TB
 - **Loop budget.** `[autonomy] max_loops` (default 5) is one budget for unapproved plan amends and review rounds that carry a blocker or major finding, plus feedback rounds. Rounds that only fix minor findings, and amends that only close them (`--resolves`), are free. When it is spent the command refuses and the run blocks for the user; each recorded user decision allows one more round. Build and verify iterations are free.
 - **Reviews.** Fresh reviewers who wrote nothing in the run record a code review and a qa review; a change with a screen also takes a UAT in the browser, by another fresh reviewer who uses the screens logged in through exploration scripts (`factory uat run`). Every finding about the delivery is fixed before ship, minor ones included; a reviewer marks `"scope": "out"` only on what is not part of this delivery.
 - **Delivery.** A moved base comes in by rebase (no merge commit); fixes asked on the way are `fixup!` commits folded before ship, so the change carries its feature commits only. Its description is `ship/summary.md`, written for a human reviewer who never sees the run.
-- **Exit codes.** 0 ok, 1 a check or gate failed (the reasons are your to-do list), 2 usage, config or lock error, 3 environment failure.
+- **Exit codes.** 0 ok, 1 a check or gate failed (the reasons are your to-do list), 2 usage, config or lock error, 3 environment failure, 4 the CLI needs the user's input (the JSON on stdout says what: `"need": "ticket"` or `"need": "setup"` with its questions).
 
 ### Components
 
@@ -95,6 +95,21 @@ flowchart TB
 
 ### Project and workspace layout
 
+A workspace normally lives in your home, one folder per workspace; the project repositories are never written to, and deleting a workspace is deleting its folder:
+
+```text
+~/.factory/<workspace>/        FACTORY_HOME moves ~/.factory; the folder name is the workspace name (unique)
+  factory.toml                 the repos (path and remote_url), commands, env, standing checks, providers, ship, autonomy
+  secrets.env                  KEY=value, written by you; never asked in a chat
+  setup.json                   the setup questions already asked or skipped
+  scripts/  login/             your helper scripts and login specs
+  runs/<run-id>/               run state (as below)
+  env/  local.toml             env locks and login state; this machine's facts
+  worktrees/<run-id>/<repo>/   per-run git worktrees
+```
+
+A folder workspace (a `factory.toml` in the repo or in a directory above it) keeps working:
+
 ```text
 <project>/                     one repo, or a workspace directory holding several
   factory.toml                 versioned: repos, commands, env, standing checks, providers, limits, ship, autonomy
@@ -112,9 +127,9 @@ flowchart TB
 
 - **Single repo:** `factory.toml` at the root with `[[repo]] path = "."`.
 - **Workspace:** `[[repo]]` entries point at members (`path = "../api"`). A member's own `factory.toml` is the base and the workspace overrides it key by key. Each repo has its own base branch.
-- **Discovery:** the CLI climbs from the cwd to the first `factory.toml`; `--project DIR` overrides. It never imports code from the cwd.
+- **Discovery:** `--project DIR`, then `--workspace NAME` (a folder of `~/.factory`), then the climb from the cwd to the first `factory.toml`, then the home workspaces whose `[[repo]]` `path` is this repository's top folder or whose `remote_url` is one of its remotes (`git@host:o/r.git` and `https://host/o/r` are the same; another clone or machine is recognised). Two matches are an ambiguity: a terminal asks which, otherwise pass `--workspace`. It never imports code from the cwd.
 - **`local.toml`** may set machine facts only (paths, ports, base URLs, runner path). Any other key is an error, so it cannot loosen proof.
-- **Secrets:** `factory.toml` names keys only. Values come from the environment or `~/.config/dev.factory/secrets/<project>.env`, reach children as environment variables, and are redacted from stored output.
+- **Secrets:** `factory.toml` names keys only. Values come from the environment or the workspace's `secrets.env` (a folder workspace reads `~/.config/dev.factory/secrets/<project>.env`), reach children as environment variables, and are redacted from stored output.
 
 ### Composite runs
 
@@ -163,7 +178,42 @@ factory --version        # version, build and the Python it runs
 
 ## Quick start
 
-### 1. Wire a project
+### 1. Start in a repository
+
+```sh
+cd ~/code/billing-web
+factory                                    # or: factory start ABC-123 (a key or a ticket URL)
+```
+
+`factory` finds the workspace of the repository and asks for the ticket. With no workspace yet it runs the setup interview first; every step is optional except the workspace and the repo's name and base branch:
+
+```text
+Which workspace does this repository belong to? Pick one, or name a new one (lowercase letters, digits and -; one folder in ~/.factory)
+  1) billing  existing workspace
+  2) billing-web  a new workspace
+answer [billing-web]> 1
+Name of the repository at ~/code/billing-web in the workspace
+answer [billing-web]> web
+Base branch of web (changes start from it and target it)
+  1) develop
+  2) main
+answer [main]> develop
+Standing checks of web (commands that must pass on every change; or id=command) ['-' skips: asked at every run]
+  1) test  node --run test
+  2) ci-make-unit  make unit (vars NODE_ENV=test)
+numbers or names, comma separated> 1,2
+...
+workspace billing saved in ~/.factory/billing (repos: api, web)
+write these secrets in ~/.factory/billing/secrets.env (KEY=value, never in a chat): TEST_PASSWORD, TEST_USER
+asked at every run: repo api: target branches, standing checks
+workspace billing: ticket key or URL>
+```
+
+The steps: the workspace, this repository (name, base branch; its path and remotes are recorded), per repository the target branches, the env (start command, base URL, health), the test database seed and reset (only when the repo shows a database), the standing checks (from its scripts and CI steps, with their variables), the login spec for browser checks (only for a repo with a UI) and free-text notes for the agent, then the sibling repositories next to it and the integrations that get an adapter command. A skipped setting is asked at every run that needs it.
+
+Without a terminal (an agent) the same interview is JSON: `factory setup --questions --json` prints the pending questions (`id`, `text`, `kind` single / multi / text, `options` with `label` and `description`, `optional`, `default`) and exits 4; `factory setup --answer ID=VALUE [--answer ...]` applies answers (an empty value skips; a multi answer is comma separated or repeated) and prints the next questions or the summary. Both paths write the same `factory.toml`. Change one setting later with `factory config set repo.web.base develop` (checked against the schema; unknown keys are refused). In a run, `factory ask "<question>" --save-as repo.web.env.base_url` and `factory answer Q-n --user-said "<words>" --save` save the answer to the workspace so it is not asked again.
+
+### 2. Harness adapters and folder projects
 
 ```sh
 cd my-project                              # one repo, or the directory that holds several
@@ -183,7 +233,7 @@ factory check                              # validate configuration, secrets, re
 - `init` never overwrites `factory.toml`. Inside an existing project, `init --harness ...` refreshes the adapter only (do this after a CLI upgrade). Re-running is safe: a changed generated file is first saved as `<name>.factory-bak-<n>`, and a file the CLI did not write is left alone.
 - `--harness` accepts `claude-code`, `agents-md` or `none`. `claude-code` writes `.claude/skills/factory/SKILL.md`, `.claude/agents/factory-worker.md` (scout, author, builder and reviewer roles) and a short managed block in `CLAUDE.md`. `agents-md` writes the whole protocol into a block of `AGENTS.md` for any host that reads it (project scope only). Exact files: [`docs/install.md`](docs/install.md).
 
-### 2. Run a ticket from the chat
+### 3. Run a ticket from the chat
 
 With `claude-code` installed, open the project in Claude Code (CLI, desktop app or IDE) and type in the chat:
 
@@ -191,9 +241,9 @@ With `claude-code` installed, open the project in Claude Code (CLI, desktop app 
 /factory ABC-123
 ```
 
-The skill makes the main session the orchestrator: it runs `factory run start`, loops on `factory next`, delegates reading and writing to workers, asks you one batched question round at intake (later phases decide, record the assumption and report it), fixes project config such as env commands, timeouts and login specs on its own, collects human checks in one message, and stops at blockers, decisions only you can make, remote writes and the end. It talks in your language. It does the remote writes (push, change request, ticket comment) only as the ship plan says. Other forms: a change URL or "review my queue" for review runs, `/factory session <run-id...>` for parallel sessions, `/factory` plus a run id to resume.
+`/factory` alone finds the workspace and asks for the ticket, or runs the setup interview with the harness question tool. The skill makes the main session the orchestrator: it runs `factory run start`, loops on `factory next`, delegates reading and writing to workers, asks you one batched question round at intake (later phases decide, record the assumption and report it), fixes project config such as env commands, timeouts and login specs on its own, collects human checks in one message, and stops at blockers, decisions only you can make, remote writes and the end. It talks in your language. It does the remote writes (push, change request, ticket comment) only as the ship plan says. Other forms: a change URL or "review my queue" for review runs, `/factory session <run-id...>` for parallel sessions, `/factory` plus a run id to resume.
 
-### 3. Drive it yourself (any harness)
+### 4. Drive it yourself (any harness)
 
 ```sh
 factory run start ABC-123 --kind feature   # --kind feature|bug|hotfix|epic|review; default from the ticket contract
@@ -279,13 +329,13 @@ Machine-only facts go in `.factory/local.toml` (`worktree_root`, ports, runner p
 
 ## Command reference
 
-Every command takes `--project DIR`, `--json` and `--actor ACTOR` (a free-text audit hint). Most take `--run RUN` (default: the only open run). Run `factory <command> --help` for flags.
+Every command takes `--project DIR`, `--workspace NAME`, `--json` and `--actor ACTOR` (a free-text audit hint). Most take `--run RUN` (default: the only open run). Run `factory <command> --help` for flags.
 
 | Phase | Commands |
 |---|---|
-| **Project** | `init`, `setup [--discover [DIR]]`, `check`, `status [--config]`, `runs`, `log [--tail N]`, `-V` |
+| **Project** | `factory` / `start [TICKET]`, `setup [--questions] [--answer ID=VALUE] [--discover [DIR]]`, `config set <key> <value>`, `init`, `check`, `status [--config]`, `runs`, `log [--tail N]`, `-V` |
 | **Run** | `run start\|retype\|repos\|branch\|close\|delete`, `claim`, `next [--session] [--takeover]`, `wait --file\|--cmd\|--url` |
-| **Intake** | `fetch <kind> <id>`, `ingest <kind> --raw F --contract F [--stdin]`, `ingest --check`, `media seen\|unseen`, `ask`, `answer Q-n --user-said`, `decide --user-said`, `human --kind`, `block --kind --reason`, `unblock`, `gate intake` |
+| **Intake** | `fetch <kind> <id>`, `ingest <kind> --raw F --contract F [--stdin]`, `ingest --check`, `media seen\|unseen`, `ask [--save-as KEY]`, `answer Q-n --user-said [--save]`, `decide --user-said`, `human --kind`, `block --kind --reason`, `unblock`, `gate intake` |
 | **Plan** | `plan example`, `plan amend --reason [--decision]`, `design add\|check\|expect\|review\|refresh`, `env up\|down\|health\|status\|logs\|seed\|reset`, `gate plan` |
 | **Reproduce** (bugs) | `reproduce [--check] [--repo] [--fresh]`, `gate reproduce` |
 | **Build and verify** | `verify [--check] [--repo] [--fresh] [--no-retry] [--scoped] [--estimate] [--mirror]`, `baseline`, `confirm <CHK-n\|kind:id> --user-said`, `gate verify` |

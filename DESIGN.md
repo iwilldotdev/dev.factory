@@ -20,7 +20,21 @@ Invariants:
 
 ## 2. Project model
 
-A **project** is one repo or a workspace directory, with one schema for both.
+A **project** is a workspace: by default a folder in the user's home, `~/.factory/<name>/` (`FACTORY_HOME` overrides), holding
+`factory.toml`, `secrets.env`, `scripts/`, `login/`, `runs/<run>/`, `env/` and the run worktrees `worktrees/<run>/<repo>/`. The project
+repositories are never written to, and deleting a workspace is deleting its folder (design: `docs/design/home-workspaces.md`). The name is
+the folder name, so it is unique. A repository belongs to it when its top folder equals a `[[repo]] path` or one of its remotes equals a
+`[[repo]] remote_url` after normalisation (scheme, `git@host:` vs `https://host/`, trailing `.git`, host case), so another clone is recognised.
+
+**Entry.** `factory` alone (or `factory start [TICKET]`) resolves the workspace: `--workspace NAME`, the climb to a `factory.toml`, then the
+home workspaces that list the repository (two or more: a terminal asks, otherwise an error that lists them). Found: a ticket key or URL starts
+the run, else the CLI asks for one. None: the setup interview. In a terminal it prompts; without one it prints JSON and exits 4
+(`{"need": "ticket"}` or `{"need": "setup", "questions": [...]}`), and the agent asks with its question tool. `factory setup --questions` /
+`--answer ID=VALUE` drive the same interview as the prompts and write the same config. Every setting but the workspace and the repo's name
+and base is optional; an unset one is asked at every run that needs it, and the summary lists them. A run ambiguity may be saved:
+`factory ask --save-as <key>` and `factory answer Q-n --user-said ... --save` write through `factory config set <key> <value>`.
+
+A folder workspace (one repo or a directory of several) keeps the earlier layout, with one schema for both:
 
 ```
 <project>/
@@ -33,9 +47,9 @@ A **project** is one repo or a workspace directory, with one schema for both.
 
 - **Single repo:** `factory.toml` at the root with `[[repo]] path = "."`.
 - **Workspace:** `[[repo]]` entries point at members by relative path (`path = "../api"`). A member's own `factory.toml` entry (setup, env, standing checks) is the base, and the workspace overrides it key by key. The rules are in `factory-toml.md`. Each repo names its own base branch [L-94].
-- **Discovery:** the CLI climbs from the cwd to the first `factory.toml`; `--project` overrides. It works from any cwd [L-141] and never imports code from the cwd [L-148].
+- **Discovery:** `--project`, then `--workspace`, then the climb from the cwd to the first `factory.toml`, then the home workspaces (above). It works from any cwd [L-141] and never imports code from the cwd [L-148].
 - **`local.toml`** may set only machine facts (paths, base URLs, `worktree_root`). Any other key is an error, so it cannot loosen proof [L-131].
-- **Secrets:** `factory.toml` names keys only. Values come from the environment or `~/.config/dev.factory/secrets/<project>.env`. They reach children only as environment variables, never in argv or output, and stored tails are redacted [L-80, L-129].
+- **Secrets:** `factory.toml` names keys only. Values come from the environment, then the workspace's `secrets.env` (a folder workspace: `~/.config/dev.factory/secrets/<project>.env`). They reach children only as environment variables, never in argv or output, and stored tails are redacted [L-80, L-129].
 - **Formats:** TOML for files people write, JSON and JSONL for files the CLI writes. Hashes use canonical JSON [L-167]. Runs are plain directories that the CLI never archives, moves or deletes [L-104, L-105] (decision 1).
 
 ## 3. Harness-agnostic protocol
@@ -297,7 +311,7 @@ The caps of decision 16 replace PIVOT §3. On 2026-11-25 the owner raised the co
 | `checks/visual`, `checks/style` | 120, 120 | `next` | 300 |
 | `design` (frames, PNG header, table, expect, crop box, approx, freshness) | 400 | `cli` | 370 |
 
-M6 modules (lines then): `mirror` 176, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core now about 8699 lines of 10,000 (`uat` and the delivery rules came after M7).
+M6 modules (lines then): `mirror` 176, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core now about 9531 lines of 10,000 (`uat` and the delivery rules came after M7; home workspaces added `home` 168, `setupflow` 391, `cli_home` 153).
 
 Command overhead is at most 1 s, excluding checks. The CLI installs through the standard Python entry point, apart from any working tree, with an optional version pin [L-130, L-149] (decision 3).
 

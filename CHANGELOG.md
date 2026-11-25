@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Home workspaces and the guided entry (design: `docs/design/home-workspaces.md`)
+
+- Workspaces live in `~/.factory/<name>/` (`FACTORY_HOME` overrides): `factory.toml`, `secrets.env`, `scripts/`, `login/`, `runs/`, `env/`, `local.toml` and `worktrees/<run>/<repo>/`. The repositories are never written to. Folder workspaces keep working; their secrets stay in `~/.config/dev.factory/secrets/<project>.env`.
+- Resolution: `--project`, the new global `--workspace NAME`, the climb to a `factory.toml`, then the home workspaces whose `[[repo]]` `path` is the current repository's top folder or whose new `remote_url` (string or list) equals one of its remotes after normalisation (`git@host:o/r.git` = `https://HOST/o/r/`). Two matches: a terminal asks, otherwise an error that lists them. A clone matched by remote is used when the recorded path is not on this machine.
+- `factory` alone and `factory start [TICKET]`: start the run of a key or a ticket URL (the last path segment that looks like a key), resume an existing one, or ask for the ticket; with no workspace, the setup interview. Without a terminal they print JSON and exit 4 (`"need": "ticket"` with the settings asked at every run, or `"need": "setup"` with the questions).
+- `factory setup` interview: prompts in a terminal; `--questions [--json]` and `--answer ID=VALUE` (repeatable) for an agent; both write the same `factory.toml`. Steps: workspace (existing or a new unique name), this repo (name, base; path and remotes recorded without credentials), per repo the target branches, env, standing checks (stack scripts and CI steps with their `vars`), test database seed and reset (only with database hints), login spec and secret names (only with a UI) and notes (`[[repo]] notes`), sibling repos, adapters per integration, and a summary (where it saved, the `secrets.env` keys to fill, "asked at every run"). Secret values are never asked. Without a terminal and without these flags `setup` still prints the checklist.
+- `factory config set <dotted.key> <value>` (`repo.<name>.<key>` for a repo) writes the workspace config when the schema and the semantic rules accept it. `factory ask --save-as <key>` and `factory answer Q-n --user-said "..." --save` save an answer through it.
+- `factory setup --discover` reports the literal `env:` / `variables:` values of CI files as `vars`.
+- Generated prose: the entry resolves the workspace and asks for the ticket or runs the setup; every question goes through the harness question tool when there is one; the user hears which settings are asked at every run; run ambiguities offer "only this run" or "save to the workspace". Exit code 4 means the CLI needs the user's input.
+
 ## 1.0.0-alpha (2026-11-25)
 
 First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.

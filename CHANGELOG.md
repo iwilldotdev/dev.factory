@@ -4,6 +4,7 @@
 
 - Removed `factory init --import`: a project is configured from its own workspace, never from copied config.
 - `factory run delete` also removes the run's clean worktrees and deletes its branches that have no commit beyond their base; it keeps and names a dirty worktree or a branch with commits of its own.
+- An env failure names its kind, the last 30 lines of the env log (once the server started) and one likely cause per kind; the recorded reason leaves the log out, so two identical failures still compare equal.
 
 ## 1.0.0-alpha
 

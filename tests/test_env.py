@@ -88,6 +88,7 @@ class UpDownTests(M4Case):
         msg = self.fails("env", "up", "web", code=3)
         self.assertIn("(health)", msg)
         self.assertIn("did not answer below 500", msg)
+        self.assertIn("likely cause (health): the health URL did not answer in time; a first start in a fresh worktree can exceed ready_timeout_s", msg)
         self.assertFalse((self.proj / ".factory" / "env" / "web.lock").exists())
 
     def test_a_process_that_exits_before_health_is_a_start_failure_with_the_log_tail(self):
@@ -99,6 +100,9 @@ class UpDownTests(M4Case):
         self.assertIn("dying on purpose", msg)
         fail = [e for e in self.events(run) if e["type"] == "env" and e["action"] == "fail"]
         self.assertEqual(fail[-1]["kind"], "start")
+        self.assertRegex(msg, r"--- last \d+ lines of .*/web\.log ---")
+        self.assertIn("likely cause (start): the up command did not start or exited early", msg)
+        self.assertNotIn("dying on purpose", fail[-1]["reason"])  # the log tail stays out of the event, so repeats compare equal
 
     @lesson("L-68")
     def test_a_recorded_pid_with_another_create_time_is_reported_and_never_killed(self):

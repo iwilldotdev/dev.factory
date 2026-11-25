@@ -11,6 +11,19 @@ from . import git, proc, slots
 from .util import FactoryError, fwd, write_atomic
 
 TOLERANCE_S = 2.0  # clock ticks and FILETIME rounding: a recorded create time within this of the live one is the same process
+CAUSES = {  # one likely cause per failure kind, printed with every env failure
+    "files": "a files_from_main entry is missing in the main checkout; create it there or drop it from [repo.env] files_from_main",
+    "lock": "another run or command holds this env; wait with --wait <seconds>, or stop that run's env",
+    "port": "a process the factory did not start holds the port (named above); stop it, or move base_url to a free port in .factory/local.toml",
+    "start": "the up command did not start or exited early; read the log (missing setup or dependencies, wrong cwd, missing .env file)",
+    "health": "the health URL did not answer in time; a first start in a fresh worktree can exceed ready_timeout_s, or the health path is wrong",
+    "warmup": "a warmup request failed; a first start in a fresh worktree can be slow, so raise its timeout or check the path",
+    "data": "the data preflight failed; run factory env seed, or check the preflight command",
+    "login": 'the login spec did not reach its done criterion; check the final URL/cookie, or declare "done" in the spec',
+    "stale": "the env serves another worktree or head; factory env up --restart",
+    "restore": "the run env did not start again after the reproduction; factory env up --restart and read the log",
+}
+LOG_LINES = 30
 
 
 def lock_path(project, repo: str) -> Path:

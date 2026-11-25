@@ -230,6 +230,7 @@ It writes `<out>/result.json` as `{status, summary, details, artifacts}`. **Exit
   - Health means a status below 500 with no redirects followed, waited up to `ready_timeout_s` [L-73, L-84].
   - With `login_spec`, the runner writes login state to `.factory/env/`, per login user [L-81].
   - Optional `seed`, `reset`, `preflight`, `warmup` and `env_patterns` cover test data and cold servers [L-40, L-49, L-50].
+  - A failure names its kind, the last 30 lines of the env log and one likely cause for that kind.
 - **`env down`:** stops exactly the recorded group, and only when the create time matches [L-67, L-68]. Worktrees get their own dependencies through `setup`, and cleanup never follows links [L-72].
 
 ## 12. Contracts and acquisition

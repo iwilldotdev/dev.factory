@@ -69,17 +69,21 @@ def health_url(env: dict) -> str:
     return h if not h.startswith("/") else localhttp.join(env["base_url"], h)
 
 
-def _tail(project, repo: str, secrets: list[str], n: int = 15) -> str:
+def _tail(project, repo: str, secrets: list[str], n: int = ep.LOG_LINES) -> str:
+    path = ep.log_path(project, repo)
     try:
-        text = ep.log_path(project, repo).read_text(encoding="utf-8", errors="replace")
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
     except OSError:
-        text = ""
-    return redact("\n".join(text.splitlines()[-n:]), secrets)
+        return ""
+    return redact(f"--- last {len(lines)} lines of {fwd(path)} ---\n" + "\n".join(lines), secrets) if lines else ""
 
 
 def _fail(project, run: Run, repo: str, kind: str, why: str, actor: str | None) -> EnvError:
-    run.append({"type": "env", "repo": repo, "action": "fail", "kind": kind, "reason": why[:600]}, actor)
-    return EnvError(kind, f"env {repo} failed ({kind}): {why}")
+    """Record the failure; the message names the kind, the reason (with the log tail once the server started) and a likely cause."""
+    reason = why.split("\n--- last ")[0]  # without the log tail, so two identical failures compare equal [L-168]
+    run.append({"type": "env", "repo": repo, "action": "fail", "kind": kind, "reason": reason[:600]}, actor)
+    cause = f"\nlikely cause ({kind}): {ep.CAUSES[kind]}" if kind in ep.CAUSES else ""
+    return EnvError(kind, f"env {repo} failed ({kind}): {why}{cause}")
 
 
 def stop(project, run: Run, repo: str, actor: str | None = None) -> str:

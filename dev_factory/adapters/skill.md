@@ -50,6 +50,7 @@ High risk (auth, money, data, migration, concurrency, public contract, security)
 - Launch every reviewer with `--actor reviewer-<n>` and every builder with `--actor builder-<n>`; the CLI refuses a review whose reviewer or actor appears as builder.
 - A reviewer that already judged a round is never resumed to judge the fix: a new round gets a new reviewer. A green pipeline, a test count or another agent's
   report is not evidence; the reviewer reads the diff, the evidence and the plan, and re-runs what it doubts. High risk: two different reviewers (code, qa).
+- A change with a screen gets a third review, the UAT in the browser, from another fresh reviewer that uses the screens logged in (`factory next` says how).
   A CHANGES review goes back to a builder with the findings; you do not argue findings away.
 
 ## Workers and infrastructure

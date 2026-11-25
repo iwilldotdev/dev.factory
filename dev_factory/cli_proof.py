@@ -1,4 +1,4 @@
-"""Handlers of `factory baseline`, `confirm`, `waive`, `feedback` and `metrics`; the work lives in quality.py, human.py, feedback.py and metrics.py."""
+"""Handlers of `factory baseline`, `confirm`, `waive`, `feedback`, `metrics` and `uat`; the work lives in quality.py, human.py, feedback.py and metrics.py."""
 from __future__ import annotations
 
 from .util import FactoryError
@@ -71,3 +71,15 @@ def cmd_feedback(args) -> int:
     res = feedback.ingest(cli._run(args, proj), proj, args.decision, not args.no_fetch, args.actor)
     cli._out(args, res, feedback.render(res))
     return 0
+
+
+def cmd_uat(args) -> int:
+    """Run one exploration script of the UAT in the browser and print where its screenshots and output are."""
+    from . import cli, uat
+    proj = cli._project(args)
+    run = cli._run(args, proj)
+    rec = uat.run_script(proj, run, args.script, args.repo, args.actor)
+    files = [f"{run.dir.as_posix()}/{a}" for a in rec.get("artifacts", [])]
+    cli._out(args, rec, f"{rec['check']} attempt {rec['attempt']}: {rec['result']}" + (f" ({rec['reason']})" if rec.get("reason") else "")
+             + "".join(f"\n  {f}" for f in files) + "\nlook at every screenshot; what you see becomes the explored entries and findings of the uat review")
+    return 0 if rec["result"] == "pass" else 1

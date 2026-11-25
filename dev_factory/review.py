@@ -9,10 +9,10 @@ from . import git, lock, plan as planmod, quality
 from .run import Run
 from .util import FactoryError, canonical, sha256_bytes
 
-BOUND = {"code": "core_hash", "qa": "plan_hash"}  # a code review survives a checks-only amend [L-137]
+BOUND = {"code": "core_hash", "qa": "plan_hash", "uat": "plan_hash"}  # a code review survives a checks-only amend [L-137]
 SEVERITIES, VERDICTS, CAP = ("blocker", "major", "minor"), ("APPROVE", "CHANGES"), 20
 HEX = re.compile(r"^[0-9a-fA-F]{7,64}$")
-KEYS = {"verdict", "reviewer", "repos", "findings", "resolved", "completeness", "exercises", "changed_values", "guidelines"}
+KEYS = {"verdict", "reviewer", "repos", "findings", "resolved", "completeness", "exercises", "changed_values", "guidelines", "explored"}
 EXAMPLE = {"verdict": "APPROVE", "reviewer": "fresh-reviewer-1", "repos": {"web": "3f9c2ab"},
            "findings": [{"id": "F1", "severity": "minor", "file": "src/app.py:42", "text": "name the constant", "ac": "AC-1"}],
            "resolved": ["1:F2"], "completeness": {"done": 5, "gap": 0, "not_checked": 0},
@@ -79,6 +79,13 @@ def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict], rules
                                                and set(c) == {"file", "what", "why"} for c in cv):
             errs.append("changed_values: a code review lists every duration, timeout, retry, flag or copy value changed in the diff as "
                         '{"file", "what", "why"}; an explicit [] says none [L-39]')
+    exp = data.get("explored")
+    if kind == "uat" or exp is not None:
+        if not (isinstance(exp, list) and exp and all(isinstance(e, dict) and set(e) <= {"flow", "observed", "evidence"}
+                and all(isinstance(e.get(k), str) and e[k].strip() for k in ("flow", "observed"))
+                and isinstance(e.get("evidence"), list) and e["evidence"] and all(isinstance(x, str) for x in e["evidence"]) for e in exp)):
+            errs.append('explored: a uat review lists every flow it used as {"flow", "observed", "evidence": ["UAT-<script>", ...]}, '
+                        "each citing the exploration runs (factory uat run) that show it")
     gl = data.get("guidelines")
     if (kind == "code" and rules) or gl is not None:
         errs += _guidelines(gl, rules, kind == "code")
@@ -142,7 +149,7 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
     """Validate and append one review. A CHANGES with a blocker or major finding spends a loop of the single budget [L-135, L-138]."""
     from . import gates
     if kind not in BOUND:
-        raise FactoryError(f"invalid review kind {kind!r}; valid kinds: code, qa")
+        raise FactoryError(f"invalid review kind {kind!r}; valid kinds: code, qa, uat")
     st = run.state()
     by_change = st["kind"] == "review"  # a review run judges a change as it is: its checks need a record at HEAD, not a pass
     blocking = gates.verify_reasons(run, project, st, recorded=by_change)
@@ -167,6 +174,8 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
     if clash:
         errs.append(f"reviewer {', '.join(sorted(clash))!r} also built or verified in this run (an actor hint on evidence or the worktree): "
                     "a fresh reviewer who did not build it records the review")
+    if kind == "uat":
+        errs += _uat_problems(st, project.cfg, plan, heads, reviewer, data)
     if errs:
         raise FactoryError("review rejected (nothing recorded):\n" + "\n".join(f"  - {e}" for e in errs))
     findings = [{k: v for k, v in f.items() if v is not None} for f in data.get("findings", [])]
@@ -178,7 +187,7 @@ def record(run: Run, project, kind: str, data, decision: str | None, actor: str 
            "findings": findings, "resolved": ["%d:%s" % _full(i, round_no) for i in data.get("resolved", [])],
            "completeness": data["completeness"], "bound": {BOUND[kind]: lk[BOUND[kind]]}, "lock_seq": lk["seq"],
            "independent_of": sorted(st["builders"])}
-    for key in ("exercises", "changed_values", "guidelines"):
+    for key in ("exercises", "changed_values", "guidelines", "explored"):
         if key in data:
             rec[key] = data[key]
     rec["hash"] = sha256_bytes(canonical(rec).encode("utf-8"))
@@ -203,10 +212,29 @@ def _same_change(st: dict, cfg: dict | None, r: str, old: str, new: str) -> bool
     return repo is not None and git.rebased_only(path, old, new, git.base_ref(path, repo))
 
 
+def kinds(plan: dict, cfg: dict | None) -> tuple[str, ...]:
+    """The reviews a run needs: code and qa, then a UAT in the browser when the change has a screen."""
+    from . import uat
+    return ("code", "qa", "uat") if cfg and uat.needed(plan, cfg) else ("code", "qa")
+
+
+def _uat_problems(st: dict, cfg: dict, plan: dict, heads: dict, reviewer: str, data: dict) -> list[str]:
+    from . import uat
+    if not uat.needed(plan, cfg):
+        return ["this plan has no screen (no browser, visual, style or screenshot check), so it takes no uat review"]
+    others = {norm(e["reviewer"]) for k in ("code", "qa") if (e := latest(st, k))}
+    out = [f"reviewer {reviewer!r} also wrote the code or qa review: the UAT is a further pair of eyes, a fresh reviewer"] if norm(reviewer) in others else []
+    have = {e["check"] for e in uat.records(st, heads)}
+    missing = [r for r in uat.ui_repos(plan, cfg) if not any(e["repo"] == r for e in uat.records(st, heads))]
+    out += [f"{r}: no exploration run at the current HEAD: factory uat run <{uat.FOLDER}/script.spec.ts> --repo {r} [L-22]" for r in missing]
+    cited = {x for e in data.get("explored", []) for x in e.get("evidence", [])}
+    return out + [f"explored cites {x}, which is no exploration run at the current HEAD (have: {', '.join(sorted(have)) or 'none'})" for x in sorted(cited - have)]
+
+
 def reasons(st: dict, plan: dict, lk: dict, cfg: dict | None = None) -> list[str]:
     """Why `gate review` fails once verify holds: a review is missing, stale (SHA or plan hash) or not APPROVE [L-18, L-137]."""
     heads, out = heads_of(st, plan["repos"]), []
-    for kind, key in BOUND.items():
+    for kind, key in ((k, BOUND[k]) for k in kinds(plan, cfg)):
         rv = latest(st, kind)
         cmd = f"record one with factory review record --kind {kind} --file <review.json> (a fresh reviewer, not the builder)"
         if rv is None:

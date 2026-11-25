@@ -89,7 +89,7 @@ def add_worktree(project, run: Run, repo: dict, actor: str | None) -> dict:
 
 def reviewed(st: dict, heads: dict) -> bool:
     """Both reviews exist for the current commits; their verdict is the outcome of the run, not a failure of it."""
-    return all((e := rv.latest(st, k)) and e["repos"] == heads for k in rv.BOUND)
+    return all((e := rv.latest(st, k)) and e["repos"] == heads for k in ("code", "qa"))
 
 
 def reported(st: dict, heads: dict) -> bool:
@@ -112,7 +112,7 @@ def report(run: Run, project, data, actor: str | None) -> dict:
         raise FactoryError("record the code and qa reviews of the current commits first (factory review record)")
     if not isinstance(data, dict) or data.get("verdict") not in VERDICTS or not str(data.get("summary", "")).strip():
         raise FactoryError(f"the report is an object with verdict ({', '.join(VERDICTS)}) and a summary; optional findings, comment_md, ticket_comment_md")
-    approved = all(rv.latest(st, k)["verdict"] == "APPROVE" for k in rv.BOUND)
+    approved = all(rv.latest(st, k)["verdict"] == "APPROVE" for k in ("code", "qa"))
     if (data["verdict"] == "ok") != approved and data["verdict"] != "incomplete":
         raise FactoryError(f"the verdict {data['verdict']!r} contradicts the reviews ({'both APPROVE' if approved else 'a review asked for CHANGES'})")
     chg = change_of(run, st) or {}

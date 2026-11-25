@@ -244,6 +244,15 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
         set_("an approximate design frame needs the user's own design review: show the user the design image and the capture "
              f"(the visual artifacts), ask whether it is close enough, then record their words for each frame: {', '.join(frames)}",
              "user", f'factory design review {frames[0]} --user-said "<their words>"{flag}')
+    elif reasons and all(r.startswith(("no uat", "the uat")) for r in reasons):
+        path = run.dir / "notes" / "review-uat.json"
+        set_("UAT in the browser: start a fresh reviewer (not the builder, not the code or qa reviewer) who uses the screens as a user would, "
+             f"in the served env, logged in as the plan's user: it writes exploration scripts under {fwd(run.dir / 'uat')}/ for the bundled "
+             "runner (open the screen, walk the ticket's flows and their edges: narrow widths, scroll, long and real data, empty and error "
+             "states, permissions, keyboard), takes screenshots, runs each with factory uat run <script> and looks at every image. A defect "
+             "the change causes is a finding of the delivery (also outside the ACs); one that already exists on the base is scope out. "
+             "It writes the uat review (explored: one entry per flow citing its UAT- runs) and records it", "command",
+             f'factory review record --kind uat --file "{fwd(path)}"{flag}', [path], "reviewer")
     elif reasons:
         kind = "code" if any(r.startswith(("no code", "the code")) for r in reasons) else "qa"
         path = run.dir / "notes" / f"review-{kind}.json"  # reviews/ is CLI-owned: the hook refuses a hand write there

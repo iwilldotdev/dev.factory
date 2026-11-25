@@ -54,6 +54,7 @@ Plan and proof:
 
 Review (after verify passes): `factory review example` prints the JSON. The reviewer writes one file per kind and runs
 `factory review record --kind code|qa --file <file>`; the code review lists `changed_values` (`[]` when none), the qa review one `exercises` entry per AC.
+A change with a screen then takes a UAT in the browser (`--kind uat`): a fresh reviewer explores it logged in through `factory uat run <run>/uat/<script>`.
 A CHANGES review with a blocker or major finding spends a loop; fix, commit, verify, record a new review. `factory gate review` needs both APPROVE at the current commits
 and no open finding of the delivery: minor ones are fixed too (a round of them spends no loop) unless the reviewer marks them `"scope": "out"`;
 a checks-only amend that closes them says so with `factory plan amend --reason "..." --resolves <round:id>[,...]` and spends no loop either.

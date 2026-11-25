@@ -9,7 +9,7 @@ DESC = "Take one ticket from intake to a draft change request; no step passes on
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
-    from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics
+    from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics, cmd_uat
     from .cli_composite import cmd_claim, cmd_epic, cmd_mirror, cmd_review_run
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_review_run)
     sp = rv.add_parser("record", parents=[scoped])
     sp.set_defaults(func=cmd_review)
-    sp.add_argument("--kind", required=True, help="code (bound to the plan without checks) or qa (bound to the full plan)")
+    sp.add_argument("--kind", required=True, help="code (bound to the plan without checks), qa (bound to the full plan) or uat (the browser exploration of a change with a screen)")
     sp.add_argument("--file", required=True, help="the review as JSON (factory review example)")
     sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this CHANGES round from the loop budget, once")
     sh = sub.add_parser("ship", help="plan the ship intents, or verify the readback").add_subparsers(dest="sub", required=True)
@@ -230,6 +230,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--to", metavar="TARGET", help="the mirror target name")
     sp.add_argument("--ticket", help="the ticket key of this target's change (default: the run ticket)")
     sp.add_argument("--decision", help="diff: a recorded user decision naming every divergent file")
+    up = sub.add_parser("uat", help="UAT in the browser: run an exploration script in the served env, logged in").add_subparsers(dest="sub", required=True)
+    sp = up.add_parser("run", parents=[scoped])
+    sp.set_defaults(func=cmd_uat)
+    sp.add_argument("script", help="a spec under <run>/uat/ for the bundled runner (screenshots go to the run's artifacts)")
+    sp.add_argument("--repo", help="the repo whose env serves the screen (needed when several have one)")
     sp = add("wait", cmd_wait, "wait for a file, a command or a local URL (600 s cap)")
     sp.add_argument("--file")
     sp.add_argument("--cmd")

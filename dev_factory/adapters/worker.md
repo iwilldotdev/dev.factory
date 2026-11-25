@@ -57,6 +57,10 @@ re-run what you doubt. A surface you cannot exercise is `not_checked`, never app
   requires it: a value changed only so a check passes is a major finding. Bugs: say whether the fix addresses the root cause in `diagnosis.md`.
 - qa: for every AC decide whether its check really exercises it (a check that cannot fail is a major finding) and whether its evidence is a pass at the current commit;
   compare screenshots with the design frame; give one `exercises` entry per AC.
+- uat (a change with a screen, after code and qa, never their reviewer): use the screens as a user would, in the served env, logged in. Write scripts under
+  `<run>/uat/` for the bundled runner that walk the ticket's flows and their edges (narrow widths, scroll, long and real data, empty and error states,
+  permissions, keyboard) and take screenshots; run each with `factory uat run <script>` and look at every image. A defect the change causes is a finding of
+  the delivery, also outside the ACs; one the base already has is `"scope": "out"`. List each flow in `explored` as `{flow, observed, evidence: ["UAT-<script>"]}`.
 - Write the JSON that `factory review example` prints to the path the request or `factory next` names (`<run>/notes/review-<kind>.json` is allowed; never write under `reviews/`), with your own name as `reviewer`,
-  then run `factory review record --kind code|qa --actor reviewer-<n> --file <path>` and report the exit code. A blocker or major finding, or any gap, means CHANGES.
+  then run `factory review record --kind code|qa|uat --actor reviewer-<n> --file <path>` and report the exit code. A blocker or major finding, or any gap, means CHANGES.
   Every finding about the delivery is fixed before it ships, minor ones too; mark `"scope": "out"` only on a finding that is not part of this delivery.

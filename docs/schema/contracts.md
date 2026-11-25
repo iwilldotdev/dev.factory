@@ -293,6 +293,7 @@ Common fields on every event:
 - `changed_values` is required for `code`, and `[]` must be explicit [L-39].
 - `repos` must be an object of `{repo: sha}` with prefixes of at least 7 hex characters; any other shape is refused with this example [L-107].
 - `resolved` entries are `round:id`; a bare id means the previous round [L-147].
+- `uat` (a change with a screen: a browser, visual, style or screenshot check) is the third review, after code and qa, by a reviewer who wrote neither. It needs `explored`: one `{flow, observed, evidence}` per flow used, `evidence` naming the exploration runs (`factory uat run <run>/uat/<script>`, recorded as evidence with mode `uat` at the current HEAD; they never satisfy a check). Every repo with a screen needs one such run at HEAD. `gate review` requires it whenever the plan has a screen.
 - A finding may carry `scope`: `"change"` (the default) or `"out"`. `gate review` fails while a minor finding of the delivery (`scope` `"change"`) is open: a delivery ships finished, so it is fixed and a later review lists it in `resolved` (a round of minor fixes spends no loop). `"out"` marks a finding that is not part of this delivery; it stays in the run and the briefing, never in the change.
 
 The stored event adds:

@@ -229,7 +229,7 @@ def _red_green_reasons(st: dict, c: dict, lk: dict, plan: dict, path: Path, bp: 
 def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
     """What a later gate adds on top of verify; callers know that verify holds."""
     plan, lk = planmod.load_plan(run)[0], lock.current(st)
-    out = review.reasons(st, plan, lk) + designflow.review_reasons(run, st, plan)
+    out = review.reasons(st, plan, lk, project.cfg) + designflow.review_reasons(run, st, plan)
     if name in ("ship", "feedback") and not out:
         from . import mirror
         out = ship.reasons(run, project, st) + designflow.ship_reasons(run, st, plan) + mirror.reasons(run, project, st)

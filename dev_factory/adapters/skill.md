@@ -30,6 +30,8 @@ Exit 0 = ok, 1 = a gate or check failed (the printed reasons are your to-do list
   plan), and report it. Credentials never go in chat: name the keys `factory.toml` lists. `factory ask`, then `factory answer Q-n --user-said "<their words>"`.
 - `--user-said` carries the user's own words from this conversation, never your inference. Only then: `answer`, `decide`, `confirm`, `waive`, `--dismiss`.
 - Git safety: no hard reset, stash, destructive checkout or force-push. Push only as the ship plan says; approving a spec or plan never authorises a push.
+  A moved base is integrated by `git rebase <remote>/<base>` (no merge commit) unless `ship.base_update = "merge"`; a push intent with `force_with_lease`
+  is the one rewrite allowed: `git push --force-with-lease=<branch>:<that sha>`, only after the user's explicit yes.
 - Remote writes (comment, transition, change, push) follow `ship/plan.json`: `needs_user` intents wait for the user's explicit yes, ticket writes always.
 - Project config that is not product code (env commands, `ready_timeout_s`, warmups, login specs and their `done`, check commands, setup) is yours: fix it,
   run `factory check` (after the lock: `factory plan amend --reason`), mention it in the next report. Never change product behaviour to make a check pass.

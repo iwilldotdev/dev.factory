@@ -343,7 +343,7 @@ python tests/run_tests.py --list             # list modules
 ```
 
 - The suite has a 180 s budget, a hard per-module timeout, temp directories, no network and port 0 only. The Node runner has its own suite (`node --test`, see `browser/package.json`).
-- **Structure tests** enforce: a ban on provider, vendor and tool names anywhere in code, tests and docs (this is why the docs say "tracker", "SCM" and "design tool"); no reset, stash, clean or force-push in git call sites; generated adapter files at most 100 lines; module line caps (400 each, Python core 8,500 in total, decision 16); a decoy package in the cwd that must never be imported; and one end-to-end run driven through `next` alone.
+- **Structure tests** enforce: a ban on provider, vendor and tool names anywhere in code, tests and docs (this is why the docs say "tracker", "SCM" and "design tool"); no reset, stash, clean or force-push in git call sites; generated adapter files at most 100 lines; module line caps (400 each, Python core 10,000 in total, decision 16 as raised by the owner); a decoy package in the cwd that must never be imported; and one end-to-end run driven through `next` alone.
 - **Lessons are tagged.** Each `test` row of `LESSONS.md` maps to at least one test decorated `@lesson("L-nn")`; a meta-test fails on an untagged row or a tag on a non-`test` row. A feature cites an `L-nn` or a real ticket need, or it does not enter.
 - Python 3.11 or later, standard library only. Use `python`, not `python3`, where `python3` is absent (Windows).
 

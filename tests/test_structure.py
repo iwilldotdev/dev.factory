@@ -8,7 +8,7 @@ from pathlib import Path
 from tests.helpers import ROOT, lesson
 
 PKG = ROOT / "dev_factory"
-MODULE_CAP, CORE_CAP = 400, 8500
+MODULE_CAP, CORE_CAP = 400, 10000  # raised from 8,500 by the owner on 2026-11-25: quality over the cap
 # Built from fragments so this file passes its own scan. Provider, vendor and tool names are banned everywhere.
 BANNED = ["".join(p) for p in (
     ("ji", "ra"), ("git", "lab"), ("git", "hub"), ("bit", "bucket"), ("fig", "ma"), ("conflu", "ence"), ("atlas", "sian"),
@@ -87,8 +87,8 @@ class SizeTests(unittest.TestCase):
         over = {k: v for k, v in self.counts().items() if v > MODULE_CAP}
         self.assertEqual(over, {})
 
-    def test_the_python_core_stays_under_8500_lines(self):
-        """Decision 16: core cap 8,500 lines."""
+    def test_the_python_core_stays_under_its_cap(self):
+        """Decision 16, raised by the owner: core cap 10,000 lines; it rises again when quality needs it."""
         total = sum(self.counts().values())
         self.assertLessEqual(total, CORE_CAP)
 

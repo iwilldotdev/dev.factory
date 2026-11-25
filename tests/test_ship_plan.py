@@ -78,6 +78,16 @@ class BehindTests(ShipCase):
         self.assertEqual(self.ship_events("ship_planned")[-1]["decision"], "Q-1")
         self.assertIn("already consumed", self.fails("ship", "plan", "--allow-behind", "--decision", "Q-1"))
 
+    def test_a_rebased_branch_pushes_with_a_lease_on_the_pushed_sha_and_always_asks(self):
+        wt = self.tree()
+        self.assertNotIn("force_with_lease", self.ship_plan()["intents"][0])  # never pushed: a plain push
+        git("commit", "-q", "--allow-empty", "-m", "[ABC-1] - before the rebase", cwd=wt)
+        old = git("rev-parse", "HEAD", cwd=wt)
+        git("update-ref", f"refs/remotes/origin/{git('rev-parse', '--abbrev-ref', 'HEAD', cwd=wt)}", old, cwd=wt)
+        git("reset", "-q", "--keep", "HEAD^", cwd=wt)  # stands in for a rebase: the pushed SHA is no longer an ancestor
+        push = self.ship_plan()["intents"][0]
+        self.assertEqual((push["intent"], push["force_with_lease"], push["needs_user"]), ("push", old, True))
+
     def test_a_remote_tracking_ref_is_preferred_and_named(self):
         git("update-ref", "refs/remotes/origin/main", git("rev-parse", "main", cwd=self.proj), cwd=self.proj)
         sp = self.ship_plan()

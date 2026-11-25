@@ -192,7 +192,16 @@ def load_file(path: Path):
         raise FactoryError(f"the review file is not valid JSON: {exc}") from exc
 
 
-def reasons(st: dict, plan: dict, lk: dict) -> list[str]:
+def _same_change(st: dict, cfg: dict | None, r: str, old: str, new: str) -> bool:
+    """A HEAD move that leaves the reviewed change as it was: clean merges of the base, or the same patches rebased onto it."""
+    path = Path(git.current(st, r)["path"])
+    if git.clean_merges_only(path, old, new):
+        return True
+    repo = next((x for x in (cfg or {}).get("repo", []) if x["name"] == r), None)
+    return repo is not None and git.rebased_only(path, old, new, git.base_ref(path, repo))
+
+
+def reasons(st: dict, plan: dict, lk: dict, cfg: dict | None = None) -> list[str]:
     """Why `gate review` fails once verify holds: a review is missing, stale (SHA or plan hash) or not APPROVE [L-18, L-137]."""
     heads, out = heads_of(st, plan["repos"]), []
     for kind, key in BOUND.items():
@@ -200,8 +209,7 @@ def reasons(st: dict, plan: dict, lk: dict) -> list[str]:
         cmd = f"record one with factory review record --kind {kind} --file <review.json> (a fresh reviewer, not the builder)"
         if rv is None:
             out.append(f"no {kind} review: {cmd}")
-        elif rv["repos"] != heads and not all(h == rv["repos"].get(r) or git.clean_merges_only(Path(git.current(st, r)["path"]), rv["repos"].get(r, ""), h)
-                                                 for r, h in heads.items()):
+        elif rv["repos"] != heads and not all(h == rv["repos"].get(r) or _same_change(st, cfg, r, rv["repos"].get(r, ""), h) for r, h in heads.items()):
             moved = ", ".join(f"{r} {rv['repos'].get(r, '?')[:7]} -> {h[:7]}" for r, h in heads.items() if rv["repos"].get(r) != h)
             out.append(f"the {kind} review (round {rv['round']}) is stale, HEAD moved ({moved}): {cmd} [L-18]")
         elif rv["bound"].get(key) != lk[key]:

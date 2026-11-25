@@ -1,6 +1,7 @@
 """Local git through `proc`: run and throwaway worktrees, branch points, dirty checks, commit scans [L-06, L-72, L-89, L-90]."""
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import unicodedata
@@ -164,6 +165,21 @@ def clean_merges_only(path: Path, old: str, new: str) -> bool:
         if res.exit != 0 or res.out.split()[:1] != [git(path, "rev-parse", f"{sha}^{{tree}}").out.strip()]:
             return False
     return True
+
+
+def _patches(path: Path, ref: str, head: str) -> list[str]:
+    """One id per own commit (merges left out), oldest first: its diff without blob ids or line numbers, like `git patch-id`."""
+    out = []
+    for sha in git(path, "rev-list", "--reverse", "--no-merges", f"{ref}..{head}", check=False).out.split():
+        diff = git(path, "show", "--format=", "--no-color", sha, check=False).out.splitlines()
+        body = [re.sub(r"^@@ [^@]* @@", "@@", ln) for ln in diff if not ln.startswith("index ")]
+        out.append(hashlib.sha256("\n".join(body).encode("utf-8")).hexdigest())
+    return out
+
+
+def rebased_only(path: Path, old: str, new: str, ref: str) -> bool:
+    """`new` replays the same patches as `old` onto a newer base (a rebase): the reviewed change is the same [L-18]."""
+    return bool(old) and old != new and bool(before := _patches(path, ref, old)) and before == _patches(path, ref, new)
 
 
 def is_ancestor(path: Path, old: str, new: str) -> bool:

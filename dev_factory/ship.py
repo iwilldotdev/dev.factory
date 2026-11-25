@@ -32,6 +32,12 @@ def behind(path: Path, base: str, remote: str = "origin") -> dict:
     return {"count": None, "ref": None, "note": f"base branch {base} not found: run git fetch first"}
 
 
+def _lease(path: Path, remote: str, branch: str, head: str) -> str | None:
+    """The pushed SHA that a rebased branch replaces (the lease of a rewriting push); None for a plain push."""
+    pushed = git.rev(path, f"{remote}/{branch}")
+    return pushed if pushed and not git.is_ancestor(path, pushed, head) else None
+
+
 def changes(run: Run, st: dict, repo: str, after: int = -1) -> list[tuple[dict, dict]]:
     """(contract event, envelope) of the `change` contracts of a repo recorded after event index `after`, oldest first."""
     out = []
@@ -67,7 +73,7 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     bh = {r: behind(Path(git.current(st, r)["path"]), by[r]["base"], by[r]["remote"]) for r in pl["repos"]}
     late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r, b in bh.items() if b["count"]]
     if late and not allow_behind:
-        raise FactoryError(f"{'; '.join(late)}: merge or rebase the base first, or ask the user and pass --allow-behind --decision <Q-n> [L-108]")
+        raise FactoryError(f"{'; '.join(late)}: {"rebase the run branch onto the base" if cfg["ship"]["base_update"] == "rebase" else "merge the base"} first, or ask the user and pass --allow-behind --decision <Q-n> [L-108]")
     if late:
         if decision is None:
             raise FactoryError("--allow-behind needs --decision <Q-n|D-n> with the user's recorded answer [L-126]")
@@ -89,7 +95,10 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     for r in pl["repos"]:
         w, p = git.current(st, r), prev[r]
         if p is None or p["head_sha"] != heads[r]:
-            add("push", repo=r, remote=by[r]["remote"], branch=w["branch"], sha=heads[r])
+            lease = _lease(Path(w["path"]), by[r]["remote"], w["branch"], heads[r])
+            add("push", repo=r, remote=by[r]["remote"], branch=w["branch"], sha=heads[r], **({"force_with_lease": lease} if lease else {}))
+            if lease:
+                intents[-1]["needs_user"] = True  # rewriting a pushed branch always asks [L-108]
         add("change_request", repo=r, action="update" if p else "create", change_id=p["id"] if p else None, source_branch=w["branch"],
             target_branch=by[r]["base"], title=ttl, draft=draft, body_file=fwd(path_of(run, "body.md")),
             reviewers=[x["scm"] for x in cfg["ship"].get("reviewers", [])])

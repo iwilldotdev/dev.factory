@@ -52,6 +52,16 @@ class RemoteBaseTests(unittest.TestCase):
         self.commit("[X-3] - more work")  # a commit of its own is new code to review
         self.assertFalse(git.clean_merges_only(self.dir, reviewed, sh(self.dir, "rev-parse", "HEAD")))
 
+    def test_a_rebase_onto_the_base_keeps_the_reviewed_change_and_a_new_patch_does_not(self):
+        reviewed = sh(self.dir, "rev-parse", "HEAD")  # the work plus a merge of origin/pack
+        sh(self.dir, "checkout", "-q", "-b", "rebased", "HEAD^1")
+        sh(self.dir, "rebase", "-q", "origin/pack")  # same patch on the newer base, no merge commit
+        rebased = sh(self.dir, "rev-parse", "HEAD")
+        self.assertEqual(sh(self.dir, "rev-list", "--count", "--merges", f"origin/pack..{rebased}"), "0")
+        self.assertTrue(git.rebased_only(self.dir, reviewed, rebased, "origin/pack"))
+        self.commit("[X-3] - more work")
+        self.assertFalse(git.rebased_only(self.dir, reviewed, sh(self.dir, "rev-parse", "HEAD"), "origin/pack"))
+
 
 if __name__ == "__main__":
     unittest.main()

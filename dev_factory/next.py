@@ -145,7 +145,9 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
         late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r in st.get("repos", [])
                 if r in by and (w := git.current(st, r)) and (b := ship.behind(Path(w["path"]), by[r]["base"], by[r].get("remote", "origin")))["count"]]
         if late:
-            out["base_note"] = "; ".join(late) + ": git fetch, merge the base into the run branch and verify again before the review"
+            how = ("rebase the run branch onto it (only its own commits, no merge commit; the push intent then carries a lease and asks the user)"
+                   if project.cfg["ship"]["base_update"] == "rebase" else "merge the base into the run branch")
+            out["base_note"] = "; ".join(late) + f": git fetch, {how}, and verify again before the review"
     out["gate"] = {"build": "verify"}.get(ph, ph)
     out["reasons"] = reasons
     if out["decisions"]:

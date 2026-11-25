@@ -17,6 +17,8 @@
   - A clean merge of the base (git recomputes the same tree) keeps an approved review; verify still re-runs every check at the new HEAD.
   - `factory next` warns in build and review when the base moved, so the merge happens before the review; early UAT images are kept for the ship briefing.
   - The change body strips terminal colors and the local worktree path from output excerpts, and a `quality` check shows its count against the base (`N finding(s), M at the base, K new`) instead of the base's raw errors under a pass.
+  - A moved base is integrated by rebase by default (`[ship] base_update = "rebase"`, or `"merge"`): `factory next` asks for `git rebase <remote>/<base>` so the change keeps only its own commits; a review stays approved when the rebased commits carry the same patches; a push that rewrites an already pushed branch gets `force_with_lease` (the SHA it replaces) and always asks the user.
+  - The Python core cap rises from 8,500 to 10,000 lines (the owner: quality over the cap).
   - Tests: the foreign port owner starts with the base interpreter, since a Windows venv `python.exe` is a launcher whose child holds the port.
   - A `plan amend` that only changes standing checks of `factory.toml` is project upkeep and spends no loop; a failing standing `cmd` check that already fails at the branch point points to `type = "quality"`.
 

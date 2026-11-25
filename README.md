@@ -266,6 +266,7 @@ factory verify                             # executes checks at HEAD, appends ev
 factory review example                     # shape of a review; a fresh reviewer writes one
 factory review record --kind code --file review-code.json
 factory review record --kind qa   --file review-qa.json
+factory review sandbox                     # a reviewer's throwaway worktrees at HEAD for mutation tests (--drop removes them)
 factory uat run uat/explore.spec.ts        # a change with a screen: a fresh reviewer explores it, then
 factory review record --kind uat  --file review-uat.json
 factory gate review
@@ -339,7 +340,7 @@ Every command takes `--project DIR`, `--workspace NAME`, `--json` and `--actor A
 | **Plan** | `plan example`, `plan amend --reason [--decision]`, `design add\|check\|expect\|review\|refresh`, `env up\|down\|health\|status\|logs\|seed\|reset`, `gate plan` |
 | **Reproduce** (bugs) | `reproduce [--check] [--repo] [--fresh]`, `gate reproduce` |
 | **Build and verify** | `verify [--check] [--repo] [--fresh] [--no-retry] [--scoped] [--estimate] [--mirror]`, `baseline`, `confirm <CHK-n\|kind:id> --user-said`, `gate verify` |
-| **Review** | `review example`, `review record --kind code\|qa\|uat --file F`, `uat run <script>`, `gate review` |
+| **Review** | `review example`, `review sandbox [--drop]`, `review record --kind code\|qa\|uat --file F`, `uat run <script>`, `gate review` |
 | **Ship** | `ship plan [--ticket] [--update] [--pipeline] [--allow-behind --decision]`, `ship verify`, `waive pipeline:<id> --user-said`, `gate ship` |
 | **Feedback** | `feedback [--no-fetch] [--decision] [--dismiss F1\|thread:id]`, `gate feedback`, `metrics [--all] [--since] [--tokens --session]` |
 | **Composite** | `mirror <repo> --to T`, `mirror diff`, `epic plan\|status\|ship`, `review queue\|start\|report\|fix`, `gate report` |

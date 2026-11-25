@@ -57,7 +57,8 @@ re-run what you doubt. A surface you cannot exercise is `not_checked`, never app
   does not use). Scan for changed durations, timeouts, delays, retry counts, flags and copy; list each in `changed_values` (`[]` when none) and ask whether the ticket
   requires it: a value changed only so a check passes is a major finding. Bugs: say whether the fix addresses the root cause in `diagnosis.md`.
 - qa: for every AC decide whether its check really exercises it (a check that cannot fail is a major finding) and whether its evidence is a pass at the current commit;
-  compare screenshots with the design frame; give one `exercises` entry per AC.
+  compare screenshots with the design frame; give one `exercises` entry per AC. To prove a check can fail (break the line it guards, run it, restore),
+  work only in your own `factory review sandbox` worktrees, never in the run worktree, and remove them with `factory review sandbox --drop`.
 - uat (a change with a screen, after code and qa, never their reviewer): use the screens as a user would, in the served env, logged in. Write scripts under
   `<run>/uat/` for the bundled runner that walk the ticket's flows and their edges (narrow widths, scroll, long and real data, empty and error states,
   permissions, keyboard) and take screenshots; run each with `factory uat run <script>` and look at every image. A defect the change causes is a finding of

@@ -95,7 +95,7 @@ class HarnessTests(FactoryCase):
         for name in set(re.findall(r"`factory ([a-z]+)", text)):
             self.assertIn(name, commands)
         subs = {"media": {"seen", "unseen"}, "run": {"start", "close", "retype", "repos", "delete", "branch"}, "plan": {"example", "amend"},
-                "review": {"example", "record", "queue", "start", "report", "fix"}, "ship": {"plan", "verify"},
+                "review": {"example", "record", "queue", "start", "report", "fix", "sandbox"}, "ship": {"plan", "verify", "summary"},
                 "epic": {"plan", "status", "ship"}}
         for name, sub in re.findall(r"`factory (run|media|plan|review|ship|epic) ([a-z]+)", text):
             self.assertIn(sub, subs[name])

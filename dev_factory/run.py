@@ -196,15 +196,19 @@ def derive(events: list[dict]) -> dict:
             st["slot"] = ev.get("slot", 0)
         if t in ("unblock", "loop", "ship_planned", "mirror", "dismiss", "plan_locked") and ev.get("decision"):
             consumed.add(ev["decision"])
-    first_lock = _first_lock_index(events)
+    cut = _intake_cut(events)
     for did, d in st["decisions"].items():
         d["consumed"] = did in consumed
-        d["intake"] = d.get("at", 0) < first_lock  # answers the plan was built on; listing them as pending is noise
+        d["intake"] = d.get("at", 0) < cut  # answers the plan was built on; listing them as pending is noise
     return st
 
 
-def _first_lock_index(events: list[dict]) -> int:
-    return next((i for i, e in enumerate(events) if e.get("type") == "plan_locked"), -1)  # no lock yet: nothing is intake history
+def _intake_cut(events: list[dict]) -> int:
+    """Decisions before the first plan lock, or before the first passing intake gate when no plan is locked yet, are intake history:
+    the plan phase has nothing that consumes them, so listing them as pending sent authors looking for a way to consume them."""
+    first = lambda ok: next((i for i, e in enumerate(events) if ok(e)), -1)  # noqa: E731
+    return max(first(lambda e: e.get("type") == "plan_locked"),
+               first(lambda e: e.get("type") == "gate" and e.get("name") == "intake" and e.get("result") == "pass"))
 
 
 def next_id(prefix: str, events: list[dict], etype: str) -> str:

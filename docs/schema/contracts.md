@@ -56,7 +56,7 @@ Contracts live in `contracts/<kind>/<safe-id>.json`. The CLI writes them through
 | `id` | string | yes |
 | `url` | string | yes |
 | `repo` | repo name in `factory.toml` | yes |
-| `title` | string (without draft markers) | yes |
+| `title` | string (without draft markers; `[providers.change] draft_title_marker`, a regex, strips one at ingest and sets `draft`) | yes |
 | `description_md` | string | yes |
 | `source_branch`, `target_branch` | string | yes |
 | `head_sha` | full SHA | yes |

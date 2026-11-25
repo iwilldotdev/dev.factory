@@ -18,6 +18,8 @@ def _rel(run: Run, path: Path) -> str:
 def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, source: str, adapter: dict | None,
           raw_src: Path | None = None, tag: dict | None = None) -> dict:
     """Validate, write raw + contract files, append the `contract` event. Nothing is written when invalid [L-156]."""
+    if kind == "change":  # a provider that marks drafts in the title: the contract keeps the title without the marker [L-154]
+        data = contracts.strip_draft_marker(data, cfg["providers"].get("change", {}).get("draft_title_marker"))
     data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]], raw)
     if (tag or {}).get("refresh") and kind in ("change", "pipeline"):
         st = run.state()

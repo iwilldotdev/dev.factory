@@ -154,7 +154,9 @@ def _compare(sp: dict, it: dict, d: dict, head: str) -> list[str]:
                       ("target_branch", it["target_branch"]), ("head_sha", head)):
         if d[key] != want:
             out.append(f"{r}: the change {key.replace('_', ' ')} is {d[key]!r}, the plan says {want!r}"
-                       + (" (push the branch, then read the change back again)" if key == "head_sha" else " [L-153, L-154]" if key == "draft" else ""))
+                       + (" (push the branch, then read the change back again)" if key == "head_sha" else " [L-153, L-154]" if key == "draft" else
+                          "; the contract title carries no draft marker: set [providers.change] draft_title_marker (a regex) and ingest the change again"
+                          if key == "title" and isinstance(d[key], str) and d[key].endswith(want) else ""))
     if d["state"] != "open":
         out.append(f"{r}: the change is {d['state']}, not open")
     out += [f"{r}: reviewer {x} is not on the change [L-143]" for x in it["reviewers"] if x not in d.get("reviewers", [])]

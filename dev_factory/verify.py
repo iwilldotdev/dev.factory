@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import checks as chk, config, env as envmod, envdata, evidence, git, human, lock, plan as planmod, quality, review
+from . import checks as chk, config, env as envmod, envdata, evidence, git, human, lock, mutant, plan as planmod, quality, review
 from .checks import runner, ui
 from .run import Run
 from .util import FactoryError, fwd, safe_id, write_atomic
@@ -53,6 +53,7 @@ class Batch:
         self.sessions: dict[tuple, dict] = {}  # login headers, in memory only [L-52]
         self.pre: dict[str, dict] = {}  # outcomes of checks that ran together in one browser [L-57]
         self.env_problem: str | None = None
+        self.mutated: set[str] = set()  # worktrees a check wrote to: later evidence from them is not clean
 
     def chosen(self) -> list[dict]:
         return [c for c in self.all if (not self.opts.check or c["id"] == self.opts.check) and (not self.opts.repo or c["repo"] == self.opts.repo)
@@ -114,9 +115,18 @@ class Batch:
         if out is None:
             ctx = self.ctx(c, mode, tree, bound)
             ctx.baseline = base
+            before = git.status_now(tree) if c["type"] not in chk.RUNTIME else None  # an env may write while it serves
             out = self.pre.pop(c["id"], None) or chk.run(c, ctx)
+            if before is not None and (wrote := git.changed_by(tree, before)):
+                self.mutated.add(str(tree))
+                out = {**out, "result": "setup", "kind": "setup", "reason": f"the check changed {len(wrote)} path(s) in the worktree: "
+                       f"{', '.join(wrote[:5])}; a check must only read (drop its autofix or write mode)"}
             if out["result"] == "env":
                 self.env_failed[c["repo"]] = out["reason"]
+            if out["result"] not in OK and (pid := envmod.pid_in(self.project, self.run, out.get("output", ""))):
+                out["reason"] = f"{out['reason']} (pid {pid[0]} in the output is env {pid[1]} of this run)"[:500]
+        clean = clean and str(tree) not in self.mutated
+        out = mutant.invert(out) if mode == "mutant" else out
         if first and out["result"] == "pass":
             out.update(result="flaky", kind=None, reason=f"attempt {first['attempt']} failed ({first['reason']}) and attempt "
                        f"{first['attempt'] + 1} passed: flaky never satisfies the gate until a clean run follows [L-14]")
@@ -179,7 +189,8 @@ class Batch:
         res = {"check": c["id"], "mode": mode or (rec or {}).get("mode", "verify"), "reused": reused,
                "result": rec["result"] if rec else "pass", "kind": rec["kind"] if rec else None,
                "reason": rec["reason"] if rec else "reused: same SHA, same spec, clean worktree [L-10]",
-               "attempt": rec["attempt"] if rec else None}
+               "attempt": rec["attempt"] if rec else None,
+               **({"warning": f"{c['id']}: {w}"} if (w := ((rec or {}).get("details") or {}).get("warning")) else {})}
         self.results.append(res)
         if rec is None or rec["result"] in OK or rec["result"] == "skipped":
             self.prev_sig = None
@@ -259,6 +270,7 @@ def verify(project, run: Run, opts: Opts) -> dict:
             heads[c["repo"]] = (path, git.head(path), bool(git.dirty(path)))
         path, sha, dirty = heads[c["repo"]]
         reuse[c["id"]] = c["type"] != "human" and not opts.fresh and not dirty and evidence.satisfied(b.st, c["id"], "verify", b.spec(c), sha, None, current_heads(project, b.st, c))
+    warnings = envmod.sharing(project, run, {r: v[0] for r, v in heads.items() if any(c["repo"] == r and c["type"] not in chk.RUNTIME for c in ordered)})
     b.prefetch([c for c in ordered if not reuse[c["id"]] and c["type"] != "human"], heads)
     for c in ordered:
         path, sha, dirty = heads[c["repo"]]
@@ -267,16 +279,22 @@ def verify(project, run: Run, opts: Opts) -> dict:
             continue
         if reuse[c["id"]]:
             b.note(c, None, reused=True)
-            continue
-        rec = b.run_one(c, "verify", path, sha, not dirty)
-        if opts.retry and c["type"] in RETRY and rec["result"] == "fail" and rec["kind"] == "assert":
-            rec = b.run_one(c, "verify", path, sha, not dirty, first=rec)
-        if not b.note(c, rec):
+        else:
+            rec = b.run_one(c, "verify", path, sha, not dirty)
+            if opts.retry and c["type"] in RETRY and rec["result"] == "fail" and rec["kind"] == "assert":
+                rec = b.run_one(c, "verify", path, sha, not dirty, first=rec)
+            if not b.note(c, rec):
+                break
+            if rec["result"] != "pass":
+                continue
+        proven = not c.get("mutant") or dirty or str(path) in b.mutated or opts.scoped or opts.mirror  # a mutant proves a clean HEAD only
+        if not proven and not b.note(c, *mutant.prove(b, c, sha, opts.fresh)):
             break
     if b.plan["kind"] == "bug" and not b.stopped and not opts.mirror:
         _red_green(b, heads)
     out = b.summary("verify")
-    out["dirty"] = [r for r, (_, _, d) in heads.items() if d]
+    out["dirty"] = [r for r, (p, _, d) in heads.items() if d or str(p) in b.mutated]
+    out["warnings"] = warnings + [r["warning"] for r in b.results if r.get("warning")]
     return out
 
 
@@ -373,6 +391,7 @@ def render(s: dict) -> str:
         lines.append(s["stopped"])
     if s.get("env_problem"):
         lines.append(f"env: {s['env_problem']}")
+    lines += [f"warning: {w}" for w in s.get("warnings", [])]
     for repo in s.get("dirty", []):
         lines.append(f"warning: the worktree of {repo} has uncommitted changes; this evidence will not count until they are committed [L-07]")
     return "\n".join(lines + [f"{s['mode']}: {'ok' if s['ok'] else 'FAILED'}"])

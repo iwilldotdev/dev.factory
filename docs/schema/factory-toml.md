@@ -134,6 +134,7 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 | `fetch` | command template | — | placeholders in `contracts.md` §4; without it the agent uses `factory ingest`. `design_image` adapters write the PNG to `{out}` |
 | `timeout_s` | int | `60` | |
 | `secrets` | list of secret key names | `[]` | passed to the adapter as env vars only [L-80] |
+| `draft_title_marker` | regex | — | `change` only: a provider that marks drafts in the title (e.g. `"(?i)^draft:\s*"`); ingest strips the match from `title` and sets `draft: true` |
 
 ## `[ship]`
 

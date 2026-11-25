@@ -29,6 +29,10 @@ The agent writes `.factory/runs/<run-id>/plan.json` during the plan phase. `gate
 
 A standing `[[repo.check]]` with `type = "quality"` takes the same keys. The failure ids of one run are normalized (colors and the worktree and checkout paths are stripped [L-62]); a failing exit with no id is the id `exit:<code>`. `verify` takes the baseline by itself the first time (`factory baseline` does it on request): the command runs up to 3 times at `branch_point` in a throwaway worktree (two agreeing runs end it), ids in every run are stable and ids in some runs are quarantined [L-61]. The check fails only on ids that are neither stable nor quarantined. A `setup` result (not found, zero tests) is never a baseline. `verify --scoped` runs `scoped` with the files from `branch_point..HEAD`; that record never satisfies a gate, so the full command still runs before `gate review` [L-60].
 
+A parse that reads noise is caught from generic signals: ids under exit 0, or `parse = "lines"` turning most of a long output into ids, add a `warning` to the record and the baseline; a baseline whose quarantined ids outnumber both its stable ids and 20 fails as `setup` (ids that change between identical runs are timestamps, durations and counters). `factory check` warns on a quality check without `parse`. Quarantined counts appear in the qa reviewer's request and in the Gate S briefing.
+
+Any check that runs in a worktree (every type but the runtime ones) must only read: when the worktree status changes while it runs, its result is `setup` and later records from that worktree in the same batch are not clean. The baseline runs follow the same rule.
+
 ### `human`
 
 | Key | Type | Req | Notes |
@@ -80,6 +84,7 @@ Every AC must be named by at least one check's `ac` [L-01]. An AC that cannot be
 | `expect_exit` | int | no | `0` |
 | `expect_pattern` | regex (same strength rule) | no | — |
 | `red_green` | `{ "test_files": [repo-relative paths] }` | no (required in bug runs when this check is the AC's only reproduction) | red at `fix_commit~1` with `test_files` from git at `fix_commit`, then green at `fix_commit` [L-34, L-35] |
+| `mutant` | command string | no (`cmd` and `quality` only) | after the check passes at HEAD, `verify` runs this command in a throwaway worktree at HEAD and runs the check there: it must fail (`mode: "mutant"`, result `pass` = killed). `gate verify` needs the kill at HEAD. A mutant that fails, changes nothing or that the check survives is not a kill |
 
 A zero-test marker or setup marker in the output makes the result `setup` [L-02, L-03].
 

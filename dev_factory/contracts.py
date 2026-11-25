@@ -1,6 +1,7 @@
 """Contract validation (`ticket`, `change`, `pipeline`) in stdlib code: fixed schemas, no mapping layer [L-156]."""
 from __future__ import annotations
 
+import json
 import mimetypes
 import re
 
@@ -33,6 +34,22 @@ PIPELINE = {"id": ("s", 1), "sha": ("sha", 1), "created_at": ("ts", 1), "url": (
 CHANGE_LIST = {"items": (("L", {"id": ("s", 1), "url": ("s", 1), "repo": ("s", 1), "title": ("s", 1), "author": ("s", 1), "draft": ("b", 1),
                                 "ticket": ("s", 0), "own": ("b", 0), "approved": ("b", 0)}), 1)}
 SPECS = {"ticket": TICKET, "change": CHANGE, "pipeline": PIPELINE, "change_list": CHANGE_LIST}
+SHA_EX = "0" * 40
+EXAMPLES = {  # provider values are mapped to these: states, draft as a flag (never a title marker), pipelines as ids
+    "change": {"id": "42", "url": "https://scm.example/web/changes/42", "repo": "web", "title": "[ABC-1] - Title without a draft marker",
+               "description_md": "What changes and how it was tested.", "source_branch": "feature/ABC-1-title", "target_branch": "main",
+               "head_sha": SHA_EX, "state": "open", "draft": True, "reviewers": ["user-a"], "approvals": [],
+               "threads": [{"id": "t1", "author": "user-a", "resolved": False, "body_md": "A question", "file": "src/a.ts", "line": 3}],
+               "pipelines": ["9001"]},
+    "pipeline": {"id": "9001", "sha": SHA_EX, "created_at": "2026-11-24T14:03:11Z", "url": "https://scm.example/web/pipelines/9001",
+                 "status": "success", "jobs": [{"name": "test", "status": "success", "allow_failure": False}]}}
+
+
+def strip_draft_marker(data: dict, marker: str | None) -> dict:
+    """A provider that marks drafts in the title: the contract title is the title without the marker, and `draft` is true."""
+    if marker and isinstance(data.get("title"), str) and (m := re.match(marker, data["title"])) and m.end() > 0:
+        return {**data, "title": data["title"][m.end():].lstrip(), "draft": True}
+    return data
 
 
 def _check(value, typ, path: str, errs: list[str]) -> None:
@@ -105,7 +122,8 @@ def validate(kind: str, data, repos: list[str] | None = None, raw: bytes | None 
     if kind == "change" and repos is not None and isinstance(data.get("repo"), str) and data["repo"] not in repos:
         errs.append(f"data.repo: {data['repo']!r} is not a repo of factory.toml ({', '.join(repos)})")
     if errs:
-        raise FactoryError(f"contract {kind} rejected (nothing written):\n  " + "\n  ".join(errs))
+        raise FactoryError(f"contract {kind} rejected (nothing written):\n  " + "\n  ".join(errs)
+                           + (f"\nexample (factory ingest {kind} --example):\n{json.dumps(EXAMPLES[kind], indent=2)}" if kind in EXAMPLES else ""))
     out = {k: v for k, v in data.items() if v is not None}
     for att in out.get("attachments", []):
         att["mime"] = normalize_mime(att["name"], att.get("mime"))

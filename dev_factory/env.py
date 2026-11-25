@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -272,6 +273,29 @@ def serving(project, run: Run, repo: str, tree: Path, actor: str | None = None):
                 up(project, run, repo, restart=True, actor=actor)
             except FactoryError as exc:
                 raise EnvError("restore", f"could not start the run env of {repo} again after the reproduction: {exc}") from exc
+
+
+def live_of_run(project, run: Run) -> list[dict]:
+    """Lock records of the envs this run started that are still alive (repo, pid, cwd, sha)."""
+    return [{**rec, "repo": r["name"]} for r in project.cfg["repo"]
+            if r.get("env") and (rec := ep.read_lock(project, r["name"])) and rec.get("run") == run.id and ep.holder_alive(rec)]
+
+
+def pid_in(project, run: Run, text: str) -> tuple[int, str] | None:
+    """(pid, repo) of a live env of this run that a failed check's output names near a process or lock word: a file the
+    env holds open (a mandatory lock on Windows) makes a build in the same worktree fail."""
+    if not text:
+        return None
+    for rec in live_of_run(project, run):
+        if re.search(rf"(?is)(pid|process|lock|used by|in use).{{0,80}}?(?<!\d){rec['pid']}(?!\d)", text):
+            return rec["pid"], rec["repo"]
+    return None
+
+
+def sharing(project, run: Run, trees: dict[str, Path]) -> list[str]:
+    """Warnings for the envs of this run that serve from a worktree the checks of this batch run in."""
+    return [f"env {e['repo']} (pid {e['pid']}) serves from the worktree of {r}; checks that write build outputs there may collide with it"
+            for e in live_of_run(project, run) for r, path in trees.items() if e.get("cwd") == fwd(path)]
 
 
 def logs(project, repo: str, tail: int) -> str:

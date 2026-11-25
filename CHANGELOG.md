@@ -12,6 +12,23 @@
 - `factory setup --discover` reports the literal `env:` / `variables:` values of CI files as `vars`.
 - Generated prose: the entry resolves the workspace and asks for the ticket or runs the setup; every question goes through the harness question tool when there is one; the user hears which settings are asked at every run; run ambiguities offer "only this run" or "save to the workspace". Exit code 4 means the CLI needs the user's input.
 
+### Found on the DEV-9546 run
+
+Every signal below is generic: exit codes, parsed ids, line counts, git status, and the run's own env processes.
+
+- A check that writes its worktree (a linter in autofix mode) is caught: `verify` compares the git status before and after every check that runs in a worktree; a change makes the result `setup` ("the check changed N path(s) in the worktree: ...; a check must only read"), and later records from that worktree in the batch are not clean. Quality baseline runs follow the same rule.
+- Quality checks whose `parse` reads noise: ids under exit 0, or `parse = "lines"` making most of a long output into ids, add a `warning` to the record and the baseline (printed by `verify` and `baseline`); a baseline with more quarantined ids than stable ids and than 20 fails as `setup` ("fix `parse`"); `factory check` warns on a quality check without `parse`. Quarantined counts reach the qa reviewer's request and the Gate S briefing.
+- `verify` warns when an env of this run serves from a worktree its checks run in, and a failure whose output names a live env's pid near a process or lock word says which env holds it.
+- `run branch` warns when a repo has no `setup` and the main checkout has top-level ignored folders the new worktree lacks.
+- `factory gate <name> [RUN]` takes the run as its last word; an unrecognized word on any command points at `--run <RUN>`.
+- Decisions recorded before the intake gate passed are intake history: `factory next` no longer lists them as "not consumed yet" before the first plan lock.
+- `factory review sandbox [--drop]`: a reviewer's detached worktrees at the run's HEAD (setup done) for mutation tests; `run delete` removes them. The reviewer prose (`factory next`, worker `reviewer` role) sends mutation tests there, never to the run worktree. Re-run `factory init --harness <id>` to refresh an installed worker file.
+- Plan checks of type `cmd` or `quality` take `mutant`: a command `verify` runs in a throwaway worktree at HEAD after the check passes; the check must then fail (`mode: "mutant"`, a kill is `pass`, reused at the same SHA and spec). `gate verify` needs the kill at HEAD.
+- `factory check` warns on Windows when a check's `run` starts with a POSIX `NAME=value` prefix (use `vars`).
+- A provider that marks drafts in the change title: `[providers.change] draft_title_marker` (a regex) strips the marker from the title at ingest and sets `draft: true`; without it, a title mismatch that only adds a prefix says to set it. Nothing is fixed per provider in the code.
+- `factory ingest change|pipeline --example` prints a valid contract, and a rejected contract prints the same example (states, draft as a flag, pipelines as ids).
+- `factory ship summary (--stdin | --file F)` writes `ship/summary.md` through the CLI with the ship plan's rules (nothing is written when they fail), for a role that cannot create a `.md` file.
+
 ## 1.0.0-alpha (2026-11-25)
 
 First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.

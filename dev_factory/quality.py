@@ -14,6 +14,7 @@ from .checks import cmd as cmdcheck
 from .util import FactoryError, canonical, fwd, redact
 
 RUNS = 3  # a baseline runs the command up to this many times at the branch point [L-61]
+QUARANTINE_FLOOR = 20  # more quarantined ids than this and than stable ones: the parse reads noise, not failures
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 PARSE_HELP = "lines, json:<dotted path to a list> or regex:<failure id regex>"
 
@@ -120,6 +121,19 @@ def _execute(check: dict, tree: Path, line: str, secrets: list[str]):
     return bad, res, text
 
 
+def warning(check: dict, code: int | None, ids: list[str], text: str) -> str | None:
+    """A parse that likely reads more than failures, from generic signals only: ids under a successful exit, or `lines`
+    turning most of a long output into ids."""
+    real = [i for i in ids if not i.startswith("exit:")]
+    if code == 0 and real:
+        return f"exit 0 but {len(real)} failure id(s) parsed: the `parse` of this check likely matches non-failure output"
+    lines = sum(1 for ln in text.splitlines() if ln.strip())
+    if check.get("parse", "lines") == "lines" and len(real) >= QUARANTINE_FLOOR and len(real) * 2 > lines:
+        return (f"parse = lines made {len(real)} of {lines} output line(s) failure ids; give the check a `regex:` or `json:` parse "
+                "that matches only failures")
+    return None
+
+
 def _ids_of(check: dict, res, text: str, trees: list[Path]):
     try:
         return failure_ids(check["parse"], res.out, text, res.exit, trees), None
@@ -131,22 +145,31 @@ def compute_baseline(project, run, repo: dict, check: dict, bp: str, secrets: li
     """Run the full command at `branch_point` up to `runs` times in a throwaway worktree; two runs that agree end it.
     Ids present in every run are stable, ids present in some are quarantined and never fail a later verify [L-61]."""
     sets: list[set[str]] = []
+    warn = None
     with git.throwaway(project, run, repo, bp, "baseline", actor) as (tree, setup):
         if setup["setup"] == "fail":
             raise FactoryError(f"{check['id']}: the baseline worktree setup failed (exit {setup.get('setup_exit')}); a setup failure is never a baseline [L-06]")
+        before = git.status_now(tree)
         for i in range(runs):
             bad, res, text = _execute(check, tree, check["run"], secrets)
             if bad:
                 raise FactoryError(f"{check['id']}: the baseline run ended in {bad[0]}: {bad[2]}")
+            if (wrote := git.changed_by(tree, before)):
+                raise FactoryError(f"{check['id']}: the check changed {len(wrote)} path(s) in the worktree: {', '.join(wrote[:5])}; a check must only read")
             ids, err = _ids_of(check, res, text, [tree, Path(repo["path"])])
             if err:
                 raise FactoryError(f"{check['id']}: baseline {err[2]}")
+            warn = warn or warning(check, res.exit, ids, text)
             sets.append(set(ids))
             if i >= 1 and sets[-1] == sets[-2]:
                 break
     stable = set.intersection(*sets)
+    quarantined = set.union(*sets) - stable
+    if len(quarantined) > max(len(stable), QUARANTINE_FLOOR):
+        raise FactoryError(f"{check['id']}: {len(quarantined)} failure id(s) differ between identical runs at {bp[:7]} and only {len(stable)} "
+                           "repeat: fix `parse` (likely: timestamps, durations and counters change every run) or the check's determinism")
     return {"check": check["id"], "repo": check["repo"], "spec_hash": None, "branch_point": bp, "runs": len(sets),
-            "stable": sorted(stable), "quarantined": sorted(set.union(*sets) - stable)}
+            "stable": sorted(stable), "quarantined": sorted(quarantined), **({"warning": warn} if warn else {})}
 
 
 def find(st: dict, check_id: str, spec: str, bp: str) -> dict | None:
@@ -192,11 +215,17 @@ def run_check(check: dict, ctx) -> dict:
     known = set(positionless((ctx.baseline or {}).get("stable", []))) | set(positionless((ctx.baseline or {}).get("quarantined", [])))
     new = sorted(set(positionless(ids)) - known)
     details = {"scope": scope, "new": new[:50], "total": len(ids), "baseline_stable": len((ctx.baseline or {}).get("stable", [])),
-               "quarantined": len((ctx.baseline or {}).get("quarantined", []))}
+               "quarantined": len((ctx.baseline or {}).get("quarantined", [])), **({"warning": w} if (w := warning(check, res.exit, ids, text)) else {})}
     if new:
         return {**base, "result": "fail", "kind": "assert", "details": details,
                 "reason": f"{len(new)} new failure id(s) beyond the baseline at {(ctx.baseline or {}).get("branch_point", ctx.branch_point)[:7]}: " + "; ".join(new[:3])[:300]}
     return {**base, "result": "pass", "kind": None, "reason": "", "details": details}
+
+
+def quarantines(st: dict) -> dict[str, int]:
+    """Quality checks whose latest baseline quarantines ids, with their count: those ids never fail a verify, so the check proves less."""
+    latest = {b["check"]: b for b in st["baselines"]}
+    return {k: len(b["quarantined"]) for k, b in sorted(latest.items()) if b.get("quarantined")}
 
 
 def guidelines(cfg: dict, plan: dict) -> list[dict]:

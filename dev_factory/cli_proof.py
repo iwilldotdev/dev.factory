@@ -20,9 +20,10 @@ def cmd_baseline(args) -> int:
             code = 1
         else:
             rows.append({"check": c["id"], "branch_point": have["branch_point"], "runs": have["runs"], "stable": len(have["stable"]),
-                         "quarantined": len(have["quarantined"])})
+                         "quarantined": len(have["quarantined"]), **({"warning": have["warning"]} if have.get("warning") else {})})
     cli._out(args, rows, "\n".join(f"{r['check']}: " + (f"FAILED: {r['error']}" if "error" in r else
-             f"baseline at {r['branch_point'][:7]}: {r['stable']} stable failure id(s), {r['quarantined']} quarantined as flaky ({r['runs']} run(s))") for r in rows))
+             f"baseline at {r['branch_point'][:7]}: {r['stable']} stable failure id(s), {r['quarantined']} quarantined as flaky ({r['runs']} run(s))"
+             + ("; a quarantined id never fails a verify" if r["quarantined"] else "") + (f"\n  warning: {r['warning']}" if r.get("warning") else "")) for r in rows))
     return code
 
 
@@ -86,3 +87,20 @@ def cmd_uat(args) -> int:
     cli._out(args, rec, f"{rec['check']} attempt {rec['attempt']}: {rec['result']}" + (f" ({rec['reason']})" if rec.get("reason") else "")
              + "".join(f"\n  {f}" for f in files) + "\nlook at every screenshot; what you see becomes the explored entries and findings of the uat review")
     return 0 if rec["result"] == "pass" else 1
+
+
+def cmd_ship_summary(args) -> int:
+    """Write the change description through the CLI, so a role that cannot create a `.md` file can still hand it over."""
+    import sys
+    from pathlib import Path
+    from . import acquire, cli, ship, shipbody
+    from .util import write_atomic
+    proj = cli._project(args)
+    run = cli._run(args, proj)
+    text = sys.stdin.read() if args.stdin else Path(args.file).read_text(encoding="utf-8")
+    ticket = acquire.load(run, "ticket", run.state()["ticket"])[0]["data"]
+    shipbody.body(text, ticket)  # the same rules the ship plan applies; nothing is written when they fail
+    path = ship.path_of(run, shipbody.SUMMARY)
+    write_atomic(path, text.strip() + "\n")
+    cli._out(args, {"path": str(path)}, f"wrote {path}")
+    return 0

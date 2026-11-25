@@ -201,6 +201,8 @@ def verify_reasons(run: Run, project, st: dict, recorded: bool = False, humans: 
                 out.append(f"{c['id']}: the latest verify result is {rec['result']} ({rec['reason'] or rec['kind']})"
                            + ("; if it already fails at the branch point on code this run does not touch, give it type = \"quality\" in factory.toml"
                               " so that only new failures count [L-60]" if ":" in c["id"] and c["type"] == "cmd" else ""))
+        elif c.get("mutant") and not recorded and not evidence.satisfied(st, c["id"], "mutant", lk["spec_hashes"][c["id"]], sha):
+            out.append(f"{c['id']}: its mutant is not killed at {sha[:7]}: the check must fail with the mutant applied; run factory verify")
         else:
             passing |= {*c["ac"]}
         if c.get("red_green") and rec is not None:

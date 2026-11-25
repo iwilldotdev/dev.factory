@@ -33,7 +33,7 @@ SPEC = {
     "checks": {"cmd_timeout_s": T("i", 600), "http_timeout_s": T("i", 30), "browser_timeout_s": T("i", 300),
                "expect_timeout_ms": T("i", 10000), "tail_lines": T("i", 40), "browser": {"runner": "c", "batch": T("b", True)}},
     "limits": {"max_diff_ratio": T(("nr", 0, 1), 0.03), "tolerance_px": T("n", 2), "approx": APPROX},
-    "providers": {k: {"fetch": "c", "timeout_s": T("i", 60), "secrets": T("key", [])} for k in KINDS},
+    "providers": {k: {"fetch": "c", "timeout_s": T("i", 60), "secrets": T("key", []), **({"draft_title_marker": "c"} if k == "change" else {})} for k in KINDS},
     "ship": {"title": T("s", "[{key}] - {summary}"), "draft": T("b", True),
              "ticket": T(("e", "none", "comment", "transition", "both"), "none"), "transition_to": "c",
              "reviewers": [{"scm": "c", "tracker": "c"}], "require_pipeline": T("b", False),

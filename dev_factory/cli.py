@@ -148,7 +148,8 @@ def cmd_run(args) -> int:
         print(f"affected repos: {args.names}")
     elif args.sub == "branch":
         evs = lifecycle.branch(proj, _run(args, proj), args.repos.split(",") if args.repos else None, args.actor, args.from_run)
-        text = [f"worktree {e['repo']}: {e['path']} (branch {e['branch']}, branch point {e['branch_point'][:7]}, setup {e['setup']})" for e in evs]
+        text = [f"worktree {e['repo']}: {e['path']} (branch {e['branch']}, branch point {e['branch_point'][:7]}, setup {e['setup']})"
+                + (f"\n  warning: {e['warning']}" if e.get("warning") else "") for e in evs]
         _out(args, evs, "\n".join(text) or "every repo already has its worktree")
         bad = [e for e in evs if e["setup"] == "fail"]
         for e in bad:
@@ -260,6 +261,12 @@ def cmd_fetch(args) -> int:
 def cmd_ingest(args) -> int:
     from . import acquire
     proj = _project(args)
+    if args.example:
+        from .contracts import EXAMPLES
+        if args.kind not in EXAMPLES:
+            raise FactoryError(f"no example for {args.kind!r} (examples: {', '.join(EXAMPLES)})")
+        print(json.dumps(EXAMPLES[args.kind], indent=2))
+        return 0
     if args.check:
         bad = acquire.stale(_run(args, proj, writable=False))
         _out(args, bad, "\n".join(bad) or "all raws match their recorded hashes")
@@ -293,6 +300,18 @@ def cmd_review(args) -> int:
     from . import review
     if args.sub == "example":
         print(json.dumps(review.EXAMPLE, indent=2))
+        return 0
+    if args.sub == "sandbox":
+        from . import sandbox
+        proj = _project(args)
+        run = _run(args, proj)
+        if args.drop:
+            gone = sandbox.drop(proj, run)
+            _out(args, gone, "\n".join(gone) or "no sandbox to remove")
+            return 0
+        made = sandbox.create(proj, run, args.actor)
+        _out(args, made, "\n".join(f"sandbox {s['repo']}: {s['path']} at {s['sha'][:7]} (setup {s['setup']})" for s in made)
+             + "\nbreak code only here; remove with factory review sandbox --drop")
         return 0
     if args.sub != "record":
         from .cli_composite import cmd_review_run

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import tomllib
 from pathlib import Path
 from urllib.parse import urlparse
@@ -144,6 +145,12 @@ def semantic(cfg: dict) -> list[str]:
         errs.append(f"project.name: {name!r} must match ^[a-z0-9][a-z0-9-]{{0,62}}$")
     if not cfg["repo"]:
         errs.append("repo: at least one [[repo]] is required")
+    marker = cfg["providers"].get("change", {}).get("draft_title_marker")
+    if marker:
+        try:
+            re.compile(marker)
+        except re.error:
+            errs.append(f"providers.change.draft_title_marker: {marker!r} is not a valid regular expression")
     names = [r["name"] for r in cfg["repo"]]
     for r in cfg["repo"]:
         here = f"repo[{r['name']}]"

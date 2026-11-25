@@ -6,10 +6,19 @@ import argparse
 DESC = "Take one ticket from intake to a draft change request; no step passes on a model's claim."
 
 
+class Parser(argparse.ArgumentParser):
+    """Unrecognized words name the way to pass a run: most commands take it only as `--run`."""
+
+    def error(self, message: str):
+        if message.startswith("unrecognized arguments:"):
+            message += "; to name a run use --run <RUN> (gate, next, status, log, claim and metrics also take it as their last word)"
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
     from .cli import (cmd_check, cmd_fetch, cmd_gate, cmd_human, cmd_ingest, cmd_init, cmd_log, cmd_media, cmd_next,
                       cmd_plan, cmd_reproduce, cmd_review, cmd_run, cmd_ship, cmd_runs, cmd_status, cmd_verify)
-    from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics, cmd_uat
+    from .cli_proof import cmd_baseline, cmd_confirm, cmd_feedback, cmd_metrics, cmd_ship_summary, cmd_uat
     from .cli_composite import cmd_claim, cmd_epic, cmd_mirror, cmd_review_run
     from .cli_design import cmd_design
     from .cli_env import cmd_env, cmd_wait
@@ -17,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     from .harness import IDS
     from .hook import cmd_hook
     from .cli_home import cmd_config, cmd_start
-    p = argparse.ArgumentParser(prog="factory", description=DESC)
+    p = Parser(prog="factory", description=DESC)
     p.add_argument("-V", "--version", action="store_true", help="print version and build identity")
     p.add_argument("--project", dest="project_pre", metavar="DIR", help="project directory (default: climb from the cwd)")
     p.add_argument("--workspace", dest="workspace_pre", metavar="NAME", help="a workspace in FACTORY_HOME (default: the one that lists this repository)")
@@ -124,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--contract", metavar="FILE")
     sp.add_argument("--stdin", action="store_true", help="read the contract data from stdin")
     sp.add_argument("--check", action="store_true", help="list raws that changed since they were acquired")
+    sp.add_argument("--example", action="store_true", help="print an example of the contract data of KIND (change, pipeline)")
     sp.add_argument("--refresh", action="store_true", help="a change or pipeline read again after the ship gate, for the feedback phase")
     mp = sub.add_parser("media", help="record ticket media as seen or unseen").add_subparsers(dest="sub", required=True)
     sp = mp.add_parser("seen", parents=[scoped])
@@ -183,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", required=True, metavar="FILE", help="verdict (ok, not-ok, incomplete), summary, findings, comment_md")
     sp = rv.add_parser("fix", parents=[scoped], help="turn the review run into a ticket run on the change branch")
     sp.set_defaults(func=cmd_review_run)
+    sp = rv.add_parser("sandbox", parents=[scoped], help="a throwaway worktree per repo at HEAD for a reviewer's mutation tests (--drop removes them)")
+    sp.set_defaults(func=cmd_review)
+    sp.add_argument("--drop", action="store_true", help="remove every sandbox of the run")
     sp = rv.add_parser("record", parents=[scoped])
     sp.set_defaults(func=cmd_review)
     sp.add_argument("--kind", required=True, help="code (bound to the plan without checks), qa (bound to the full plan) or uat (the browser exploration of a change with a screen)")
@@ -198,6 +211,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pipeline", action="store_true", help="also plan a pipeline readback (always planned with require_pipeline)")
     sp = sh.add_parser("verify", parents=[scoped])
     sp.set_defaults(func=cmd_ship)
+    sp = sh.add_parser("summary", parents=[scoped], help="write ship/summary.md (the change description) from stdin or a file of any extension")
+    sp.set_defaults(func=cmd_ship_summary)
+    src = sp.add_mutually_exclusive_group(required=True)
+    src.add_argument("--stdin", action="store_true", help="read the text from stdin")
+    src.add_argument("--file", metavar="FILE", help="read the text from this file")
     ep_ = sub.add_parser("epic", help="plan an epic, list its ready children, plan its ship").add_subparsers(dest="sub", required=True)
     for name in ("plan", "status", "ship"):
         sp = ep_.add_parser(name, parents=[scoped])
@@ -261,4 +279,5 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("event", choices=("pre-tool",))
     sp = add("gate", cmd_gate, "run a gate (reads only; records pass or fail)", [scoped])
     sp.add_argument("name")
+    sp.add_argument("run_id", nargs="?", help="run id (same as --run)")
     return p

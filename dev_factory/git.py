@@ -124,6 +124,16 @@ def dirty(path: Path) -> list[str]:
     return [line for line in out.splitlines() if line.strip()]
 
 
+def changed_by(path: Path, before: list[str]) -> list[str]:
+    """Status lines of `path` (asked now, never memoized) that `before` lacked: what a command run in between wrote."""
+    now = git(path, "status", "--porcelain", "--untracked-files=all").out.splitlines()
+    return sorted({line[3:] for line in now if line.strip()} - {line[3:] for line in before if line.strip()})
+
+
+def status_now(path: Path) -> list[str]:
+    return [line for line in git(path, "status", "--porcelain", "--untracked-files=all").out.splitlines() if line.strip()]
+
+
 _HISTORY: dict[tuple, int | bool] = {}  # answers about two commit ids never change, so they are kept for the life of the process
 
 

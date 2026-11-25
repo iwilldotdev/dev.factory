@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from .run import Run
 from .util import FactoryError, fwd, version_ok
 
 GITIGNORE_LINE = ".factory/"
+POSIX_ENV = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s")  # `NAME=value cmd`: an env prefix cmd.exe runs as a command
 FETCH_PLACEHOLDERS = {"id", "repo", "repo_path", "branch", "sha", "run_dir", "project_dir", "out"}
 TEMPLATE_PLACEHOLDERS = {"providers.*.fetch": FETCH_PLACEHOLDERS, "metrics.tokens": {"run", "session"},
                          "checks.browser.runner": {"spec", "base_url", "out", "timeout_ms", "storage_state"}}
@@ -150,6 +153,13 @@ def check(project: Project) -> tuple[list[str], list[str]]:
             continue
         if not shutil.which(exe):
             warns.append(f"{path}: command {exe!r} was not found on PATH")
+    for r in cfg["repo"]:
+        for c in r.get("check", []):
+            here = f"repo {r['name']} check {c.get('id')}"
+            if c.get("type") == "quality" and "parse" not in c:
+                warns.append(f"{here}: a quality check without `parse` uses `lines`: every non-empty output line is a failure id")
+            if sys.platform == "win32" and POSIX_ENV.match(str(c.get("run") or "")):
+                warns.append(f"{here}: `run` starts with NAME=value, which only POSIX shells read; use the check's `vars` table")
     warns += runner_needs(project)
     _, missing = config.resolve_secrets(cfg)
     if missing:

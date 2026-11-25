@@ -4,14 +4,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from . import checks as checks_pkg, plancheck, quality
+from . import checks as checks_pkg, mutant, plancheck, quality
 from .util import canonical, read_json, sha256_bytes, sha256_file
 
 AC_ID, CHK_ID = re.compile(r"^AC-[0-9]+$"), re.compile(r"^CHK-[0-9]+$")
 TOP = {"schema", "kind", "repos", "acs", "checks", "fix_commit", "risk", "login_user", "evidence"}
 AC_KEYS = {"id", "text", "source", "reproduce", "reason", "design"}
 CHECK_KEYS = {"id", "type", "repo", "ac", "timeout_s", "files", "reproduce", "mirror", "run", "cwd", "expect_exit",
-              "expect_pattern", "red_green"} | plancheck.NEW_KEYS
+              "expect_pattern", "red_green", "mutant"} | plancheck.NEW_KEYS
 PLAN_KIND = {"feature": "feature", "bug": "bug", "hotfix": "bug"}  # run kind -> plan kind [L-31]
 EXAMPLE = {"schema": 1, "kind": "feature", "repos": ["web"],
            "acs": [{"id": "AC-1", "text": "One verifiable behaviour from the ticket", "source": "ticket:description"}],
@@ -140,7 +140,7 @@ def validate(plan, cfg: dict, run_dir: Path, run_kind: str | None) -> list[str]:
 
 
 def _cmd_problems(c: dict, here: str, bug: bool, run_dir: Path) -> list[str]:
-    errs: list[str] = quality.problems(c, here) if c.get("type") == "quality" else []
+    errs: list[str] = (quality.problems(c, here) if c.get("type") == "quality" else []) + mutant.problems(c, here)
     if c.get("type") in ("cmd", "quality"):
         if c["type"] == "cmd" and not (isinstance(c.get("run"), str) and c["run"].strip()):
             errs.append(f"{here}.run: must be a non-empty command")
@@ -185,7 +185,7 @@ def _norm(c: dict, cfg: dict, standing: bool) -> dict:
         out.update(plancheck.norm(c, cfg))
     else:
         out.update(run=c["run"], cwd=c.get("cwd") or ".", expect_exit=c.get("expect_exit", 0), expect_pattern=c.get("expect_pattern"))
-    for key in ("reproduce", "red_green", "mirror", "vars"):
+    for key in ("reproduce", "red_green", "mirror", "vars", "mutant"):
         if c.get(key):
             out[key] = c[key]
     if c.get("files") and kind == "cmd":

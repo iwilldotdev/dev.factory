@@ -9,7 +9,7 @@ from .checks import ui
 from .run import Run
 from .util import canonical, fwd, now_iso, safe_id, sha256_bytes, write_atomic
 
-GOOD = {"verify": "pass", "green": "pass", "reproduce": "reproduced", "red": "reproduced"}
+GOOD = {"verify": "pass", "green": "pass", "reproduce": "reproduced", "red": "reproduced", "mutant": "pass"}  # mutant pass = killed
 TAIL_BYTES = 4096
 
 

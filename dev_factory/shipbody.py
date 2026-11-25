@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import evidence, review
+from . import evidence, quality, review
 from .util import FactoryError
 
 LOCAL_LINK = re.compile(r"\]\((?:evidence/|artifacts/|[A-Za-z]:[\\/])|file://")  # run-local paths 404 in the SCM [L-144]
@@ -78,6 +78,7 @@ def briefing(sp: dict, rs: list[dict], st: dict) -> list[str]:
     lines += [f"  ticket: {i['intent']} (needs the user)" for i in sp["intents"] if i["intent"].startswith("issue_")] or ["  ticket: no comment or transition"]
     lines.append(f"  approximate design frames: {', '.join(sorted({r['frame'] for r in st['design_reviews']})) or 'none'}; "
                  f"screenshots: {sum(1 for e in st['evidence'] if e['mode'] == 'verify' and e['result'] == 'pass' and any(a.endswith('.png') for a in e['artifacts']))} record(s) with images")
+    lines += [f"  quality {k}: {n} failure id(s) quarantined at the base as flaky; they never fail a verify" for k, n in quality.quarantines(st).items()]
     asked = humans(st, sp["heads"])
     lines += [f"  human check {k}: the user confirmed ({_cell(e['user_said'], 80)})" for k, e in asked.items()] or ["  human checks: none"]
     return lines

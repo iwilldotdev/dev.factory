@@ -258,6 +258,11 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
         rules = quality.guidelines(project.cfg, plan) if kind == "code" else []
         more = (" The code review also cites every guideline with followed true or false: " + "; ".join(f"{g['id']}: {g['text']}" for g in rules) + "." if rules else "")
         more += (" The risk is high: the code and qa reviews come from two different reviewers, each the strongest the harness has." if plan.get("risk") == "high" else "")
+        q = quality.quarantines(st) if kind == "qa" else {}
+        more += (" These quality checks quarantine ids at the base, which never fail a verify; the qa review says what they leave unproven: "
+                 + ", ".join(f"{k} ({n})" for k, n in q.items()) + "." if q else "")
+        more += (" A reviewer never edits the run worktrees: mutation tests (break a line, run the check, restore) run only in its own "
+                 f"sandbox, from factory review sandbox{flag}, dropped afterwards with --drop.")
         set_("start a fresh reviewer (never the builder, with the strongest model the harness has) on the diff from branch point to HEAD in "
              f"every worktree: it writes the {kind} review as JSON (factory review example prints the shape) and records it; the code "
              "review lists changed_values and the qa review lists one exercises entry per AC; the same reviewer may record both kinds" + more,
@@ -301,7 +306,7 @@ def _ship_action(project: Project, run: Run, st: dict, stage: str, set_, flag: s
         set_(f"hotfix: {step[0]}", "command", step[1], [], "builder")
     elif stage == "plan":
         update = " --update" if any(ship._existing(run, st, r) for r in st["repos"]) else ""
-        set_(f"write ship/{shipbody.SUMMARY} first, the change description for its human reviewer (" + shipbody.GUIDE + "); then the ship "
+        set_(f"write ship/{shipbody.SUMMARY} first (or pipe the text to factory ship summary --stdin), the change description for its human reviewer (" + shipbody.GUIDE + "); then the ship "
              "plan: neutral intents (push, change request with that body, readback, ticket writes) for the current commits; --ticket none|comment|transition|both picks the ticket writes, --pipeline adds a pipeline readback, "
              "--allow-behind --decision Q-n accepts a target that moved", "command", f"factory ship plan{update}{flag}", [], "orchestrator")
     elif stage == "execute":

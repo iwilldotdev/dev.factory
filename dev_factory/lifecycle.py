@@ -118,7 +118,8 @@ def delete(project: Project, run: Run, confirmed: bool, decision: str | None = N
     lock.check_decision(st, decision)
     repos = {r["name"]: r for r in project.cfg["repo"]}
     trees = list({w["path"]: w for w in st["worktrees"] + st["mirrors"] if not w.get("throwaway") and w.get("path")}.values())
-    out = []
+    from . import sandbox
+    out = sandbox.drop(project, run)
     for w in trees:
         repo = repos.get(w["repo"])
         out += git.retire(Path(repo["path"]), w, repo["base"]) if repo else [f"kept worktree {w['path']}: repo {w['repo']} is not configured"]
@@ -147,8 +148,12 @@ def branch(project: Project, run: Run, names: list[str] | None, actor: str | Non
             from . import review_run
             out.append(review_run.add_worktree(project, run, by_name[n], actor))
             continue
-        from . import epic  # a stacked branch starts at its dependency's head [L-91, L-92]
-        out.append(git.add_worktree(project, run, by_name[n], kind, title, actor, epic.base_ref(project, run, st, n, from_run)))
+        from . import epic, envproc  # a stacked branch starts at its dependency's head [L-91, L-92]
+        ev = git.add_worktree(project, run, by_name[n], kind, title, actor, epic.base_ref(project, run, st, n, from_run))
+        if not by_name[n].get("setup") and (lack := envproc.ignored_missing(Path(by_name[n]["path"]), Path(ev["path"]))):
+            ev = {**ev, "warning": f"the main checkout has ignored folders the run worktree lacks ({', '.join(lack[:8])}); "
+                                   f"repo {n} has no `setup`, and one is likely needed (factory config set repo.{n}.setup \"<command>\")"}
+        out.append(ev)
     return out
 
 

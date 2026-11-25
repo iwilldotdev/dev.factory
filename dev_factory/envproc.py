@@ -143,3 +143,12 @@ def copy_main_files(repo: dict, tree: Path) -> list[str]:
                 dst.unlink(missing_ok=True)
                 problems.append(f"{rel}: git does not ignore it in the worktree, so the copy was removed (add it to .gitignore) [L-65]")
     return problems
+
+
+def ignored_missing(main: Path, tree: Path) -> list[str]:
+    """Top-level folders git ignores in the main checkout that a new worktree lacks (installed dependencies, generated files):
+    without a repo `setup`, an env or a check started there may not find its tools."""
+    out = git.git(main, "status", "--ignored", "--porcelain", check=False).out
+    names = {n.rstrip("/") for ln in out.splitlines() if ln.startswith("!! ") and (n := ln[3:].strip('"')).endswith("/")}
+    names.discard(".factory")  # the factory's own folder of a folder workspace
+    return sorted(n for n in names if n and "/" not in n and not (tree / n).exists() and not tree.resolve().is_relative_to((main / n).resolve()))

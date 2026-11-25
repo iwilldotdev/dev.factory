@@ -13,6 +13,13 @@ LINT = f'"{PY}" lint.py'
 
 
 class IdTests(unittest.TestCase):
+    def test_ids_ignore_line_and_column_but_count_repeats(self):
+        base = quality.positionless(["a.tsx:100:3: hook deps", "b.ts(12,5): error TS1: x"])
+        moved = quality.positionless(["a.tsx:118:24: hook deps", "b.ts(40,1): error TS1: x"])
+        self.assertEqual(set(moved) - set(base), set(), "code that only moved keeps its findings")
+        again = quality.positionless(["a.tsx:118:24: hook deps", "a.tsx:150:2: hook deps", "b.ts(40,1): error TS1: x"])
+        self.assertEqual(set(again) - set(base), {"a.tsx: hook deps#2"}, "one more copy of a finding is new")
+
     @lesson("L-62")
     def test_worktree_and_checkout_paths_are_stripped_so_a_baseline_id_equals_a_run_id(self):
         """L-62: failure ids are normalized (worktree paths stripped) before the baseline comparison."""

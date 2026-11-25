@@ -64,6 +64,21 @@ def _walk(data, path: str):
     return data
 
 
+POSITION = re.compile(r"(?<=\S)(?::\d+(?::\d+)?|\(\d+,\d+\))(?=[:\s]|$)")
+
+
+def positionless(ids) -> list[str]:
+    """Ids without line and column: code that only moves keeps its findings' ids. The same finding repeated in one file is
+    numbered (`#2`, `#3`), so one more copy still counts as new. Applied to recorded baselines too, at comparison time."""
+    seen: dict[str, int] = {}
+    out = []
+    for raw in sorted(ids):
+        key = POSITION.sub("", raw)
+        seen[key] = seen.get(key, 0) + 1
+        out.append(key if seen[key] == 1 else f"{key}#{seen[key]}")
+    return sorted(out)
+
+
 def failure_ids(parse: str, stdout: str, text: str, code: int | None, trees: list[Path]) -> list[str]:
     """The sorted failure ids of one run. A failing exit with no id is the id `exit:<code>`, so it compares like any other [L-61]."""
     mode, _, arg = parse.partition(":")
@@ -174,8 +189,8 @@ def run_check(check: dict, ctx) -> dict:
     ids, err = _ids_of(check, res, text, [ctx.path, Path(ctx.repo["path"])])
     if err:
         return {**base, "result": err[0], "kind": err[1], "reason": err[2]}
-    known = set((ctx.baseline or {}).get("stable", [])) | set((ctx.baseline or {}).get("quarantined", []))
-    new = sorted(set(ids) - known)
+    known = set(positionless((ctx.baseline or {}).get("stable", []))) | set(positionless((ctx.baseline or {}).get("quarantined", [])))
+    new = sorted(set(positionless(ids)) - known)
     details = {"scope": scope, "new": new[:50], "total": len(ids), "baseline_stable": len((ctx.baseline or {}).get("stable", [])),
                "quarantined": len((ctx.baseline or {}).get("quarantined", []))}
     if new:

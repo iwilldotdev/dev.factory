@@ -160,7 +160,7 @@ def status(project: Project, run: Run) -> dict:
            "events": st["count"], "started": st["first_ts"], "updated": st["last_ts"],
            "open_questions": [q["id"] for q in st["questions"].values() if q["answered"] is None],
            "open_blockers": [b["id"] for b in st["blockers"].values() if b["open"]],
-           "unconsumed_decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]],
+           "unconsumed_decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"] and not d.get("intake")],
            "gates": {n: g["result"] for n, g in st["gates"].items()}, "missing_worktrees": missing,
            "plan_lock": len(st["locks"]) or None, "loops": f"{lock.loops_used(st)}/{project.cfg['autonomy']['max_loops']}",
            "closed": st["closed"]["reason"] if st["closed"] else None}

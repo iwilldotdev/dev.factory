@@ -127,9 +127,9 @@ def derive(events: list[dict]) -> dict:
         elif t == "answer" and ev.get("question") in st["questions"]:
             st["questions"][ev["question"]]["answered"] = ev.get("user_said")
             if ev.get("decision"):
-                st["decisions"][ev["decision"]] = {"id": ev["decision"], "user_said": ev.get("user_said"), "via": "answer"}
+                st["decisions"][ev["decision"]] = {"id": ev["decision"], "user_said": ev.get("user_said"), "via": "answer", "at": i}
         elif t == "decision":
-            st["decisions"][ev["id"]] = {"id": ev["id"], "user_said": ev.get("user_said"), "via": "decide"}
+            st["decisions"][ev["id"]] = {"id": ev["id"], "user_said": ev.get("user_said"), "via": "decide", "at": i}
         elif t == "human":
             st["human"].append(ev)
         elif t == "blocker":
@@ -195,9 +195,15 @@ def derive(events: list[dict]) -> dict:
             st["slot"] = ev.get("slot", 0)
         if t in ("unblock", "loop", "ship_planned", "mirror", "dismiss", "plan_locked") and ev.get("decision"):
             consumed.add(ev["decision"])
+    first_lock = _first_lock_index(events)
     for did, d in st["decisions"].items():
         d["consumed"] = did in consumed
+        d["intake"] = d.get("at", 0) < first_lock  # answers the plan was built on; listing them as pending is noise
     return st
+
+
+def _first_lock_index(events: list[dict]) -> int:
+    return next((i for i, e in enumerate(events) if e.get("type") == "plan_locked"), -1)  # no lock yet: nothing is intake history
 
 
 def next_id(prefix: str, events: list[dict], etype: str) -> str:

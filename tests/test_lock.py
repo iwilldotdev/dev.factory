@@ -73,6 +73,15 @@ class DriftTests(M2Case):
         self.assertIn("web:env", self.ok("verify"))
         self.assertIn("pass", next(e for e in self.events(self.run_dir) if e.get("check") == "web:env")["result"])
 
+    def test_intake_answers_are_not_listed_as_pending_decisions_once_the_plan_is_locked(self):
+        from dev_factory.run import derive
+        events = [e for e in self.events(self.run_dir)]
+        at = next(i for i, e in enumerate(events) if e["type"] == "plan_locked")
+        before = [{"type": "question", "id": "Q-1", "text": "which data?"}, {"type": "answer", "question": "Q-1", "user_said": "staging", "decision": "Q-1"}]
+        after = [{"type": "question", "id": "Q-2", "text": "one more loop?"}, {"type": "answer", "question": "Q-2", "user_said": "yes", "decision": "Q-2"}]
+        st = derive(events[:at] + before + events[at:] + after)
+        self.assertEqual([d["id"] for d in st["decisions"].values() if not d["consumed"] and not d["intake"]], ["Q-2"])
+
     def test_machine_facts_in_local_toml_do_not_move_the_lock(self):
         self.write(".factory/local.toml", f'worktree_root = {json.dumps(str(self.base / "elsewhere"))}\n')
         self.assertEqual(self.gate("plan")[0], 0)

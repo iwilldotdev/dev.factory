@@ -27,6 +27,7 @@
   - `quality` ids ignore line and column (`file:12:5:`, `file(12,5):`): code that only moves no longer turns a base finding into a new one; the same finding repeated in a file is numbered, so one more copy is still new. Recorded baselines are normalized the same way when compared.
   - The user decision that unblocks a spent loop budget (`factory unblock B-n --decision Q-n`, as `factory next` says) pays for the next loop, once; before, the unblock consumed it and the review or amend it was meant for was refused again.
   - Fixes asked by a review, the UAT or feedback are `fixup!` commits of the commit they correct: the commit-pattern check reads the target's header, `ship plan` refuses until they are folded (`git -c sequence.editor=: rebase -i --autosquash <base>`), and a fold that keeps the tree on the same base keeps the reviews. The change ships its feature commits, without "adjustments" commits.
+  - Answers recorded before the first plan lock (the intake answers the plan was built on) are no longer listed as pending decisions by `status` and `next`.
   - `autonomy.max_loops` defaults to 5; each user decision still allows one more round.
   - The Python core cap rises from 8,500 to 10,000 lines (the owner: quality over the cap).
   - Tests: the foreign port owner starts with the base interpreter, since a Windows venv `python.exe` is a launcher whose child holds the port.

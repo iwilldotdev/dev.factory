@@ -69,7 +69,7 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
     ph = "build" if ph == "verify" else ph  # a review run's verify phase is the build step without the building
     out: dict = {"run": run.id, "ticket": tid, "kind": gates.effective_kind(run, st), "phase": shown,
                  "action": None, "kind_of_action": None, "command": None, "files": [], "reasons": [], "role": "orchestrator",
-                 "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"]], "refused": []}
+                 "decisions": [d["id"] for d in st["decisions"].values() if not d["consumed"] and not d.get("intake")], "refused": []}
     reasons = gates.reasons_for(run, project, st, {"build": "verify"}.get(ph, ph)) if ph in ("intake", "plan", "reproduce", "build") else []
     stage = None
     if ph == "review":

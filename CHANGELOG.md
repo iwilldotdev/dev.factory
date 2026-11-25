@@ -6,6 +6,7 @@
 - `factory run delete` also removes the run's clean worktrees and deletes its branches that have no commit beyond their base; it keeps and names a dirty worktree or a branch with commits of its own.
 - An env failure names its kind, the last 30 lines of the env log (once the server started) and one likely cause per kind; the recorded reason leaves the log out, so two identical failures still compare equal.
 - `factory setup`: `--discover [DIR]` prints JSON facts of every git repo (remotes without credentials, base branches, stacks and their commands, CI steps, env files, ports); without flags it prints a checklist of the project config (done / missing / optional, each with its key and an example) and exits 1 while something required is missing. The skill sets a project up from zero with it.
+- Autonomy in the generated prose: project config that is not product code is the orchestrator's to fix (then `factory check` and a line in the next report); intake is the only phase that asks the user, later phases decide and record the assumption in `notes/design.md`; envs start in the background once intake passes; a worker fixes the config cause of an env failure once before it returns blocked; automated proof is preferred and human checks are collected in one message; the user's language comes from their first message, or the ticket's when they only typed a command.
 
 ## 1.0.0-alpha
 

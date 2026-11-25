@@ -108,7 +108,7 @@ def compute(project: Project, run: Run, session: str | None = None) -> dict:
         waiting = [r for r in reasons if human.WAITING in r]
         if waiting and len(waiting) == len(reasons):
             first = waiting[0].split(":")[0]
-            set_("the commits are verified; only the user's confirmation is missing (ask them, show what they confirm, record their own words): "
+            set_("the commits are verified; only the user's confirmation is missing (ask for every human check in one message, show what each confirms, record their own words): "
                  + "; ".join(r.split(": ", 1)[1].split(" [")[0] for r in waiting), "user", f'factory confirm {first} --user-said "<their words>"{flag}')
         elif reasons:
             set_(("run the checks at the change head: a review run builds nothing, and its worktree is the change, detached" if shown == "verify" else
@@ -195,7 +195,7 @@ def _plan_action(project: Project, run: Run, st: dict, reasons: list[str], set_,
              "against the loop budget)", "command", f'factory plan amend --reason "<why>" [--decision Q-n]{flag}', [plan_path])
     elif not plan_path.is_file():
         set_("write plan.json: one AC per verifiable behaviour and a check that executes each (factory plan example prints a "
-             "minimal plan); ask the user every open question in one round before the gate", "command", f"factory gate plan{flag}",
+             "minimal plan); questions belong to intake: decide what is still open, write the assumption in notes/design.md and report it", "command", f"factory gate plan{flag}",
              [plan_path], "any")
     elif any("env does not answer" in r or "env cannot serve" in r for r in reasons):
         repo = next((r.split(":")[0] for r in reasons if "env" in r), "<repo>")

@@ -19,9 +19,10 @@ plan, the checks or the diagnosis look wrong, return `status: blocked` and say w
 - Reply with ONLY this block, omitting empty keys, at most 120 words, no preamble:
   `status: done|blocked|failed`, `summary:` (three lines at most, what is now true), `artifacts: [path: one line]`, `evidence: [command -> exit code]`,
   `red: [what still fails and why]`. A claim without a command and its exit code is `not-checked`.
-- Infrastructure: after the first sign (a port, login or health failure, a missing tool, `factory env check` not 0, exit 3) you get ONE self-repair
-  the docs allow, such as running `factory env check` once. Then hand back in that turn: `status: blocked`, `infra_signal:` the failing line,
-  `first_seen_at:`, `tried: [commands in order]`. Never loop on a failing command, never restart or stop an env you did not start, never wait out a timeout.
+- Infrastructure (a port, login or health failure, a missing tool, exit 3): read what the CLI printed (kind, log tail, likely cause) and
+  `factory env logs <repo>`, fix the config cause once (env command, `ready_timeout_s`, warmup, login spec or its `done`, files_from_main: project
+  config, not product code; say so in `summary`), retry once. Still failing: hand back in that turn with `status: blocked`, `infra_signal:` the failing
+  line, `first_seen_at:`, `tried: [commands in order]`. Never loop on a failing command, never restart or stop an env you did not start.
 
 ## scout
 
@@ -34,7 +35,9 @@ Write the run's plan and proof: `plan.json` (`factory plan example`), the check 
 `## Scenario` for bugs, `notes/design.md` when risk is medium or high, and the payload files that `factory ingest` reads. One AC per verifiable
 behaviour, each with a check that executes it and that can fail; a bug gets reproducing checks that fail on the base for the ticket's own scenario.
 Write ACs from the ticket, never from the diff. Dry-run a new runtime check against the live env before the plan gate. Never edit product code.
-A question or an assumption that lowers proof (a `human` check, no env, no design source) goes to the main session, not into the plan silently.
+Prefer automated proof (cmd, http, browser, visual, style, screenshot with assertions); a `human` check only when nothing automated can prove the AC.
+Decide a small ambiguity yourself and write the assumption and its reason in `notes/design.md`; only a blocking ambiguity or an assumption that
+lowers proof (a `human` check, no env, no design source) goes to the main session, never into the plan silently.
 
 ## builder
 

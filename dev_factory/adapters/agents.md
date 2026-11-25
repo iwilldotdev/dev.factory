@@ -11,7 +11,10 @@ Start and steer:
 - `factory run start <ticket-id> [--kind feature|bug|hotfix] [--repos a,b]`; `factory status`, `runs` and `log` show where things stand.
 - `factory ask "<question>"` opens a question; `factory answer Q-n --user-said "<their words>"` records the reply; `factory decide --user-said "<words>"`
   records an unsolicited decision. `factory block --kind <kind> --reason "<why>"` stops the run; `factory unblock B-n [--decision Q-n]` resumes it.
-  Ask once, in one batched message, then run on until a gate needs the user. A decision needs the user's own words and unblocks once.
+  Intake is the only phase that asks: one batched message. Later, ask only for a large ambiguity that blocks the work; otherwise decide, write the
+  assumption and its reason in `notes/design.md`, and report it. A decision needs the user's own words and unblocks once.
+- Project config that is not product code (env commands, timeouts, warmups, login specs, check commands, setup) is the orchestrator's to fix: apply it,
+  run `factory check` (after the lock `factory plan amend`), mention it in the next report. Ask only about scope, product behaviour, decisions, remote writes.
 - Secret values never go in files, arguments, chat or output; `factory.toml` names the keys only.
 
 Roles (without sub-agents, play them in turn; the rules do not change):
@@ -21,13 +24,14 @@ Roles (without sub-agents, play them in turn; the rules do not change):
 - reviewer: a fresh context that wrote nothing in this run, pass `--actor reviewer-<n>`. The CLI refuses a review whose reviewer or actor built,
   verified or branched the run. The orchestrator never reviews its own edits, a resumed reviewer never re-judges a fix (a new round gets a new
   reviewer), and a green pipeline or another agent's claim is not evidence. Use the strongest model available; high risk needs two different reviewers.
-- Workers reply in at most 120 words: status (done|blocked|failed), what is now true, artifacts, commands run with exit codes. After the first
-  environment failure (a port, login or health error, a missing tool) a worker tries one repair, then returns `blocked` with the failing command and
-  output; it never loops on a failing command. After two identical env failures `factory next` reports the run blocked. Use `factory wait`, never sleep.
+- Workers reply in at most 120 words: status (done|blocked|failed), what is now true, artifacts, commands run with exit codes. On an env failure a
+  worker reads the printed kind, log tail and likely cause, fixes the config cause once, retries, and only then returns `blocked` with the failing command;
+  it never loops. The stop after two identical env failures (`factory next` reports the run blocked) applies after a config fix. Use `factory wait`, never sleep.
 - Exploring the running app by hand produces findings (a review finding) or new checks (`factory plan amend`); it is never a pass.
 
-Narration: talk to the user in the user's language, in every message. One line at each phase start and each worker launched; summarise each worker
-report in two lines; announce long commands (`env up`, `verify`) with what runs and a rough ETA. Artifacts, commits and CLI text keep their conventions.
+Narration: use the user's language from their first message (the ticket's language when they only typed a command) in every message. One line
+per phase start and worker launched; summarise each worker report in two lines; announce long commands (`env up`, `verify`) with what runs and a
+rough ETA. Artifacts, commits and CLI text keep their conventions.
 
 Ticket and media:
 - `factory fetch ticket <id>` acquires the ticket when the project configures an adapter. Without one, save the payload to a file and run
@@ -41,10 +45,12 @@ Plan and proof:
 - `factory verify [--check ID] [--fresh]` runs the checks at HEAD from a clean worktree and appends the evidence; `--scoped` is a cheap run that never
   satisfies a gate; `--estimate` lists what would run. Bug runs: `factory reproduce` runs the reproducing checks on the base, and `verify` proves red-green.
 - `factory gate reproduce|verify` only read evidence. Only `verify` and `reproduce` write evidence; a gate passes on records, never on a claim.
-- A `human` check waits for the user: show what it asks, then `factory confirm CHK-n --user-said "<their words>"`; a new commit asks again.
+- Prefer automated proof; a `human` check only when nothing automated can prove the AC. Collect the human checks in one message once everything automated
+  passes, then `factory confirm CHK-n --user-said "<their words>"` for each; a new commit asks again.
 - A `quality` check fails only on failure ids the baseline at the branch point lacks (`factory baseline`). `risk` medium or high needs `notes/design.md`.
 - Runtime and design checks: `factory env up|down|health|status|logs|seed|reset [repo]` (`env up --slot n` serves a parallel run on its own ports; choose
-  the slot before the plan locks); start the env before `gate plan`; never stop an env you did not start. `factory design add|expect|review|refresh`.
+  the slot before the plan locks); start the envs the plan needs in the background as soon as intake passes; never stop an env you did not start.
+  `factory design add|expect|review|refresh`.
 
 Review (after verify passes): `factory review example` prints the JSON. The reviewer writes one file per kind and runs
 `factory review record --kind code|qa --file <file>`; the code review lists `changed_values` (`[]` when none), the qa review one `exercises` entry per AC.

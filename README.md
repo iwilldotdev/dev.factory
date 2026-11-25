@@ -189,7 +189,7 @@ With `claude-code` installed, open the project in Claude Code (CLI, desktop app 
 /factory ABC-123
 ```
 
-The skill makes the main session the orchestrator: it runs `factory run start`, loops on `factory next`, delegates reading and writing to workers, asks you one batched question round at intake or plan, and stops at blockers, decisions and the end. It does the remote writes (push, change request, ticket comment) only as the ship plan says. Other forms: a change URL or "review my queue" for review runs, `/factory session <run-id...>` for parallel sessions, `/factory` plus a run id to resume.
+The skill makes the main session the orchestrator: it runs `factory run start`, loops on `factory next`, delegates reading and writing to workers, asks you one batched question round at intake (later phases decide, record the assumption and report it), fixes project config such as env commands, timeouts and login specs on its own, collects human checks in one message, and stops at blockers, decisions only you can make, remote writes and the end. It talks in your language. It does the remote writes (push, change request, ticket comment) only as the ship plan says. Other forms: a change URL or "review my queue" for review runs, `/factory session <run-id...>` for parallel sessions, `/factory` plus a run id to resume.
 
 ### 3. Drive it yourself (any harness)
 

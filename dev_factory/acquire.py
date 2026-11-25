@@ -19,6 +19,11 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
           raw_src: Path | None = None, tag: dict | None = None) -> dict:
     """Validate, write raw + contract files, append the `contract` event. Nothing is written when invalid [L-156]."""
     data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]], raw)
+    if (tag or {}).get("refresh") and kind in ("change", "pipeline"):
+        g = run.state()["gates"].get("ship")
+        if not (g and g["result"] == "pass"):  # a refresh is feedback: before the gate passed it would skip the readback comparison
+            raise FactoryError(f"--refresh reads a {kind} back for feedback and is allowed only after the ship gate passed; "
+                               "before that, ingest without --refresh so the plan comparison runs")
     if kind == "ticket" and data["id"] != run.state()["ticket"]:
         raise FactoryError(f"ticket contract id {data['id']!r} differs from the run ticket {run.state()['ticket']!r}; nothing was stored "
                            "(fetch or ingest the ticket this run is for)")

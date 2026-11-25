@@ -126,6 +126,16 @@ class ReadbackTests(ShipCase):
         self.assertIn("verify record", text)
         self.assertEqual(json.loads(self.ok("next", "--json"))["phase"], "build")
 
+    def test_a_refresh_readback_before_the_ship_gate_is_refused(self):
+        """Review B1: --refresh skipped the whole comparison; it is allowed only after the gate passed."""
+        data = self.change_data(title="WRONG", draft=False, head_sha="b" * 40, description_md="nothing")
+        raw = self.run_dir / "ship" / "readback" / "web-x.raw.json"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps({"payload": data}), encoding="utf-8")
+        out = self.fails("ingest", "change", "--raw", str(raw), "--stdin", "--refresh", stdin=json.dumps(data))
+        self.assertIn("only after the ship gate passed", out)
+        self.assertIn("no change readback", self.failing("ship"))
+
     def test_ship_verify_needs_a_plan(self):
         (self.run_dir / "ship" / "plan.json").unlink()
         self.assertIn("no ship plan", self.fails("ship", "verify", code=2))

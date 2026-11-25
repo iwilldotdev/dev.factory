@@ -21,13 +21,13 @@ def load(run: Run) -> dict | None:
     return read_json(p) if p.is_file() else None
 
 
-def behind(path: Path, base: str) -> dict:
+def behind(path: Path, base: str, remote: str = "origin") -> dict:
     """Commits of the target that HEAD lacks, from local refs only (the CLI never fetches), with a note when a fetch is needed [L-108]."""
-    for ref in (f"origin/{base}", base):
+    for ref in (f"{remote}/{base}", base):
         if git.rev(path, ref):
             n = int(git.git(path, "rev-list", "--count", f"HEAD..{ref}").out.strip() or 0)
             note = (f"compared with {ref} as last fetched; run git fetch first if the remote may have moved" if ref != base
-                    else f"no origin/{base} here, compared with the local {base}: run git fetch first")
+                    else f"no {remote}/{base} here, compared with the local {base}: run git fetch first")
             return {"count": n, "ref": ref, "note": note}
     return {"count": None, "ref": None, "note": f"base branch {base} not found: run git fetch first"}
 
@@ -64,7 +64,7 @@ def plan(run: Run, project, ticket_mode: str | None, update: bool, allow_behind:
     pl, lk = planmod.load_plan(run)[0], lock.current(st)
     ticket = acquire.load(run, "ticket", st["ticket"])[0]["data"]
     heads, by = review.heads_of(st, pl["repos"]), {r["name"]: r for r in cfg["repo"]}
-    bh = {r: behind(Path(git.current(st, r)["path"]), by[r]["base"]) for r in pl["repos"]}
+    bh = {r: behind(Path(git.current(st, r)["path"]), by[r]["base"], by[r]["remote"]) for r in pl["repos"]}
     late = [f"{r} is {b['count']} commit(s) behind {b['ref']}" for r, b in bh.items() if b["count"]]
     if late and not allow_behind:
         raise FactoryError(f"{'; '.join(late)}: merge or rebase the base first, or ask the user and pass --allow-behind --decision <Q-n> [L-108]")

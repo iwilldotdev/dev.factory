@@ -76,7 +76,7 @@ def add_worktree(project, run: Run, repo: dict, actor: str | None) -> dict:
     chg = change_of(run, st)
     if chg is None:
         raise FactoryError("no change contract yet: fetch or ingest it before creating the worktree")
-    base = git.rev(main, repo["base"]) or git.rev(main, f"origin/{repo['base']}")
+    base = git.rev(main, repo["base"]) or git.rev(main, f"{repo.get('remote', 'origin')}/{repo['base']}")
     if git.rev(main, chg["head_sha"]) is None or base is None:
         raise FactoryError(f"the change head {chg['head_sha'][:7]} is not in {fwd(main)}: git fetch the branch {chg['source_branch']!r} yourself first (the CLI never fetches)")
     path = config.worktree_root(project.cfg) / run.id / repo["name"]

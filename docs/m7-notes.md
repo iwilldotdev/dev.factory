@@ -29,7 +29,7 @@ M7 delivers the harness adapters, the optional hook, user scope, the remote of t
 
 ## Remote of push intents
 
-`[[repo]] remote` (default `origin`) feeds the `remote` of every `push` intent, mirror pushes included (`docs/schema/factory-toml.md`). The refs the CLI reads locally (`origin/<base>` in `git.py`, `ship.behind`, `mirror.py`, `review_run.py`) still use `origin`; with another remote name they fall back to the local branch as before. Open question 3.
+`[[repo]] remote` (default `origin`) feeds the `remote` of every `push` intent, mirror pushes included (`docs/schema/factory-toml.md`). The refs the CLI reads locally (`<remote>/<base>` in `git.py`, `ship.behind`, `mirror.py`, `review_run.py`) follow the configured remote since the independent review (m10). `remote` is still unvalidated free text.
 
 ## Version and tag
 
@@ -49,3 +49,12 @@ L-161 is the only M7 `test` row (`test_adapters.py`, `M7_COVERED`). L-130, L-149
 2. Should the browser runner ship inside the wheel? A tag install has no `browser/` folder, so `[checks.browser] bundled` must point at a checkout (`docs/install.md`).
 3. Should the local `origin/<base>` reads follow `remote` too?
 4. The hook runs one process per tool call (about the cost of `factory --version`). Measure it on the owner's machine before recommending `--hooks` by default.
+
+## Review follow-up: findings deferred or answered in one line
+
+- m6 (clean flag sampled once per batch): deferred. `verify_reasons` re-reads dirtiness at every gate and refuses a dirty worktree, so a record made while a check dirtied the tree never reaches a pass; a per-check sample would need `run_one` restructured for a case the gate already closes.
+- m9 (hook matcher hardcodes `mcp__dev_mcp__.*`; project hooks go to the shared `settings.json`; `merge_hook` owns any `factory hook ` group): deferred. The matcher name is the product's own server name, the shared-file choice is documented in `docs/install.md`, and a teammate without the CLI can drop the `--hooks` flag; changing the target file is a product decision for the owner.
+- m10, dismissal key without the repo (`thread:<id>`): deferred. A same-id thread in two repos of one run is rare, and the user's dismissal names the finding it saw.
+- Mirror changes are not read back by the ship gate (m6 open question 1): still open and disclosed.
+- Hook (m1) is documented in `hook.py` as a guard against accidents, not a sandbox: it normalises paths and handles `cd <run dir> &&` and `$VAR/` targets as best effort; arbitrary indirection (an `eval`, a script that builds the path) is still out of its reach by design.
+- Same-diff gate (m2): binary, added and deleted files now count. The moved-line limit stays: the net-count signature keeps no position, so one line applied in another function of the same file is "equal" (documented in `mirrordiff.signature`).

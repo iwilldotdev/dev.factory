@@ -48,7 +48,7 @@ def start(project, run: Run, repo: str, target: str, ticket: str | None, actor: 
     main, prev = Path(rc["path"]), latest(st, repo, target)
     if prev is not None and Path(prev["path"]).is_dir():
         return _resume(run, prev, actor)
-    tip = git.rev(main, branches[target]) or git.rev(main, f"origin/{branches[target]}")
+    tip = git.rev(main, branches[target]) or git.rev(main, f"{rc.get('remote', 'origin')}/{branches[target]}")
     if tip is None:
         raise FactoryError(f"target branch {branches[target]!r} does not exist in {fwd(main)}")
     key = ticket or st["ticket"]

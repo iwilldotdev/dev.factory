@@ -214,7 +214,7 @@ def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: st
             raise FactoryError(f"the worktree of {repo['name']} already exists: {have['path']}")
         setup = run_setup(cfg, repo, Path(have["path"]))
         return run.append(_event(repo, Path(have["path"]), have["branch"], have["branch_point"], False, setup), actor)
-    base = base_ref or rev(main, repo["base"]) or rev(main, f"origin/{repo['base']}")
+    base = base_ref or rev(main, repo["base"]) or rev(main, f"{repo.get('remote', 'origin')}/{repo['base']}")
     if base is None:
         raise FactoryError(f"base branch {repo['base']!r} of repo {repo['name']} does not exist in {fwd(main)}")
     path = config.worktree_root(cfg) / run.id / repo["name"]

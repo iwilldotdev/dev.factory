@@ -84,6 +84,14 @@ class BehindTests(ShipCase):
         self.assertEqual(sp["behind"]["web"]["ref"], "origin/main")
         self.assertIn("as last fetched", sp["behind"]["web"]["note"])
 
+    def test_the_configured_remote_names_the_tracking_ref(self):
+        """Review m10: with `remote = "up"` the behind count reads up/main, not a stale origin/main."""
+        from pathlib import Path
+        from dev_factory import ship
+        git("update-ref", "refs/remotes/up/main", git("rev-parse", "main", cwd=self.proj), cwd=self.proj)
+        self.assertEqual(ship.behind(Path(self.proj), "main", "up")["ref"], "up/main")
+        self.assertEqual(ship.behind(Path(self.proj), "main")["ref"], "main")
+
 
 class UpdateTests(ShipCase):
     def setUp(self):

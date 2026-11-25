@@ -110,6 +110,9 @@ def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | 
     if all(new[k] == old.get(k) for k in new if k != "branch_points"):
         raise FactoryError("nothing changed since the lock, so there is nothing to amend")
     acs, chk = changed(old, new)
+    from .gates import reproduction_decision
+    repro = reproduction_decision(plan, st) if plan.get("acs") and not any(a.get("reproduce", True) for a in plan["acs"]) else None
     spend(run, cfg, st, "amend", decision, actor)
+    # the lock consumes the decision it rests on, so `gate reproduce` accepts it and nothing else can reuse it [L-126]
     return lock_event(run, new, {"amend": {"reason": reason.strip(), "decision": decision, "changed_acs": acs, "changed_checks": chk,
-                                           "counts_loop": decision is None}}, actor)
+                                           "counts_loop": decision is None}, **({"decision": d} if (d := decision or repro) else {})}, actor)

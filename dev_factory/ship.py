@@ -205,9 +205,10 @@ def reasons(run: Run, project, st: dict) -> list[str]:
             out.append(f"{r}: no change readback after the ship plan: execute the intents, save the change as JSON, ingest it with "
                        "factory ingest change (or configure providers.change.fetch) and run factory ship verify [L-153]")
             continue
-        cev, env = found[-1]
-        if cev.get("refresh") and cev["at"] > st["gates"].get("ship", {}).get("at", -1):  # read back again for feedback after the gate passed: what feedback judges, not what the plan promised
+        proof = [f for f in found if not f[0].get("refresh")]  # a refresh is read back for feedback after the gate passed: feedback judges it, not the plan
+        if not proof:
             continue
+        cev, env = proof[-1]
         d = env["data"]
         probs = acquire.load(run, "change", d["id"])[1]
         out += probs or proof_reasons(run, st, "change", d["id"], cev) + _compare(sp, it, d, sp["heads"][r])

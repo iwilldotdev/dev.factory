@@ -100,6 +100,14 @@ class PhaseTests(FeedbackCase):
         self.assertEqual(self.nxt()["phase"], "feedback")
         self.assertEqual(self.feedback_gate()[0], 0)
 
+    def test_the_ship_gate_stays_passed_however_often_it_is_re_run_after_a_refresh(self):
+        """Review follow-up: the second re-run compared the refreshed readback with the plan and sent the run back to ship."""
+        self.shipped()
+        self.refresh(draft=False, title="[ABC-1] - renamed by the reviewer", state="open")
+        for _ in range(3):
+            self.ok("gate", "ship")
+        self.assertEqual(self.nxt()["phase"], "feedback")
+
     def test_a_merged_change_needs_no_thread_fix_and_a_closed_one_fails(self):
         self.shipped()
         self.refresh(threads=[T1], state="merged")

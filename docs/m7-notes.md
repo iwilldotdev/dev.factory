@@ -63,8 +63,8 @@ L-161 is the only M7 `test` row (`test_adapters.py`, `M7_COVERED`). L-130, L-149
 
 Three review rounds; no blocker or major is open. Minor follow-ups, not fixed for the alpha:
 
-- `gate ship` is not idempotent after a post-ship refresh: the second re-run fails and sends the run back to the ship phase (`ship.py`).
-- `plan amend --decision D-n` consumes the decision through the loop event, not the lock, so `gate reproduce` keeps failing until a second decision is recorded; `plan amend` without `--decision` leaves D-n unconsumed and reusable.
+- Fixed after the alpha: `gate ship` is idempotent after a post-ship refresh. The gate compares the latest readback that is not a refresh; a refresh is judged by feedback only (`ship.reasons`).
+- Fixed after the alpha: the amend lock records the decision it rests on (`--decision D-n`, or else the plan's reproduction decision), so `gate reproduce` accepts it and an amend without `--decision` no longer leaves D-n reusable. Known limit: an amend with `--decision D-2` over a plan that cites another unconsumed reproduction decision D-1 consumes only D-2.
 - The reproduction-decision keyword `reprod` also matches words that ask for a reproduction (accepted under L-126).
 - Hook: some reads (`grep "rm -rf"`, `sed -n`, `node script.js` on artifacts) are still denied, and deleting a whole run directory with `rm -rf` is allowed. Out of scope by design: `pushd`, `cd` into the runs directory then `cp`, `[IO.File]`.
 - Mirror diff: a binary deleted on both sides from different old blobs may show as divergent (not reproduced).

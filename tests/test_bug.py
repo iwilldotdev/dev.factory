@@ -60,6 +60,23 @@ class NoReproductionTests(M2Case):
         self.assertEqual([e["decision"] for e in self.events(self.run_dir) if e["type"] == "plan_locked"], ["D-2"])
         self.assertEqual(self.gate("plan")[0], 0, "the consumed decision still backs the plan it locked")
 
+    def amend_to_no_reproduction(self, *decision: str) -> str:
+        self.run_dir = self._prepare("bug", self.default_plan("bug"), "ABC-1", True)
+        self.ok("decide", "--user-said", "ok to skip the reproduction, it cannot be reproduced locally")
+        self.plan_with("cannot be reproduced, see D-1")
+        self.ok("plan", "amend", "--reason", "the user dropped the reproduction", *decision)
+        self.assertEqual([e.get("decision") for e in self.events(self.run_dir) if e["type"] == "plan_locked"][-1], "D-1")
+        return "\n".join(self.gate("reproduce")[1])
+
+    def test_an_amend_with_the_decision_consumes_it_at_the_lock_so_the_reproduce_gate_accepts_it(self):
+        """Review follow-up: the decision was consumed by the loop event only, so gate reproduce kept saying nothing is reproduced."""
+        self.assertNotIn("nothing is reproduced", self.amend_to_no_reproduction("--decision", "D-1"))
+
+    def test_an_amend_without_the_decision_still_consumes_the_one_the_plan_rests_on(self):
+        """Review follow-up: an amend without --decision left D-1 unconsumed and reusable."""
+        self.assertNotIn("nothing is reproduced", self.amend_to_no_reproduction())
+        self.assertIn("already consumed", self.fails("plan", "amend", "--reason", "again", "--decision", "D-1"))
+
 
 class ReproduceTests(BugCase):
     @lesson("L-33")

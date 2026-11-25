@@ -59,16 +59,24 @@ def intake_passed(run: Run, cfg: dict, st: dict) -> bool:
                 and not intake_reasons(run, cfg, st))
 
 
+def reproduction_decision(plan: dict, st: dict) -> str | None:
+    """The recorded decision (a whole D-n or Q-n id in an AC reason) that lets a bug plan reproduce nothing: its words speak of the
+    reproduction, and it is unconsumed or was consumed by a plan lock [L-33]."""
+    named = set(re.findall(r"(?<![\w-])[DQ]-\d+(?!\d)", " ".join(str(a.get("reason") or "") for a in plan.get("acs") or [])))
+    locked = {lk.get("decision") for lk in st["locks"]}
+    return next((d for d in sorted(named) if (x := st["decisions"].get(d)) and re.search("reprod", x["user_said"] or "", re.I)
+                 and (not x["consumed"] or d in locked)), None)
+
+
 def no_reproduction(plan: dict, st: dict) -> list[str]:
-    """A bug plan whose ACs are all `reproduce: false` reproduces nothing: it needs the user's recorded decision (D-n or Q-n named in a reason) [L-33]."""
+    """A bug plan whose ACs are all `reproduce: false` reproduces nothing: it needs the user's recorded decision about it [L-33]."""
     acs = plan.get("acs") or []
     if plan.get("kind") != "bug" or not acs or any(a.get("reproduce", True) is True for a in acs):
         return []
-    said = " ".join(str(a.get("reason") or "") for a in acs)
-    if any(d in said for d in st["decisions"]):
+    if reproduction_decision(plan, st):
         return []
     return ["bug plan: every AC is reproduce false, so nothing is reproduced; reproduce at least one AC, or record the user's decision "
-            "(factory decide \"<words>\") and name its id (D-n) in the AC reason [L-33]"]
+            "(factory decide \"<words about the reproduction>\") and name its id (D-n) in the AC reason [L-33]"]
 
 
 def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[str]:
@@ -263,7 +271,7 @@ def run_gate(run: Run, project, name: str, actor: str | None = None) -> tuple[bo
         plan = planmod.load_plan(run)[0]
         reasons = dryrun.reasons(run, project, st, plan, None)
         if not reasons:
-            lock.lock_event(run, lock.compute(run, project.cfg, st, plan), {}, actor)
+            lock.lock_event(run, lock.compute(run, project.cfg, st, plan), {"decision": d} if (d := reproduction_decision(plan, st)) and not any(a.get("reproduce", True) for a in plan["acs"]) else {}, actor)
     if not reasons and name == "reproduce":
         extra["diagnosis"] = sha256_file(run.dir / "diagnosis.md")
     run.append({"type": "gate", "name": name, "result": "fail" if reasons else "pass", "reasons": reasons, **extra}, actor)

@@ -4,7 +4,7 @@ import shlex
 import unittest
 
 from tests.helpers import git, lesson
-from tests.m2_support import M2Case, cmd
+from tests.m2_support import M2Case, check_cmd, cmd
 
 DIAG = ("## Root cause\nVALUE is 1 in app.py.\n\n## Evidence\ncheck.py prints VALUE=1 on the base.\n\n"
         "## Ruled out\nThe check itself: it passes once VALUE is 2.\n\n## Scenario\nTicket scenario used.\n")
@@ -36,18 +36,29 @@ class BugCase(M2Case):
         return [line for line in git("worktree", "list", cwd=self.proj).splitlines() if "_throwaway" in line]
 
 
-class NoReproductionTests(unittest.TestCase):
-    def test_a_bug_plan_with_every_ac_reproduce_false_needs_the_users_recorded_decision(self):
-        """Review M1 / L-33: nothing reproduced is not a reproduction."""
-        from dev_factory import gates
-        acs = [{"id": "AC-1", "reproduce": False, "reason": "copy"}]
-        st = {"decisions": {}}
-        self.assertIn("nothing is reproduced", gates.no_reproduction({"kind": "bug", "acs": acs}, st)[0])
-        self.assertEqual(gates.no_reproduction({"kind": "bug", "acs": acs + [{"id": "AC-2"}]}, st), [])
-        self.assertEqual(gates.no_reproduction({"kind": "feature", "acs": acs}, st), [])
-        said = [{**acs[0], "reason": "cannot reproduce, user decided in D-1"}]
-        self.assertEqual(gates.no_reproduction({"kind": "bug", "acs": said}, {"decisions": {"D-1": {}}}), [])
-        self.assertTrue(gates.no_reproduction({"kind": "bug", "acs": said}, st))
+class NoReproductionTests(M2Case):
+    def plan_with(self, reason: str) -> None:
+        plan = {"schema": 1, "kind": "bug", "repos": ["web"],
+                "acs": [{"id": "AC-1", "text": "VALUE is 2", "source": "ticket:description", "reproduce": False, "reason": reason}],
+                "checks": [{"id": "CHK-1", "type": "cmd", "repo": "web", "ac": ["AC-1"], "run": check_cmd(2), "expect_pattern": "checks passed: VALUE=2"}]}
+        if getattr(self, "run_dir", None) and self.run_dir.exists():
+            self.write_plan(self.run_dir, plan)
+        else:
+            self.run_dir = self._prepare("bug", plan, "ABC-1", False)
+
+    def test_a_bug_plan_that_reproduces_nothing_needs_a_recorded_unconsumed_decision_about_it(self):
+        """Review M1 (rounds 1 and 2): whole ids only, a decision that is about reproduction, consumed once at the lock."""
+        self.plan_with("cannot be reproduced, see D-12")
+        self.assertIn("nothing is reproduced", "\n".join(self.gate("plan")[1]))
+        self.ok("decide", "--user-said", "the env runs on port 8081")
+        self.assertEqual(self.gate("plan")[0], 1, "an unrelated decision (and D-1 is not D-12) unlocks nothing")
+        self.plan_with("cannot be reproduced, see D-1")
+        self.assertEqual(self.gate("plan")[0], 1, "D-1 is recorded but is not about reproduction")
+        self.ok("decide", "--user-said", "ok to skip the reproduction, it cannot be reproduced locally")
+        self.plan_with("cannot be reproduced, see D-2")
+        self.assertEqual(self.gate("plan"), (0, []))
+        self.assertEqual([e["decision"] for e in self.events(self.run_dir) if e["type"] == "plan_locked"], ["D-2"])
+        self.assertEqual(self.gate("plan")[0], 0, "the consumed decision still backs the plan it locked")
 
 
 class ReproduceTests(BugCase):

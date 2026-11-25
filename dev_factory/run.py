@@ -189,7 +189,7 @@ def derive(events: list[dict]) -> dict:
             st["owner"] = ev.get("session")
         elif t == "slot":
             st["slot"] = ev.get("slot", 0)
-        if t in ("unblock", "loop", "ship_planned", "mirror", "dismiss") and ev.get("decision"):
+        if t in ("unblock", "loop", "ship_planned", "mirror", "dismiss", "plan_locked") and ev.get("decision"):
             consumed.add(ev["decision"])
     for did, d in st["decisions"].items():
         d["consumed"] = did in consumed

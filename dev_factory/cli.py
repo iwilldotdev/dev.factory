@@ -36,10 +36,10 @@ def cmd_init(args) -> int:
     if args.harness not in harness.IDS:
         raise FactoryError(f"unknown harness {args.harness!r}; available: {', '.join(harness.IDS)}")
     root = Path(args.project or args.project_pre or os.getcwd()).resolve()
-    if args.scope == "user":  # the user's host home only: no project is created here
+    if args.scope == "user" or (args.harness != "none" and not args.import_file and (root / "factory.toml").is_file()):  # the adapter alone: no project is created
         if args.harness == "none":
             raise FactoryError("--scope user installs a harness adapter: name one with --harness")
-        done = harness.write(root, args.harness, "user", args.hooks)
+        done = harness.write(root, args.harness, args.scope, args.hooks)
         _out(args, {"done": done, "not_imported": []}, "\n".join(done))
         return 0
     doc = local = None

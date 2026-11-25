@@ -30,6 +30,14 @@ class Adapters(FactoryCase):
         self.assertTrue(self.read(WORKER).startswith("---\nname: factory-worker\n"))
         self.assertTrue((self.root / "factory.toml").is_file())
 
+    def test_init_on_a_project_that_has_its_config_only_writes_the_adapter(self):
+        self.ok("init", "--project", str(self.root), project=False)
+        toml = self.read("factory.toml")
+        out = self.ok("init", "--project", str(self.root), "--harness", "claude-code", "--hooks", project=False)
+        self.assertEqual(self.read("factory.toml"), toml)
+        self.assertIn("hook entries", out)
+        self.assertTrue((self.root / SKILL).is_file() and (self.root / ".claude/settings.json").is_file())
+
     def test_the_prose_covers_the_loop_the_roles_and_every_composite_command(self):
         skill, agents = harness.text("skill.md"), harness.text("agents.md")
         both = ("factory next", "--user-said", "factory confirm CHK-n", "reviewer-<n>", "never a pass", "language", "factory review queue", "factory claim",

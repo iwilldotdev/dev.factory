@@ -36,6 +36,20 @@ class BugCase(M2Case):
         return [line for line in git("worktree", "list", cwd=self.proj).splitlines() if "_throwaway" in line]
 
 
+class NoReproductionTests(unittest.TestCase):
+    def test_a_bug_plan_with_every_ac_reproduce_false_needs_the_users_recorded_decision(self):
+        """Review M1 / L-33: nothing reproduced is not a reproduction."""
+        from dev_factory import gates
+        acs = [{"id": "AC-1", "reproduce": False, "reason": "copy"}]
+        st = {"decisions": {}}
+        self.assertIn("nothing is reproduced", gates.no_reproduction({"kind": "bug", "acs": acs}, st)[0])
+        self.assertEqual(gates.no_reproduction({"kind": "bug", "acs": acs + [{"id": "AC-2"}]}, st), [])
+        self.assertEqual(gates.no_reproduction({"kind": "feature", "acs": acs}, st), [])
+        said = [{**acs[0], "reason": "cannot reproduce, user decided in D-1"}]
+        self.assertEqual(gates.no_reproduction({"kind": "bug", "acs": said}, {"decisions": {"D-1": {}}}), [])
+        self.assertTrue(gates.no_reproduction({"kind": "bug", "acs": said}, st))
+
+
 class ReproduceTests(BugCase):
     @lesson("L-33")
     def test_every_bug_ac_must_fail_on_the_base_with_its_expected_pattern(self):

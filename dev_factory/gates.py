@@ -59,6 +59,18 @@ def intake_passed(run: Run, cfg: dict, st: dict) -> bool:
                 and not intake_reasons(run, cfg, st))
 
 
+def no_reproduction(plan: dict, st: dict) -> list[str]:
+    """A bug plan whose ACs are all `reproduce: false` reproduces nothing: it needs the user's recorded decision (D-n or Q-n named in a reason) [L-33]."""
+    acs = plan.get("acs") or []
+    if plan.get("kind") != "bug" or not acs or any(a.get("reproduce", True) is True for a in acs):
+        return []
+    said = " ".join(str(a.get("reason") or "") for a in acs)
+    if any(d in said for d in st["decisions"]):
+        return []
+    return ["bug plan: every AC is reproduce false, so nothing is reproduced; reproduce at least one AC, or record the user's decision "
+            "(factory decide \"<words>\") and name its id (D-n) in the AC reason [L-33]"]
+
+
 def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[str]:
     """Why `gate plan` would fail: the plan, the worktrees with their setup, open questions, raws, and any drift since the lock."""
     cfg = project.cfg
@@ -66,6 +78,7 @@ def plan_reasons(run: Run, project, st: dict, with_lock: bool = True) -> list[st
     if plan is None:
         return out
     out = planmod.validate(plan, cfg, run.dir, effective_kind(run, st))
+    out += no_reproduction(plan, st) if not out else []
     if not out:
         out += plancheck.note_problems(plan, run.dir) + plancheck.env_problems(plan, cfg) + designflow.plan_problems(run, project, st, plan) + _env_health(project, plan)
     out += [f"question {q['id']} is still open: the user answers before the plan locks" for q in st["questions"].values() if q["answered"] is None]
@@ -119,7 +132,7 @@ def reproduce_reasons(run: Run, project, st: dict, strict: bool = True) -> tuple
     if drift:
         return drift, []
     lk, plan = lock.current(st), planmod.load_plan(run)[0]
-    recs = []
+    recs = no_reproduction(plan, st)
     for c in planmod.effective_checks(plan, project.cfg):
         bp = lk["branch_points"][c["repo"]]
         heads = {**envmod.heads_of(project, st, c["repo"]), c["repo"]: bp} if c["type"] in RUNTIME and c.get("reproduce") else None

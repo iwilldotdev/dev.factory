@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("run", help="start, retype, close or delete a run").add_subparsers(dest="sub", required=True)
     for name, helptext in (("start", "open a run for a ticket"), ("retype", "change the run kind"), ("repos", "declare affected repos"),
-                           ("branch", "create the run worktrees"), ("close", "end a run without gates"), ("delete", "remove a run directory")):
+                           ("branch", "create the run worktrees"), ("close", "end a run without gates"), ("delete", "remove a run, its clean worktrees and its branches with no commit of their own")):
         sp = rp.add_parser(name, help=helptext, parents=[common if name == "start" else scoped])
         sp.set_defaults(func=cmd_run)
         if name == "start":

@@ -239,6 +239,31 @@ def remove_tree(main: Path, path: Path) -> None:
     git(main, "worktree", "prune", check=False)
 
 
+def retire(main: Path, tree: dict, base: str) -> list[str]:
+    """`run delete`: remove a clean worktree and a branch with no commit beyond its base; keep and name anything else."""
+    path, branch, out = Path(tree["path"]), tree.get("branch"), []
+    keep_branch = f"; kept branch {branch}" if branch else ""
+    if path.is_dir():
+        changed = dirty(path)
+        if changed:
+            return [f"kept worktree {fwd(path)}: {len(changed)} uncommitted path(s){keep_branch}"]
+        if git(main, "worktree", "remove", str(path), check=False).exit:
+            return [f"kept worktree {fwd(path)}: git could not remove it{keep_branch}"]
+        out.append(f"removed worktree {fwd(path)}")
+        if path.parent.is_dir() and not any(path.parent.iterdir()):
+            path.parent.rmdir()
+    if branch and rev(main, f"refs/heads/{branch}"):
+        excl = [f"^{r}" for r in (tree.get("branch_point"), rev(main, base)) if r]
+        unique = int(git(main, "rev-list", "--count", f"refs/heads/{branch}", *excl).out.strip() or 0)
+        if unique:
+            out.append(f"kept branch {branch}: {unique} commit(s) beyond its base")
+        elif git(main, "branch", "-D", branch, check=False).exit == 0:
+            out.append(f"deleted branch {branch}")
+        else:
+            out.append(f"kept branch {branch}: git could not delete it")
+    return out
+
+
 @contextmanager
 def throwaway(project, run: Run, repo: dict, sha: str, label: str, actor: str | None = None):
     """A detached worktree at `sha` with the repo's setup done; yields (path, setup result). Removed afterwards."""

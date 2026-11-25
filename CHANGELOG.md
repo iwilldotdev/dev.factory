@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Removed `factory init --import`: a project is configured from its own workspace, never from copied config.
+- `factory run delete` also removes the run's clean worktrees and deletes its branches that have no commit beyond their base; it keeps and names a dirty worktree or a branch with commits of its own.
 
 ## 1.0.0-alpha
 

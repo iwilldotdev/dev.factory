@@ -18,6 +18,32 @@ class WorktreeTests(M2Case):
         self.ok("gate", "intake")
         return run, self.ok("run", "branch")
 
+    def branch_of(self, run: Path) -> str:
+        return [e for e in self.events(run) if e["type"] == "worktree"][-1]["branch"]
+
+    def test_run_delete_removes_a_clean_worktree_and_a_branch_with_no_commit_of_its_own(self):
+        run, _ = self.branch()
+        wt, br = self.tree(), self.branch_of(run)
+        out = self.ok("run", "delete", "ABC-1", "--yes")
+        self.assertIn(f"deleted branch {br}", out)
+        self.assertFalse(wt.exists())
+        self.assertEqual(git("branch", "--list", br, cwd=self.proj).strip(), "")
+
+    def test_run_delete_keeps_and_names_a_branch_with_commits_and_a_dirty_worktree(self):
+        run, _ = self.branch()
+        wt, br = self.tree(), self.branch_of(run)
+        self.commit("app.py", "VALUE = 2\n")
+        out = self.ok("run", "delete", "ABC-1", "--yes")
+        self.assertIn(f"kept branch {br}: 1 commit(s) beyond its base", out)
+        self.assertFalse(wt.exists())
+        run, _ = self.branch("ABC-2")
+        wt = self.tree()
+        (wt / "scratch.txt").write_text("x")
+        out = self.ok("run", "delete", "ABC-2", "--yes")
+        self.assertIn("kept worktree", out)
+        self.assertIn("1 uncommitted path(s)", out)
+        self.assertTrue((wt / "scratch.txt").is_file())
+
     def test_the_default_location_is_the_user_cache_outside_the_repo(self):
         """Decision 7: worktrees live under the user cache dir, so the main checkout's tools never scan them."""
         run, out = self.branch()

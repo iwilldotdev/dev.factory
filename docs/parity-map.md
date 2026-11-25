@@ -38,7 +38,7 @@ A row is **dropped** only when the v1 design makes it unnecessary. The replaceme
 |---|---|---|---|---|---|---|
 | 11 | `run start` (`--bug`, `--hotfix`), `run status`, `run list` | `run start <id> [--kind feature, bug, hotfix, epic or review]`; `status`; `factory runs` | L-31 | = | | M1 |
 | 12 | `run log` (timeline) | `factory log [run] [--tail N]` renders `events.jsonl` | L-15 | 40 | | M1 |
-| 13 | `run close`, `run delete` (zip archive) | `run close --reason`; `run delete <run> --yes` removes the run directory and prints the worktrees to remove (no zip, no parent/child protocol) | L-103, L-105 | 30 | | M1 |
+| 13 | `run close`, `run delete` (zip archive) | `run close --reason`; `run delete <run> --yes` removes the run directory, its clean worktrees and its branches with no commit of their own, and names what it kept (no zip, no parent/child protocol) | L-103, L-105 | 30 | | M1 |
 | 14 | `run retype` | the kind change re-runs `gate intake`, and nothing is archived | L-32 | = | | M1 |
 | 15 | `run decide`, `block`, `unblock`, `human --type` | `factory answer`, `decide`, `block`, `unblock`; typed human events | L-126, L-140, L-152, L-177 | = | | M1 |
 | 16 | `run replan`, `run amend-check` | `plan amend --reason [--decision]` | L-133, L-134 | = | | M2 |

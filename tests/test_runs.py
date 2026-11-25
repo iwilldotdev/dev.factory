@@ -118,11 +118,11 @@ class RetypeTests(FactoryCase):
 
 class DeleteTests(FactoryCase):
     def test_delete_needs_yes_removes_one_directory_and_lists_worktrees(self):
-        """L-105: delete removes exactly the run directory (no zip) and prints the worktrees to remove."""
+        """L-105: delete removes exactly the run directory (no zip); a worktree of a repo no longer configured is kept and named."""
         run = self.start("A-1")
         other = self.start("B-2")
         from dev_factory.run import Run
-        Run(run.parent, "A-1").append({"type": "worktree", "repo": "web", "path": "/wt/web", "branch": "b", "branch_point": "0" * 40, "throwaway": False})
+        Run(run.parent, "A-1").append({"type": "worktree", "repo": "gone", "path": "/wt/web", "branch": "b", "branch_point": "0" * 40, "throwaway": False})
         self.assertIn("--yes", self.fails("run", "delete", "A-1"))
         self.assertTrue(run.exists())
         out = self.ok("run", "delete", "A-1", "--yes")

@@ -105,8 +105,9 @@ def _force(func, path, _exc):
     func(path)
 
 
-def delete(run: Run, confirmed: bool, decision: str | None = None) -> list[str]:
-    """Remove one run directory (no archive, no parent/child protocol); return the worktrees the user should remove [L-105]."""
+def delete(project: Project, run: Run, confirmed: bool, decision: str | None = None) -> list[str]:
+    """Remove one run directory (no archive, no parent/child protocol) [L-105], its clean worktrees and its branches with no
+    commit of their own; return what was removed and what was kept."""
     if not confirmed:
         raise FactoryError("run delete removes the whole run directory; pass --yes")
     st = run.state()
@@ -115,9 +116,14 @@ def delete(run: Run, confirmed: bool, decision: str | None = None) -> list[str]:
         raise FactoryError(f"run {run.id} has spent {lock.loops_used(st)} loop(s) or has open blockers; deleting it resets them. "
                            "Pass --decision <D-n> with the user's recorded decision to delete it anyway")
     lock.check_decision(st, decision)
-    trees = [w["path"] for w in st["worktrees"] if not w.get("throwaway")]
+    repos = {r["name"]: r for r in project.cfg["repo"]}
+    trees = list({w["path"]: w for w in st["worktrees"] + st["mirrors"] if not w.get("throwaway") and w.get("path")}.values())
+    out = []
+    for w in trees:
+        repo = repos.get(w["repo"])
+        out += git.retire(Path(repo["path"]), w, repo["base"]) if repo else [f"kept worktree {w['path']}: repo {w['repo']} is not configured"]
     shutil.rmtree(run.dir, **{"onexc" if sys.version_info >= (3, 12) else "onerror": _force})
-    return trees
+    return out
 
 
 def branch(project: Project, run: Run, names: list[str] | None, actor: str | None, from_run: str | None = None) -> list[dict]:

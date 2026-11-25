@@ -158,10 +158,7 @@ def cmd_run(args) -> int:
         print(f"closed run {run.id}")
     else:
         run = _run(args, proj, writable=False)
-        trees = lifecycle.delete(run, args.yes, args.decision)
-        print(f"deleted run {run.id}")
-        for t in trees:
-            print(f"remove this worktree yourself if you no longer need it: {fwd(t)}")
+        print("\n".join([*lifecycle.delete(proj, run, args.yes, args.decision), f"deleted run {run.id}"]))
     return 0
 
 

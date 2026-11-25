@@ -93,7 +93,21 @@ def spend(run: Run, cfg: dict, st: dict, kind: str, decision: str | None, actor:
                 run.append({"type": "unblock", "blocker": b["id"], "decision": decision}, actor)
 
 
-def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | None, actor: str | None) -> dict:
+def _closing(st: dict, resolves: str | None, acs: list, chk: list) -> list[str]:
+    """The open minor findings of the delivery a checks-only amend closes; refused when the amend changes an AC or names another finding."""
+    if not resolves:
+        return []
+    from . import review
+    named = [x.strip() for x in resolves.split(",") if x.strip()]
+    open_ = {f"{f['round']}:{f['id']}" for f in review.open_minors(st) if f.get("scope", "change") == "change"}
+    if acs or not chk:
+        raise FactoryError("--resolves is for an amend that only changes checks; an AC change is rework and spends a loop")
+    if bad := [x for x in named if x not in open_]:
+        raise FactoryError(f"--resolves names {', '.join(bad)}, which is not an open minor finding of the delivery: {', '.join(sorted(open_)) or 'none open'}")
+    return named
+
+
+def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | None, actor: str | None, resolves: str | None = None) -> dict:
     """Re-lock a changed plan. An amend without a recorded user decision counts against `autonomy.max_loops`;
     past the budget it refuses and blocks the run [L-133, L-134, L-136]."""
     st = run.state()
@@ -115,8 +129,10 @@ def amend(run: Run, cfg: dict, reasons: list[str], reason: str, decision: str | 
     # Project upkeep (only standing checks from factory.toml changed) is not rework: it spends no loop, and the reviews and
     # the change body still show it. Rework (an AC or a planned check) spends one [L-133, L-136].
     upkeep = not acs and bool(chk) and all(":" in c for c in chk)
-    if not upkeep:
+    closing = _closing(st, resolves, acs, chk)  # closing minor findings of the delivery is part of finishing it, like a minor fix round
+    if not upkeep and not closing:
         spend(run, cfg, st, "amend", decision, actor)
     # the lock consumes the decision it rests on, so `gate reproduce` accepts it and nothing else can reuse it [L-126]
     return lock_event(run, new, {"amend": {"reason": reason.strip(), "decision": decision, "changed_acs": acs, "changed_checks": chk,
-                                           "counts_loop": decision is None and not upkeep}, **({"decision": d} if (d := decision or repro) else {})}, actor)
+                                           "counts_loop": decision is None and not upkeep and not closing,
+                                           **({"resolves": closing} if closing else {})}, **({"decision": d} if (d := decision or repro) else {})}, actor)

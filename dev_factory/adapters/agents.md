@@ -55,7 +55,8 @@ Plan and proof:
 Review (after verify passes): `factory review example` prints the JSON. The reviewer writes one file per kind and runs
 `factory review record --kind code|qa --file <file>`; the code review lists `changed_values` (`[]` when none), the qa review one `exercises` entry per AC.
 A CHANGES review with a blocker or major finding spends a loop; fix, commit, verify, record a new review. `factory gate review` needs both APPROVE at the current commits
-and no open finding of the delivery: minor ones are fixed too (a round of them spends no loop) unless the reviewer marks them `"scope": "out"`.
+and no open finding of the delivery: minor ones are fixed too (a round of them spends no loop) unless the reviewer marks them `"scope": "out"`;
+a checks-only amend that closes them says so with `factory plan amend --reason "..." --resolves <round:id>[,...]` and spends no loop either.
 
 Ship (after the review gate). The CLI never pushes or calls a remote; you run the intents with your own tools.
 - Write `<run>/ship/summary.md`, the change description for its human reviewer, in the project's language: ticket key and link, what changes for the user,

@@ -125,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_plan)
     sp.add_argument("--reason", required=True, help="why the locked plan or config changed")
     sp.add_argument("--decision", help="a recorded user decision (Q-n or D-n); it exempts this amend from the loop budget, once")
+    sp.add_argument("--resolves", help="round:id[,round:id] open minor findings of the delivery this checks-only amend closes; it spends no loop")
     for name, func, helptext in (("verify", cmd_verify, "run the checks at HEAD and record evidence"),
                                  ("reproduce", cmd_reproduce, "bug runs: run the reproducing checks on the base")):
         sp = add(name, func, helptext, [scoped])

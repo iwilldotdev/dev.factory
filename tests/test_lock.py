@@ -52,6 +52,16 @@ class DriftTests(M2Case):
         self.assertIn("web:lint", out)
         self.assertIn("loops used: 0/3", self.ok("status"))
 
+    def test_a_checks_only_amend_that_closes_open_minor_findings_spends_no_loop(self):
+        self.run_dir.joinpath("notes").mkdir(exist_ok=True)
+        Run(self.proj / ".factory" / "runs", "ABC-1").append({"type": "review", "kind": "qa", "round": 1, "verdict": "APPROVE", "reviewer": "r",
+                                                               "repos": {}, "findings": [{"id": "F1", "severity": "minor", "text": "the check is weak"}],
+                                                               "resolved": [], "completeness": {}, "bound": {}, "lock_seq": 1, "independent_of": []})
+        self.change_check(expect_pattern="checks passed: VALUE=2$")
+        self.assertIn("not an open minor finding", self.fails("plan", "amend", "--reason", "x", "--resolves", "1:F9"))
+        self.assertIn("closes 1:F1, no loop spent", self.ok("plan", "amend", "--reason", "stronger check", "--resolves", "1:F1"))
+        self.assertIn("loops used: 0/3", self.ok("status"))
+
     def test_a_standing_check_runs_with_its_vars_like_a_ci_job(self):
         self.fix()
         probe = "import os,sys; sys.exit(0 if os.environ.get('FACTORY_T') == 'on' else 3)"

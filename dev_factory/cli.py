@@ -175,11 +175,11 @@ def cmd_plan(args) -> int:
     reasons = gates.plan_reasons(run, proj, st, with_lock=False)
     if not reasons and st["locks"]:
         reasons = dryrun.reasons(run, proj, st, planmod.load_plan(run)[0], lock.current(st))
-    ev = lock.amend(run, proj.cfg, reasons, args.reason, args.decision, args.actor)
+    ev = lock.amend(run, proj.cfg, reasons, args.reason, args.decision, args.actor, getattr(args, "resolves", None))
     a = ev["amend"]
     _out(args, ev, f"plan re-locked (seq {ev['seq']}); changed ACs: {', '.join(a['changed_acs']) or 'none'}; changed checks: "
                    f"{', '.join(a['changed_checks']) or 'none'}; " + ("consumed " + a["decision"] if a["decision"] else "counts against the loop budget" if a["counts_loop"]
-                      else "project upkeep (standing checks only), no loop spent"))
+                      else f"closes {', '.join(a['resolves'])}, no loop spent" if a.get("resolves") else "project upkeep (standing checks only), no loop spent"))
     return 0
 
 

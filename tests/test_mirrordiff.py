@@ -62,6 +62,26 @@ class SignatureTests(unittest.TestCase):
         got = mirrordiff.compare(trees["b2"], start, trees["m2"], start)
         self.assertEqual(got["divergent"], {"e.txt": "content", "x.bin": "content"})
 
+    def test_a_deleted_binary_file_compares_without_crashing(self):
+        """Review round 2, m2: numstat shows `-` for a deleted binary, whose blob no longer exists at the new commit."""
+        repo = two_branches({"a.txt": "x\n"})
+        (repo / "logo.bin").write_bytes(b"\x00\x01")
+        git("add", "logo.bin", cwd=repo)
+        git("commit", "-q", "-m", "logo", cwd=repo)
+        start = git("rev-parse", "HEAD", cwd=repo)
+        trees = {}
+        for name, drop in (("b3", True), ("m3", True), ("n3", False)):
+            trees[name] = repo.parent / f"{name}tree"
+            git("worktree", "add", "-q", "-b", name, str(trees[name]), start, cwd=repo)
+            if drop:
+                git("rm", "-q", "logo.bin", cwd=trees[name])
+            else:
+                (trees[name] / "a.txt").write_text("y\n")
+                git("add", "-A", cwd=trees[name])
+            git("commit", "-q", "-m", name, cwd=trees[name])
+        self.assertTrue(mirrordiff.compare(trees["b3"], start, trees["m3"], start)["equal"])
+        self.assertEqual(mirrordiff.compare(trees["b3"], start, trees["n3"], start)["divergent"]["logo.bin"], "content")
+
 
 if __name__ == "__main__":
     unittest.main()

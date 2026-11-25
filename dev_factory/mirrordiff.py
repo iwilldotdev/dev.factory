@@ -26,15 +26,18 @@ def signature(path: Path, old: str, new: str) -> dict[str, dict[str, int]]:
             net = out.setdefault(file, {})
             net[raw[1:].rstrip()] = net.get(raw[1:].rstrip(), 0) + (1 if raw[0] == "+" else -1)
     rng = f"{old}..{new}"
+    gone = set()
     for raw in git.git(path, "diff", "--no-renames", "--name-status", rng).out.splitlines():  # a new, deleted or empty file has no +/- line
         status, _, f = raw.partition("\t")
+        if status[:1] == "D":
+            gone.add(f)  # its blob is only at the old commit
         if status[:1] in "AD":
             out.setdefault(f, {})[f"<{status[:1]}>"] = 1
     for raw in git.git(path, "diff", "--no-renames", "--numstat", rng).out.splitlines():  # a binary file has none either: compare its blob
         added, _, rest = raw.partition("\t")
         if added == "-":
             f = rest.partition("\t")[2]
-            out.setdefault(f, {})[f"<binary {git.git(path, 'rev-parse', f'{new}:{f}').out.strip()}>"] = 1
+            out.setdefault(f, {})[f"<binary {git.git(path, 'rev-parse', f'{old if f in gone else new}:{f}').out.strip()}>"] = 1
     return {f: {k: v for k, v in net.items() if v} for f, net in out.items() if any(net.values())}
 
 

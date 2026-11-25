@@ -120,6 +120,13 @@ test("a login that ends on another origin is env, and a path that leaves the ori
   const away = writeJson(path.join(dir, "away.json"), { actions: [{ goto: "/away.html" }, { wait: 1500 }] });
   const r = await run("login", ["--spec", away, "--state-out", path.join(dir, "s.json")]);
   assert.equal(r.exit, 3, r.summary);
+  // An app that redirects to another app after login declares its session cookie instead.
+  process.env.RUNNER_TEST_USER = "ana";
+  const redirect = { actions: [{ goto: "/login.html" }, { fill: { selector: "#u", value: "${RUNNER_TEST_USER}" } }, { click: "#go" }, { goto: "/away.html" }, { wait: 1500 }] };
+  const ok = await run("login", ["--spec", writeJson(path.join(dir, "c.json"), { ...redirect, done: { cookie: "sid" } }), "--state-out", path.join(dir, "c.state.json")]);
+  assert.equal(ok.status, "pass", ok.summary);
+  const nocookie = await run("login", ["--spec", writeJson(path.join(dir, "n.json"), { ...redirect, done: { cookie: "nope" } }), "--state-out", path.join(dir, "n.state.json")]);
+  assert.equal(nocookie.exit, 3, nocookie.summary);
   const leave = await run("screenshot", ["--url", "http://127.0.0.2:9/x"]);
   assert.equal(leave.exit, 2);
 });

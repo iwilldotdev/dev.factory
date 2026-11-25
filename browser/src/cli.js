@@ -49,7 +49,14 @@ const commands = {
     need(f, "baseUrl", "spec", "stateOut");
     const { context, page, base } = await openPage(browser, { ...f, storageState: undefined });
     await runActions(page, base, f.spec, f.navTimeout);
-    if (new URL(page.url()).origin !== base) throw new RunnerError(`login ended on ${new URL(page.url()).origin}, not the served origin ${base}`, 3);
+    // Success is the spec's `done` ({"cookie": name} or {"url": regex}) when given; an app may redirect elsewhere after login.
+    const done = JSON.parse(fs.readFileSync(f.spec, "utf8")).done;
+    const where = page.url();
+    if (done?.cookie) {
+      if (!(await context.cookies(base)).some((c) => c.name === done.cookie)) throw new RunnerError(`login set no ${done.cookie} cookie for ${base} (ended on ${where})`, 3);
+    } else if (done?.url) {
+      if (!new RegExp(done.url).test(where)) throw new RunnerError(`login ended on ${where}, which does not match ${done.url}`, 3);
+    } else if (new URL(where).origin !== base) throw new RunnerError(`login ended on ${new URL(where).origin}, not the served origin ${base}; a spec whose app redirects elsewhere declares "done": {"cookie": "<session cookie>"}`, 3);
     fs.mkdirSync(path.dirname(f.stateOut), { recursive: true });
     await context.storageState({ path: f.stateOut });
     return { status: "pass", summary: "login state written", details: { state: path.basename(f.stateOut) }, artifacts: [] };

@@ -55,7 +55,7 @@ A repo with `commit_pattern` or `commit_forbidden_trailers` gets an implicit sta
 | `ready_timeout_s` | int | `120` | no | `env up` waits itself [L-84] |
 | `depends_on` | list of repo names | `[]` | no | started first, from the run worktree when the repo is in the run [L-71] |
 | `vars` | table string → string | `{}` | no | extra env vars for `up`; L may override |
-| `login_spec` | repo-relative action spec (`.json`, DESIGN section 10) | none | no | run by the runner's `login` command after health. It writes login state under the project's env directory (`<repo>.state.json`), which browser, visual and style checks reuse. Credentials come only from env vars [L-80] |
+| `login_spec` | repo-relative action spec (`.json`, DESIGN section 10) | none | no | run by the runner's `login` command after health. It writes login state under the project's env directory (`<repo>.state.json`), which browser, visual and style checks reuse. Login succeeds when the browser ends on the env origin, or, when the spec declares `"done": {"cookie": "<name>"}` or `{"url": "<regex>"}` (an app that redirects to another app after login), when that holds. Credentials come only from env vars [L-80] |
 | `login_secrets` | list of secret key names | `[]` | no | passed to the login spec as env vars; with plan `login_user = "qa-admin"` each `KEY` is read from `KEY_QA_ADMIN` [L-81] |
 | `login_http` | command string | none | no | prints a JSON headers object for `http` checks with `session`; output is never stored [L-52] |
 | `seed`, `reset` | command strings | none | no | run by `factory env seed/reset` with `FACTORY_DATA_PREFIX` derived from the run id; `verify` resets once before the runtime batch [L-50] |

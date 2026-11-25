@@ -206,7 +206,7 @@ def reasons(run: Run, project, st: dict) -> list[str]:
                        "factory ingest change (or configure providers.change.fetch) and run factory ship verify [L-153]")
             continue
         cev, env = found[-1]
-        if cev.get("refresh"):  # read back again for feedback after the gate passed: what feedback judges, not what the plan promised
+        if cev.get("refresh") and cev["at"] > st["gates"].get("ship", {}).get("at", -1):  # read back again for feedback after the gate passed: what feedback judges, not what the plan promised
             continue
         d = env["data"]
         probs = acquire.load(run, "change", d["id"])[1]

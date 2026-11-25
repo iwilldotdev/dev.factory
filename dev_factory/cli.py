@@ -251,9 +251,18 @@ def cmd_human(args) -> int:
     return 0
 
 
+def _refresh_ok(args, proj, run) -> None:
+    """--refresh reads a change or pipeline back for feedback: only while the gate of the ship phase still holds for its current plan."""
+    from . import gates
+    if args.refresh and args.kind in ("change", "pipeline") and not gates.passed(run, proj, run.state(), "ship"):
+        raise FactoryError("--refresh is allowed only after the ship gate passed and still holds for the current ship plan; "
+                           "before that, read the change back without --refresh so the plan comparison runs")
+
+
 def cmd_fetch(args) -> int:
     from . import acquire
     proj = _project(args)
+    _refresh_ok(args, proj, _run(args, proj))
     env = acquire.fetch(_run(args, proj), proj.cfg, proj.dir, args.kind, args.id, args.repo, tag={"refresh": True} if args.refresh else None)
     _out(args, {"contract": env["data"]["id"], "source": env["source"], "raw": env["raw"]},
          f"stored {args.kind} {env['data']['id']} (source adapter, raw sha256 {env['raw']['sha256'][:12]})")
@@ -274,6 +283,7 @@ def cmd_ingest(args) -> int:
         data = json.loads(text)
     except ValueError as exc:
         raise FactoryError(f"contract data is not valid JSON: {exc}") from exc
+    _refresh_ok(args, proj, _run(args, proj))
     env = acquire.ingest(_run(args, proj), proj.cfg, args.kind, Path(args.raw), data, {"refresh": True} if args.refresh else None)
     _out(args, {"contract": env["data"]["id"], "source": env["source"], "raw": env["raw"]},
          f"stored {args.kind} {env['data']['id']} (source agent, raw sha256 {env['raw']['sha256'][:12]})")

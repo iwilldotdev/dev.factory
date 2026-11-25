@@ -56,6 +56,20 @@ class FeedbackCase(ShipCase):
         return [e for e in self.reviews() if e["kind"] == "feedback"]
 
 
+class StaleShipPassTests(FeedbackCase):
+    def test_a_refresh_after_a_replan_is_refused_because_the_old_gate_pass_no_longer_holds(self):
+        """Review round 2, B1: `ship plan --update` makes the earlier pass stale; a bad --refresh must not skip the new comparison."""
+        self.shipped()
+        self.ok("ship", "plan", "--update")
+        data = self.change_data(title="WRONG TITLE", draft=False, head_sha="b" * 40, description_md="nothing")
+        raw = self.run_dir / "feedback" / "web-bad.raw.json"
+        raw.parent.mkdir(parents=True, exist_ok=True)
+        raw.write_text(json.dumps({"payload": data}), encoding="utf-8")
+        out = self.fails("ingest", "change", "--raw", str(raw), "--stdin", "--refresh", stdin=json.dumps(data))
+        self.assertIn("only after the ship gate passed", out)
+        self.assertIn("no change readback", self.failing("ship"))
+
+
 class PhaseTests(FeedbackCase):
     def test_the_ship_gate_opens_the_feedback_phase_and_next_asks_for_a_refresh(self):
         self.shipped()

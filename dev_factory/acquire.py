@@ -20,8 +20,9 @@ def store(run: Run, cfg: dict, kind: str, data: dict, raw: bytes, ext: str, sour
     """Validate, write raw + contract files, append the `contract` event. Nothing is written when invalid [L-156]."""
     data = contracts.validate(kind, data, [r["name"] for r in cfg["repo"]], raw)
     if (tag or {}).get("refresh") and kind in ("change", "pipeline"):
-        g = run.state()["gates"].get("ship")
-        if not (g and g["result"] == "pass"):  # a refresh is feedback: before the gate passed it would skip the readback comparison
+        st = run.state()
+        g = st["gates"].get("ship")
+        if not (g and g["result"] == "pass" and g["at"] > max(st["ship_at"], st["review_at"])):  # a re-plan or a new review makes the pass stale  # a refresh is feedback: before the gate passed it would skip the readback comparison
             raise FactoryError(f"--refresh reads a {kind} back for feedback and is allowed only after the ship gate passed; "
                                "before that, ingest without --refresh so the plan comparison runs")
     if kind == "ticket" and data["id"] != run.state()["ticket"]:

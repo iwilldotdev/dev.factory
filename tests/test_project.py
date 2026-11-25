@@ -1,4 +1,5 @@
 """init, --version, import isolation, agents-md adapter."""
+import json
 import re
 import tomllib
 import unittest
@@ -74,8 +75,12 @@ class VersionAndIsolationTests(FactoryCase):
         self.assertIn("factory 1.0.0a1", res.stdout)
 
     def test_help_and_no_arguments(self):
-        code, out, _ = self.cli(project=False)
-        self.assertEqual(code, 2)
+        """`factory` alone is the guided entry: in a workspace without a terminal it asks for the ticket (exit 4, JSON)."""
+        code, out, _ = self.cli(cwd=self.proj, project=False)
+        self.assertEqual(code, 4)
+        self.assertEqual(json.loads(out)["need"], "ticket")
+        code, out, _ = self.cli("--help", cwd=self.proj, project=False)
+        self.assertEqual(code, 0)
         self.assertIn("usage: factory", out)
 
 

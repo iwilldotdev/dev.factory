@@ -19,7 +19,8 @@ def _out(args, payload, text: str) -> None:
 
 def _project(args):
     from . import project
-    return project.discover(args.project or args.project_pre)
+    from .cli_home import _prompt
+    return project.discover(args.project or args.project_pre, None, getattr(args, "workspace", None) or args.workspace_pre, _prompt())
 
 
 def _run(args, project, writable: bool = True):
@@ -210,16 +211,21 @@ def cmd_reproduce(args) -> int:
 
 
 def cmd_human(args) -> int:
-    from . import human
+    from . import cli_home, human
     proj = _project(args)
     run = _run(args, proj)
     cmd, a = args.cmd, args.actor
     if cmd == "ask":
-        ev = human.ask(run, args.text, args.ref, a)
-        print(f"opened {ev['id']}; the user answers it, then: factory answer {ev['id']} --user-said \"<their words>\"")
+        if args.save_as:
+            cli_home.key_path(args.save_as)
+        ev = human.ask(run, args.text, args.ref, a, args.save_as)
+        print(f"opened {ev['id']}; the user answers it, then: factory answer {ev['id']} --user-said \"<their words>\"" + (" [--save]" if args.save_as else ""))
     elif cmd == "answer":
+        key = cli_home.answer_save(proj, run, args.question) if args.save else None
         human.answer(run, args.question, args.user_said, a)
-        print(f"{args.question} answered; its decision can be consumed once with --decision {args.question}")
+        if key:
+            cli_home.set_key(proj.dir, key, args.user_said)
+        print(f"{args.question} answered; its decision can be consumed once with --decision {args.question}" + (f"; saved to {key}" if key else ""))
     elif cmd == "decide":
         print(f"recorded {human.decide(run, args.user_said, a)['id']}")
     elif cmd == "human":
@@ -343,10 +349,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.version:
         print(f"factory {__version__} ({build_identity()}) python {sys.version.split()[0]}")
         return 0
-    if not getattr(args, "func", None):
-        parser.print_help()
-        return 2
-    for attr, default in (("json", False), ("actor", None), ("project", None), ("run", None)):
+    if not getattr(args, "func", None):  # `factory` alone is the guided entry
+        from .cli_home import cmd_start
+        args.func, args.cmd, args.ticket, args.json = cmd_start, "start", None, args.json_pre
+    for attr, default in (("json", False), ("actor", None), ("project", None), ("run", None), ("workspace", None)):
         if not hasattr(args, attr):
             setattr(args, attr, default)
     try:

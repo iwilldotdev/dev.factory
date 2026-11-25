@@ -123,7 +123,8 @@ def derive(events: list[dict]) -> dict:
         elif t == "media":
             st["media"][ev["attachment"]] = ev
         elif t == "question":
-            st["questions"][ev["id"]] = {"id": ev["id"], "text": ev.get("text", ""), "ref": ev.get("ref"), "answered": None}
+            st["questions"][ev["id"]] = {"id": ev["id"], "text": ev.get("text", ""), "ref": ev.get("ref"), "answered": None,
+                                         "save_as": ev.get("save_as")}
         elif t == "answer" and ev.get("question") in st["questions"]:
             st["questions"][ev["question"]]["answered"] = ev.get("user_said")
             if ev.get("decision"):

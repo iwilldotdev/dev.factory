@@ -30,11 +30,12 @@ def _said(text: str | None) -> str:
     return text
 
 
-def ask(run: Run, text: str, ref: str | None, actor: str | None) -> dict:
+def ask(run: Run, text: str, ref: str | None, actor: str | None, save_as: str | None = None) -> dict:
     if not text.strip():
         raise FactoryError("a question needs text")
+    extra = {"save_as": save_as} if save_as else {}
     return run.append(lambda evs: {"type": "question", "id": next_id("Q", evs, "question"), "text": text.strip(),
-                                   "ref": ref}, actor)
+                                   "ref": ref, **extra}, actor)
 
 
 def answer(run: Run, qid: str, said: str, actor: str | None) -> dict:

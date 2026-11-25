@@ -80,8 +80,24 @@ def _ci(path: Path) -> list[dict]:
     out = []
     for p in sorted(files)[:10]:
         steps = [m.group(1).strip() for line in _read(p).splitlines() if (m := CI_STEP.match(line)) and m.group(1).strip() not in ("|", ">")]
-        out.append({"file": p.relative_to(path).as_posix(), "steps": steps[:15]})
+        out.append({"file": p.relative_to(path).as_posix(), "steps": steps[:15], **({"vars": v} if (v := _ci_vars(_read(p))) else {})})
     return out
+
+
+def _ci_vars(text: str) -> dict:
+    """Literal values of the `env:` / `variables:` blocks of a CI file (references to secrets or expressions are left out)."""
+    found, block = {}, None
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip())
+        if re.match(r"^\s*-?\s*(env|variables)\s*:\s*$", line):
+            block = indent
+        elif block is not None and line.strip() and indent <= block:
+            block = None
+        elif block is not None and (m := re.match(r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(\S.*)$", line)):
+            val = m.group(2).strip().strip("\"'")
+            if "$" not in val and "secret" not in val.lower():
+                found[m.group(1)] = val
+    return found
 
 
 def _ports(path: Path) -> list[dict]:
@@ -168,7 +184,7 @@ def checklist(project) -> list[dict]:
             unset = config.resolve_secrets(cfg, env.get("login_secrets", []))[1]
             ok = (path / spec).is_file() and not unset
             why = (" does not exist" if not (path / spec).is_file() else "") + (f"; secrets not set: {', '.join(unset)} (environment or "
-                                                                                 f"{fwd(config.secrets_file(cfg['project']['name']))})" if unset else "")
+                                                                                 f"{fwd(config.secrets_path(cfg))})" if unset else "")
             items.append(_item("login", "done" if ok else "missing", f"{name}: login spec {spec}{why}",
                                "[repo.env] login_spec, login_secrets", 'login_spec = "e2e/login.json"  login_secrets = ["TEST_USER", "TEST_PASSWORD"]'))
         elif env:
@@ -178,7 +194,7 @@ def checklist(project) -> list[dict]:
     if not any(r.get("mirror") for r in cfg["repo"]):
         items.append(_item("mirrors", "optional", "no hotfix mirror target", "[[repo.mirror]] name, branch", '[[repo.mirror]] name = "release"  branch = "release/2.x"'))
     _, missing = config.resolve_secrets(cfg)
-    sfile = config.secrets_file(cfg["project"]["name"])
+    sfile = config.secrets_path(cfg)
     if cfg["secrets"]["keys"]:
         items.append(_item("secrets", "missing" if missing else "done", ("not set: " + ", ".join(missing)) if missing else "every key is set",
                            f"[secrets] keys; values in the environment or {fwd(sfile)} (the user writes them)", 'keys = ["TEST_USER", "TEST_PASSWORD"]'))
@@ -201,9 +217,11 @@ def checklist(project) -> list[dict]:
 
 
 def cmd_setup(args) -> int:
-    from . import project as projmod
+    from . import cli_home, project as projmod
+    if args.discover is None and (args.questions or args.answer or cli_home._prompt()):
+        return cli_home.cmd_setup_flow(args)
     try:
-        proj = projmod.discover(args.project or args.project_pre)
+        proj = projmod.discover(args.project or args.project_pre, None, args.workspace or args.workspace_pre)
     except FactoryError:
         proj = None
     if args.discover is not None:
@@ -211,7 +229,7 @@ def cmd_setup(args) -> int:
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return 0
     if proj is None:
-        raise FactoryError("no factory.toml here: run factory setup --discover [DIR], write factory.toml (factory init creates a skeleton), then factory setup")
+        raise FactoryError("no workspace here: run factory setup --questions --json (the interview), or factory setup --discover [DIR] and write factory.toml")
     items = checklist(proj)
     missing = [i for i in items if i["status"] == "missing"]
     if args.json:

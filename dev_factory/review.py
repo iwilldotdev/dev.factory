@@ -48,15 +48,18 @@ def parse(data, kind: str, plan: dict, round_no: int, earlier: list[dict], rules
     acs = {a["id"] for a in plan["acs"]}
     findings = data.get("findings", [])
     if not (isinstance(findings, list) and all(isinstance(f, dict) for f in findings)):
-        errs.append("findings: must be a list of {id, severity, text, file?, ac?, scope?}")
+        errs.append("findings: must be a list of {id, severity, text, file?, ac?, scope?, carries?}")
         findings = []
     ids = set()
     for i, f in enumerate(findings):
         here = f"findings[{i}]"
-        errs += [f"{here}: unknown key {k!r}" for k in sorted(set(f) - {"id", "severity", "file", "text", "ac", "scope"})]
+        errs += [f"{here}: unknown key {k!r}" for k in sorted(set(f) - {"id", "severity", "file", "text", "ac", "scope", "carries"})]
         _strs(f, ("id", "text"), here, errs)
         if f.get("severity") not in SEVERITIES:
             errs.append(f"{here}.severity: must be one of {', '.join(SEVERITIES)}")
+        if f.get("carries") is not None and not (isinstance(f["carries"], str) and _full(f["carries"], round_no) in
+                                                   {(e["round"], x["id"]) for e in earlier for x in e.get("findings", [])}):
+            errs.append(f"{here}.carries: {f.get('carries')!r} names no finding of an earlier round (round:id)")
         if f.get("scope", "change") not in ("change", "out"):
             errs.append(f'{here}.scope: "change" (fixed before the delivery, the default) or "out" (not part of this delivery)')
         if f.get("ac") is not None and f["ac"] not in acs:
@@ -274,9 +277,13 @@ def open_minors(st: dict) -> list[dict]:
         cleared: set[tuple[int, str]] = set()
         for e in rounds:
             text = {(r["round"], f["id"]): norm(f["text"]) for r in rounds for f in r["findings"]}
+            carried = {(r["round"], f["id"]): _full(f["carries"], r["round"]) for r in rounds for f in r["findings"] if f.get("carries")}
             for item in e.get("resolved", []):
                 rn, fid = _full(item, e["round"])
                 cleared |= {k for k, t in text.items() if k[1] == fid and k[0] <= rn and t == text.get((rn, fid))}
+                link = (rn, fid)
+                while (link := carried.get(link)) and link not in cleared:  # a finding re-listed in a later round carries the earlier one
+                    cleared.add(link)
         for e in rounds:
             for f in e["findings"]:
                 key = (f.get("file", ""), norm(f["text"]))

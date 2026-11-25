@@ -82,6 +82,15 @@ class PlanTests(ShipCase):
         briefing = json.loads(self.ok("next", "--json"))["briefing"]
         self.assertIn("  findings outside this delivery (kept in the run, not in the change): 1", briefing)
 
+    def test_resolving_a_finding_that_carries_an_earlier_one_closes_the_chain(self):
+        self.record("code", "CHANGES", findings=[{"id": "U1", "severity": "minor", "text": "the name is too narrow"}])
+        self.record("code", "CHANGES", findings=[{"id": "U1", "severity": "minor", "text": "still narrow, better", "carries": "2:U1"}])
+        self.assertIn("carries", self.record("code", "APPROVE", code=2, findings=[{"id": "U9", "severity": "minor", "text": "x", "carries": "1:U7"}]))
+        self.record("code", "APPROVE", resolved=["3:U1"])  # rounds 2 and 3: the fixture recorded round 1
+        self.record("qa", "APPROVE")
+        self.assertEqual(self.gate("review")[0], 0)
+
+
     def tree_branch(self) -> str:
         return git("rev-parse", "--abbrev-ref", "HEAD", cwd=self.tree())
 

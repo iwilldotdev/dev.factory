@@ -64,3 +64,4 @@ re-run what you doubt. A surface you cannot exercise is `not_checked`, never app
 - Write the JSON that `factory review example` prints to the path the request or `factory next` names (`<run>/notes/review-<kind>.json` is allowed; never write under `reviews/`), with your own name as `reviewer`,
   then run `factory review record --kind code|qa|uat --actor reviewer-<n> --file <path>` and report the exit code. A blocker or major finding, or any gap, means CHANGES.
   Every finding about the delivery is fixed before it ships, minor ones too; mark `"scope": "out"` only on a finding that is not part of this delivery.
+  List every earlier finding you saw fixed in `resolved`; one you list again because it is still open gets `"carries": "<round:id>"` of the earlier one.

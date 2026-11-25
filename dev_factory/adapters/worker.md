@@ -55,5 +55,5 @@ re-run what you doubt. A surface you cannot exercise is `not_checked`, never app
   requires it: a value changed only so a check passes is a major finding. Bugs: say whether the fix addresses the root cause in `diagnosis.md`.
 - qa: for every AC decide whether its check really exercises it (a check that cannot fail is a major finding) and whether its evidence is a pass at the current commit;
   compare screenshots with the design frame; give one `exercises` entry per AC.
-- Write the JSON that `factory review example` prints to the scratch path the request names (not under `.factory/runs`), with your own name as `reviewer`,
+- Write the JSON that `factory review example` prints to the path the request or `factory next` names (`<run>/notes/review-<kind>.json` is allowed; never write under `reviews/`), with your own name as `reviewer`,
   then run `factory review record --kind code|qa --actor reviewer-<n> --file <path>` and report the exit code. A blocker or major finding, or any gap, means CHANGES.

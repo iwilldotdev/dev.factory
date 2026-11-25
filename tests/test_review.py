@@ -157,7 +157,9 @@ class NextTests(M3Case):
         n = self.nxt()
         self.assertEqual((n["phase"], n["role"]), ("review", "reviewer"))
         self.assertIn("factory review record --kind code --file", n["command"])
-        self.assertTrue(n["files"][0].endswith("/reviews/code.json"))
+        self.assertTrue(n["files"][0].endswith("/notes/review-code.json"), "a path the hook lets the reviewer write (M3)")
+        from dev_factory import hook
+        self.assertIsNone(hook.reason({"tool_input": {"file_path": n["files"][0]}}))
         self.record("code")
         self.assertIn("--kind qa", self.nxt()["command"])
         self.record("qa", "CHANGES", findings=[{"id": "F1", "severity": "minor", "text": "rename it"}])

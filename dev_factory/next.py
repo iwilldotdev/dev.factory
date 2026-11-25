@@ -234,7 +234,7 @@ def _review_action(project: Project, run: Run, st: dict, reasons: list[str], set
              "user", f'factory design review {frames[0]} --user-said "<their words>"{flag}')
     elif reasons:
         kind = "code" if any(r.startswith(("no code", "the code")) for r in reasons) else "qa"
-        path = run.dir / "reviews" / f"{kind}.json"
+        path = run.dir / "notes" / f"review-{kind}.json"  # reviews/ is CLI-owned: the hook refuses a hand write there
         rules = quality.guidelines(project.cfg, plan) if kind == "code" else []
         more = (" The code review also cites every guideline with followed true or false: " + "; ".join(f"{g['id']}: {g['text']}" for g in rules) + "." if rules else "")
         more += (" The risk is high: the code and qa reviews come from two different reviewers, each the strongest the harness has." if plan.get("risk") == "high" else "")

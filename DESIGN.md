@@ -88,7 +88,7 @@ Feedback turns change threads and failed pipeline jobs into findings and returns
 | `plan` | `plan.json` is valid. Every AC has a check. Patterns have at least 6 characters and 4 literal word characters [L-04]. Each bug `reproduce` AC has an `expect_fail_pattern` check [L-33]. Worktrees exist, with `branch_point` recorded and `setup` passed [L-06, L-72, L-89]. Each runtime repo's env is healthy, with all problems in one message, and new runtime checks pass a dry run that is not `setup` or `error` [L-86]. The design rules of section 9 hold. No question is open. On pass, the plan is locked. |
 | `reproduce` (bug) | `diagnosis.md` has non-empty `## Root cause`, `## Evidence`, `## Ruled out` [L-38], and a `## Scenario` that says `ticket scenario used` or lists each deviation with its reason [L-27]. Each `reproduce` AC has a `reproduced` record at the base SHA under the locked spec hash [L-03, L-05, L-33]. `diagnosis.md` joins the lock. |
 | `verify` | Every effective check (plan plus standing) has a `pass` at its repo's current HEAD, from a clean worktree, under the locked spec hash. For runtime checks, every served repo's head is current and the server started at it [L-01, L-07, L-08, L-09, L-12, L-69, L-85]. `flaky` never counts [L-14]. Each affected repo has a commit past `branch_point` [L-87]. Each bug `cmd` reproduction has a red-green pass [L-34]. |
-| `review` | The `verify` conditions hold. The latest `code` review is APPROVE, bound to the current SHAs and the core-plan hash. The latest `qa` review is APPROVE, bound to the current SHAs and the full plan hash [L-18, L-137]. Each approx design frame has a user design review (section 9). |
+| `review` | The `verify` conditions hold. The latest `code` review is APPROVE, bound to the current SHAs and the core-plan hash. The latest `qa` review is APPROVE, bound to the current SHAs and the full plan hash [L-18, L-137]. A plan with a screen also needs the latest `uat` review APPROVE at the current SHAs. A review stays bound across a clean base merge, a rebase with the same patches, or a fold with the same tree; a `uat` review also across commits that touch only tests. No minor finding of the delivery is open (`scope` `"out"` excepted). Each approx design frame has a user design review (section 9). |
 | `ship` | The `review` conditions hold. Exact design frames are fresh (section 9). Each change readback has proof-grade source [L-21] and matches the ship plan. With `require_pipeline`, the latest pipeline for the pushed head is `success`, or a user waiver names that pipeline id [L-20, L-155]. |
 | `report` (review runs) | The plan lock holds, the latest `code` and `qa` reviews cover the current commits (their verdicts are the outcome, not a failure), and a `review report` is recorded for them [L-185]. |
 | `ship` on a hotfix | Also: every mirror target is mirrored, its `mirror: true` checks pass at the mirror head, the ship plan has one titled change per mirror, and the mirror diff equals the base fix or a user decision names the divergent files [L-41, L-95, L-100]. |
@@ -186,7 +186,7 @@ If an AC has UI and a design source exists, the alpha proves parity with the des
 - Tolerances come from `limits.approx` (px, ΔE, font size, diff ratio).
 - They follow the frame contract's fidelity, never a check field. An approx frame cannot replace an exact one with the same id.
 - `factory design review <frame> --user-said` records the user's design review, bound to the frame hash, and `gate review` needs one per approx frame.
-- The change body lists approx frames under "Design fidelity: approximate".
+- The Gate S briefing lists approx frames and the user's design review.
 
 **Gates.**
 
@@ -246,24 +246,19 @@ Ticket text and design frames may be `agent`. A remote fact used as proof (a cha
 
 **Roles.** The orchestrator decides, talks to the user, runs gates, does remote writes and pushes. The builder writes code and checks and runs `verify`. The reviewer starts fresh and is never the builder. Roles are advice, and recorder hints are only an audit trail [L-127, L-128, L-170].
 
-**Review.** `factory review record --kind code|qa --file f` binds the review to full SHAs (a prefix of 7 or more characters is accepted, and a bad `repos` shape is rejected with an example [L-107]) and to `core_hash` (code) or `plan_hash` (qa). It refuses:
+**Review.** `factory review record --kind code|qa|uat --file f` binds the review to full SHAs (a prefix of 7 or more characters is accepted, and a bad `repos` shape is rejected with an example [L-107]) and to `core_hash` (code) or `plan_hash` (qa). It refuses:
 
 - APPROVE with gaps, not-checked items or blocker/major findings [L-23]
 - `qa` without per-AC `exercises`, or APPROVE with `exercises: false` [L-22]
 - `code` without a `changed_values` list [L-39]
 
-Resolution ids are `round:id` [L-147].
+Resolution ids are `round:id` [L-147]; a finding re-listed in a later round names the earlier one in `carries`, and resolving it resolves the chain. Every finding has `scope` `"change"` (default: fixed before ship, minor ones too; a round of minor fixes, or an amend that closes them with `--resolves`, spends no loop) or `"out"` (not this delivery: kept in the run, never in the change).
 
-**Ship.** `factory ship plan [--ticket none|comment|transition]` writes neutral intents: push, change, readback, pipeline (optional), and ticket comment or transition, never auto-run [L-145]. It also writes a body with:
+**UAT.** A plan with a screen (a browser, visual, style or screenshot check) takes a third review, `uat`, after code and qa, by a reviewer who wrote neither. It explores the screens logged in through scripts under `<run>/uat/` run by `factory uat run` (evidence with mode `uat`: screenshots and output, never a check result), cites those runs in `explored`, and finds what the checks do not look for; a defect the change causes is a finding even outside the ACs.
 
-- the title `[key] - summary` [L-142]
-- reviewer identities checked by `factory check` [L-143]
-- the commits-behind count [L-108]
-- an AC × check × result table with command, exit code and a 10-line excerpt
-- flaky attempts, approx frames, and unresolved minors from every round (capped at 20) [L-146]
-- no local links [L-144]
+**Ship.** `factory ship plan [--ticket none|comment|transition]` writes neutral intents: push (with `force_with_lease` when it rewrites a pushed branch, after a rebase or a fold), change, readback, pipeline (optional), and ticket comment or transition, never auto-run [L-145]. It refuses while the branch is behind its base (a moved base comes in by rebase, `ship.base_update`) or still has `fixup!` commits, which are folded into their targets first. The title is `[key] - summary` [L-142]; reviewer identities are checked by `factory check` [L-143]. The body is `ship/summary.md`, written for a human reviewer who never sees the run, in the project's language; it is refused while empty, without the ticket key, with a local link [L-144] or with the run's bookkeeping (check, AC or decision ids, attempts, run paths). The AC × check × result table, the commits-behind count [L-108], findings outside the delivery and human checks go to the Gate S briefing for the user [L-146].
 
-The agent executes with the user's tools and saves readbacks. `ship verify` compares title, `draft` [L-154], branches, head SHA and description [L-153], and de-duplicates identical states [L-151]. `autonomy.ship = "ask"` asks before any push; `"draft-auto"` may push and open drafts. Ready and merge are never automatic.
+The agent executes with the user's tools and saves readbacks. `ship verify` compares title, `draft` [L-154], branches, head SHA and that the description is the planned body [L-153], and de-duplicates identical states [L-151]. `autonomy.ship = "ask"` asks before any push; `"draft-auto"` may push and open drafts. Ready and merge are never automatic.
 
 **Metrics.** `factory metrics` derives these from events on demand [L-179]:
 
@@ -288,7 +283,7 @@ Python 3.11 or later, stdlib only, with modules capped at 400 lines each.
 | **Python core total** | **8,420** |
 | Node runner | 820 |
 
-The proposed caps (decision 16) replace PIVOT §3 once approved.
+The caps of decision 16 replace PIVOT §3. On 2026-11-25 the owner raised the core cap from 8,500 to 10,000 lines (quality over the cap; it rises again when needed). The table above is the original estimate.
 
 | Module | Lines | Module | Lines |
 |---|---|---|---|
@@ -302,7 +297,7 @@ The proposed caps (decision 16) replace PIVOT §3 once approved.
 | `checks/visual`, `checks/style` | 120, 120 | `next` | 300 |
 | `design` (frames, PNG header, table, expect, crop box, approx, freshness) | 400 | `cli` | 370 |
 
-M6 modules (lines now): `mirror` 176, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core 8,080 of 8,500.
+M6 modules (lines then): `mirror` 176, `mirrordiff` 38, `epic` 180, `review_run` 146, `slots` 58, `cli_composite` 85. Core now about 8699 lines of 10,000 (`uat` and the delivery rules came after M7).
 
 Command overhead is at most 1 s, excluding checks. The CLI installs through the standard Python entry point, apart from any working tree, with an optional version pin [L-130, L-149] (decision 3).
 

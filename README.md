@@ -34,7 +34,7 @@ flowchart LR
   R -- no --> B
   RE -->|gate reproduce| B[build]
   B <--> V[verify]
-  V -->|gate verify| RV[review: code + qa]
+  V -->|gate verify| RV[review: code + qa + UAT]
   RV -->|CHANGES| B
   RV -->|gate review| S[ship]
   S -->|gate ship| F[feedback]
@@ -45,6 +45,8 @@ flowchart LR
 
 - **Plan lock.** `gate plan` hashes the plan, every check spec, declared fixtures, the proof-relevant config and the raw contracts. Drift fails every later gate until `factory plan amend --reason "..."`.
 - **Loop budget.** `[autonomy] max_loops` (default 5) is one budget for unapproved plan amends and review rounds that carry a blocker or major finding, plus feedback rounds. Rounds that only fix minor findings, and amends that only close them (`--resolves`), are free. When it is spent the command refuses and the run blocks for the user; each recorded user decision allows one more round. Build and verify iterations are free.
+- **Reviews.** Fresh reviewers who wrote nothing in the run record a code review and a qa review; a change with a screen also takes a UAT in the browser, by another fresh reviewer who uses the screens logged in through exploration scripts (`factory uat run`). Every finding about the delivery is fixed before ship, minor ones included; a reviewer marks `"scope": "out"` only on what is not part of this delivery.
+- **Delivery.** A moved base comes in by rebase (no merge commit); fixes asked on the way are `fixup!` commits folded before ship, so the change carries its feature commits only. Its description is `ship/summary.md`, written for a human reviewer who never sees the run.
 - **Exit codes.** 0 ok, 1 a check or gate failed (the reasons are your to-do list), 2 usage, config or lock error, 3 environment failure.
 
 ### Components
@@ -214,8 +216,11 @@ factory verify                             # executes checks at HEAD, appends ev
 factory review example                     # shape of a review; a fresh reviewer writes one
 factory review record --kind code --file review-code.json
 factory review record --kind qa   --file review-qa.json
+factory uat run uat/explore.spec.ts        # a change with a screen: a fresh reviewer explores it, then
+factory review record --kind uat  --file review-uat.json
 factory gate review
-factory ship plan                          # neutral intents + change body; the CLI pushes nothing
+# write ship/summary.md (the change description for its human reviewer); fold any fixup! commits
+factory ship plan                          # neutral intents + that body; the CLI pushes nothing
 # the harness pushes and opens the draft change, saves the readback, then
 factory ship verify && factory gate ship
 ```
@@ -284,7 +289,7 @@ Every command takes `--project DIR`, `--json` and `--actor ACTOR` (a free-text a
 | **Plan** | `plan example`, `plan amend --reason [--decision]`, `design add\|check\|expect\|review\|refresh`, `env up\|down\|health\|status\|logs\|seed\|reset`, `gate plan` |
 | **Reproduce** (bugs) | `reproduce [--check] [--repo] [--fresh]`, `gate reproduce` |
 | **Build and verify** | `verify [--check] [--repo] [--fresh] [--no-retry] [--scoped] [--estimate] [--mirror]`, `baseline`, `confirm <CHK-n\|kind:id> --user-said`, `gate verify` |
-| **Review** | `review example`, `review record --kind code\|qa --file F`, `gate review` |
+| **Review** | `review example`, `review record --kind code\|qa\|uat --file F`, `uat run <script>`, `gate review` |
 | **Ship** | `ship plan [--ticket] [--update] [--pipeline] [--allow-behind --decision]`, `ship verify`, `waive pipeline:<id> --user-said`, `gate ship` |
 | **Feedback** | `feedback [--no-fetch] [--decision] [--dismiss F1\|thread:id]`, `gate feedback`, `metrics [--all] [--since] [--tokens --session]` |
 | **Composite** | `mirror <repo> --to T`, `mirror diff`, `epic plan\|status\|ship`, `review queue\|start\|report\|fix`, `gate report` |
@@ -332,7 +337,7 @@ Two ways in, with no mapping language:
 
 The core ships no adapter. A raw that drifted from its recorded hash fails any gate that reads it.
 
-Ship is neutral too: `factory ship plan` writes intents (`push`, `change_request`, `set_draft`, `readback`, `pipeline`, `issue_comment`, `issue_transition`) and a change body with the AC, check and result table. The harness executes them with the user's own tools; `ship verify` compares the readback with the plan. The CLI runs none of them.
+Ship is neutral too: `factory ship plan` writes intents (`push`, `change_request`, `set_draft`, `readback`, `pipeline`, `issue_comment`, `issue_transition`) and the change body, which is `ship/summary.md` as the orchestrator wrote it for the human reviewer (the AC x check x evidence table stays in the run and the user's briefing). A push that rewrites an already pushed branch carries `force_with_lease`. The harness executes the intents with the user's own tools; `ship verify` compares the readback with the plan. The CLI runs none of them.
 
 ## Development
 

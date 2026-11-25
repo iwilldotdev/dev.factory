@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.0.0-alpha (2026-11-25)
+
+First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.
+
+### After M7: the first real runs (DEV-9160)
 
 - Removed `factory init --import`: a project is configured from its own workspace, never from copied config.
 - `factory run delete` also removes the run's clean worktrees and deletes its branches that have no commit beyond their base; it keeps and names a dirty worktree or a branch with commits of its own.
@@ -33,9 +37,6 @@
   - Tests: the foreign port owner starts with the base interpreter, since a Windows venv `python.exe` is a launcher whose child holds the port.
   - A `plan amend` that only changes standing checks of `factory.toml` is project upkeep and spends no loop; a failing standing `cmd` check that already fails at the branch point points to `type = "quality"`.
 
-## 1.0.0-alpha
-
-First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.
 
 ### M1: project, config, run, contracts, intake
 - `factory.toml` (repo, workspace and `local.toml` levels), schema validation, secrets named by key only; `factory init`, `check`, `status`, `runs`, `log`.

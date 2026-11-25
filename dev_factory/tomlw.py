@@ -1,4 +1,4 @@
-"""Minimal TOML writer for the documents the CLI generates (`init`, `init --import`)."""
+"""Minimal TOML writer for the documents the CLI generates (`init`)."""
 from __future__ import annotations
 
 import json

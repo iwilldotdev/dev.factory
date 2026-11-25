@@ -84,14 +84,13 @@ def _ensure_gitignore(root: Path) -> bool:
     return True
 
 
-def init(root: Path, name: str | None, repos: list[str], base: str, doc: dict | None = None,
-         local: dict | None = None) -> list[str]:
+def init(root: Path, name: str | None, repos: list[str], base: str) -> list[str]:
     """Write factory.toml and .factory/, and ignore .factory/. Never overwrites an existing factory.toml."""
     target = root / "factory.toml"
     if target.exists():
         raise FactoryError(f"{fwd(target)} already exists; init never overwrites it")
     pname = _slug(name or root.name, lower=True)
-    doc = doc or skeleton(root, pname, repos or ["."], base)
+    doc = skeleton(root, pname, repos or ["."], base)
     errs: list[str] = []
     schema.validate(doc, schema.SPEC, "", errs)
     if errs:
@@ -100,9 +99,6 @@ def init(root: Path, name: str | None, repos: list[str], base: str, doc: dict | 
     target.write_text(tomlw.dumps(doc), encoding="utf-8")
     (root / ".factory").mkdir(exist_ok=True)
     done = [f"wrote {fwd(target)}"]
-    if local:
-        (root / ".factory" / "local.toml").write_text(tomlw.dumps(local), encoding="utf-8")
-        done.append(f"wrote {fwd(root / '.factory' / 'local.toml')}")
     if _ensure_gitignore(root):
         done.append(f"added {GITIGNORE_LINE} to {fwd(root / '.gitignore')}")
     return done

@@ -4,14 +4,14 @@
 
 dev.factory is a local, harness-agnostic CLI that takes a ticket (or an epic, or a change to review) through intake, plan, build, verify, review and ship. No step passes on a model's claim. Every acceptance criterion needs an executed check, every check result is bound to the commit and the spec it proved, and gates only read that evidence. A chat harness, a script or a person can drive it through one loop: `factory next`, do the action, `factory next`.
 
-> Status: `1.0.0-alpha` (package version `1.0.0a1`), full parity with v0. Python 3.11 or later, standard library only. The CLI makes no network calls of its own.
+> Status: `1.0.0-alpha` (package version `1.0.0a1`). Python 3.11 or later, standard library only. The CLI makes no network calls of its own.
 
 - [Why](#why) · [Architecture](#architecture) · [Requirements](#requirements) · [Install](#install) · [Quick start](#quick-start)
 - [Configuration](#configuration) · [Commands](#command-reference) · [Checks](#check-types) · [Contracts and adapters](#contracts-and-adapters) · [Development](#development)
 
 ## Why
 
-A cooperative model can still be lazy. It may call an AC done from reading code, count zero executed tests as a pass, loosen a check after the plan, or carry a review past a later commit. v0 spent six audit rounds on write guards that were bypassable by construction. v1 keeps the learning (`LESSONS.md`, one row per real incident) and drops the guards.
+A cooperative model can still be lazy. It may call an AC done from reading code, count zero executed tests as a pass, loosen a check after the plan, or carry a review past a later commit. Write guards over local files are bypassable by construction, so dev.factory binds evidence instead of guarding writes, and keeps the learning in `LESSONS.md`, one row per real incident.
 
 | Principle | What it means |
 |---|---|
@@ -158,7 +158,6 @@ factory --version        # version, build and the Python it runs
   ```
 
   `factory check` warns while a plan needs the runner and it is missing. On a fresh Linux image the browser also needs its system libraries (see `docs/install.md`).
-- **Coming from v0?** v0 and v1 share nothing on disk and can be installed together; PATH order decides which `factory` runs. See [`docs/transition-from-v0.md`](docs/transition-from-v0.md) for coexistence, what replaces each v0 artifact, and `factory init --import <workspace.json>`.
 
 ## Quick start
 
@@ -347,11 +346,10 @@ python tests/run_tests.py --list             # list modules
 | Document | Content |
 |---|---|
 | [`DESIGN.md`](DESIGN.md) | The design: threat model, flow, gates, plan lock, evidence, checks, design pillar, runner, env, contracts, ship, budgets |
-| [`LESSONS.md`](LESSONS.md) | What v0 taught us, one row per incident, cited as `[L-nn]` |
+| [`LESSONS.md`](LESSONS.md) | The incidents behind every rule, one row each, cited as `[L-nn]` |
 | [`docs/schema/`](docs/schema/) | `factory-toml.md`, `plan-json.md`, `contracts.md` (contracts, events, evidence and review records, ship plan) |
 | [`docs/install.md`](docs/install.md) | Install, harness wiring, browser runner |
-| [`docs/transition-from-v0.md`](docs/transition-from-v0.md) | Coexistence with v0 and what replaces each v0 artifact |
-| [`docs/parity-map.md`](docs/parity-map.md) | The 76 v0 capabilities, each with its v1 redesign and milestone |
+| [`docs/parity-map.md`](docs/parity-map.md) | Internal history: the capability inventory and milestones |
 | [`docs/m0-decisions.md`](docs/m0-decisions.md), `docs/m4-notes.md` to `docs/m7-notes.md` | Decisions and what each milestone chose where the docs left room |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes by milestone |
 

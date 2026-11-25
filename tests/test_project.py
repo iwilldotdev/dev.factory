@@ -1,5 +1,4 @@
-"""init, init --import, --version, import isolation, agents-md adapter."""
-import json
+"""init, --version, import isolation, agents-md adapter."""
 import re
 import tomllib
 import unittest
@@ -54,49 +53,6 @@ class InitTests(FactoryCase):
         target = self.base / "half"
         self.fails("init", "--project", str(target), "--harness", "nope", project=False)
         self.assertFalse((target / "factory.toml").exists())
-
-
-class ImportTests(FactoryCase):
-    V0 = {"schemaVersion": 3, "name": "Shop", "worktree_root": "D:/wt/shop",
-          "repos": [{"alias": "api", "path": "", "scm_project": "g/api", "quality": {"lint": "run-lint", "test": "run-tests"},
-                     "ui": False, "env": {"start": "serve-app", "health": "/h", "base_url": "http://127.0.0.1:5000", "hot_reload": True,
-                                           "files_from_main": [".env"], "env_vars": {"A": "1"},
-                                           "seed": {"cmd": ["python", "seed.py", "a b"], "reset": ["python", "reset.py"]}}}],
-          "ship": {"targets": ["main"], "draft_default": False, "ticket_mode": "comment+transition"},
-          "commit": {"header_regex": "^feat: ", "forbidden_trailers": ["Co-Authored-By"]},
-          "autonomy": {"ship": "draft-auto", "allow_timing_amends": True}, "limits": {"max_diff_ratio": 0.02, "max_tolerance_px": 1},
-          "rules": [{"id": "r1"}]}
-
-    def test_import_converts_a_v0_workspace_and_lists_what_it_could_not_map(self):
-        src = self.base / "workspace.json"
-        src.write_text(json.dumps(dict(self.V0, repos=[dict(self.V0["repos"][0], path=str(self.base / "api"))])))
-        (self.base / "api").mkdir()
-        target = self.base / "ws"
-        out = self.ok("init", "--project", str(target), "--import", str(src), project=False)
-        doc = tomllib.loads((target / "factory.toml").read_text())
-        repo = doc["repo"][0]
-        self.assertEqual((doc["project"]["name"], repo["name"], repo["path"]), ("shop", "api", "../api"))
-        self.assertEqual({c["id"]: c["run"] for c in repo["check"]}, {"lint": "run-lint", "test": "run-tests"})
-        self.assertEqual((repo["env"]["up"], repo["env"]["vars"], repo["commit_pattern"]), ("serve-app", {"A": "1"}, "^feat: "))
-        self.assertEqual((repo["env"]["seed"], repo["env"]["reset"]), ("python seed.py 'a b'", "python reset.py"))
-        self.assertEqual((doc["ship"], doc["autonomy"], doc["limits"]),
-                         ({"draft": False, "ticket": "transition"}, {"ship": "draft-auto"}, {"max_diff_ratio": 0.02, "tolerance_px": 1}))
-        self.assertEqual(tomllib.loads((target / ".factory" / "local.toml").read_text()), {"worktree_root": "D:/wt/shop"})
-        for note in ("scm_project", "hot_reload", "rules was not mapped", "ship.targets", "forbidden_trailers", "transition_to",
-                     "allow_timing_amends", "base branch", "secrets"):
-            self.assertIn(note, out)
-        self.assertNotIn("Co-Authored-By", (target / "factory.toml").read_text())
-
-    def test_import_with_a_missing_path_still_writes_and_says_what_to_edit(self):
-        src = self.base / "p.json"
-        src.write_text(json.dumps(self.V0))
-        out = self.ok("init", "--project", str(self.base / "t"), "--import", str(src), project=False)
-        self.assertIn("the source has no path", out)
-
-    def test_import_rejects_a_non_object(self):
-        src = self.base / "bad.json"
-        src.write_text("[1]")
-        self.assertIn("expected a JSON object", self.fails("init", "--project", str(self.base / "t"), "--import", str(src), project=False))
 
 
 class VersionAndIsolationTests(FactoryCase):

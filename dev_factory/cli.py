@@ -32,36 +32,18 @@ def _run(args, project, writable: bool = True):
 
 
 def cmd_init(args) -> int:
-    from . import harness, importer, project
+    from . import harness, project
     if args.harness not in harness.IDS:
         raise FactoryError(f"unknown harness {args.harness!r}; available: {', '.join(harness.IDS)}")
     root = Path(args.project or args.project_pre or os.getcwd()).resolve()
-    if args.scope == "user" or (args.harness != "none" and not args.import_file and (root / "factory.toml").is_file()):  # the adapter alone: no project is created
+    if args.scope == "user" or (args.harness != "none" and (root / "factory.toml").is_file()):  # the adapter alone: no project is created
         if args.harness == "none":
             raise FactoryError("--scope user installs a harness adapter: name one with --harness")
         done = harness.write(root, args.harness, args.scope, args.hooks)
-        _out(args, {"done": done, "not_imported": []}, "\n".join(done))
-        return 0
-    doc = local = None
-    notes: list[str] = []
-    name = args.name
-    if args.import_file:
-        src = json.loads(Path(args.import_file).read_text(encoding="utf-8"))
-        if not isinstance(src, dict):
-            raise FactoryError(f"{fwd(args.import_file)}: expected a JSON object")
-        name = project._slug(args.name or src.get("name") or root.name, lower=True)
-        doc, local, notes = importer.convert(src, root, name)
-        for r in doc["repo"]:
-            r.setdefault("base", args.base)
-    done = project.init(root, name, args.repo or ["."], args.base, doc, local)
-    done += harness.write(root, args.harness, "project", args.hooks)
-    if args.import_file:
-        from . import config
-        try:
-            config.load(root)
-        except FactoryError as exc:
-            notes.append(f"the imported config needs edits before it loads: {exc}")
-    _out(args, {"done": done, "not_imported": notes}, "\n".join(done + (["not imported / to review:"] + [f"  - {n}" for n in notes] if notes else [])))
+    else:
+        done = project.init(root, args.name, args.repo or ["."], args.base)
+        done += harness.write(root, args.harness, "project", args.hooks)
+    _out(args, {"done": done}, "\n".join(done))
     return 0
 
 

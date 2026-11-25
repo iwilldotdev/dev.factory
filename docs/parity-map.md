@@ -22,7 +22,7 @@ A row is **dropped** only when the v1 design makes it unnecessary. The replaceme
 | # | v0 capability (commands) | v1 redesign | Lessons | Py | Node | M |
 |---|---|---|---|---|---|---|
 | 1 | `workspace init/check/list/show` | `factory init`, `factory check`, `factory status --config` on `factory.toml` (repo or workspace); secrets redacted | L-129, L-141 | = | | M1 |
-| 2 | `workspace import` (legacy project file) | `factory init --import <file>` converts a v0 workspace file or a legacy project file into `factory.toml` and prints what it could not map | L-94, real need (v0 → v1 transition) | 120 | | M1 |
+| 2 | `workspace import` (legacy project file) | **dropped** (owner decision, after M7): `factory init --import` was removed; a new project is set up with `factory setup` (discovery and checklist), never by copying old config | — | 0 | | — |
 | 3 | Provider profiles, `profile new/test/check/approve`, mapping DSL | **dropped**: user adapters plus `factory ingest` validation replace them | L-120, L-124, L-125 | 0 | | — |
 | 4 | `migrate apply` (contracts after profile edits) | **dropped**: no profiles, so nothing to migrate; v0 runs do not migrate (transition note) | L-125 | 0 | | — |
 | 5 | `install.py` (skill, agents, hooks, instructions block, shims) | installed as a Python entry point; `factory init --harness <id>` writes adapters and, with `--hooks`, merges optional hook entries into host settings idempotently, with a backup | L-130, L-149, L-160, L-161 | 80 | | M7 |

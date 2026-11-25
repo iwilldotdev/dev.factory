@@ -17,7 +17,7 @@ BANNED = ["".join(p) for p in (
     ("az", "ure"), ("n", "pm"), ("ya", "rn"), ("pn", "pm"), ("dot", "net"), ("pyt", "est"), ("je", "st"), ("es", "lint"), ("dock", "er"),
     ("kuber", "netes"), ("mav", "en"), ("grad", "le"), ("dev", "[._]mcp"))]
 # Decision 13: a harness adapter id may appear in the module that generates its file and in the test of that file only.
-HARNESS_ALLOW: dict[str, set[str]] = {"".join(("cla", "ude")): {"dev_factory/harness.py", "tests/test_harness.py", "tests/test_adapters.py", "docs/install.md", "docs/transition-from-v0.md", "README.md"}}
+HARNESS_ALLOW: dict[str, set[str]] = {"".join(("cla", "ude")): {"dev_factory/harness.py", "tests/test_harness.py", "tests/test_adapters.py", "docs/install.md", "README.md"}}
 # Decision 14: the bundled runner is a Node project with its own dependencies; its tool names may appear under browser/ only.
 RUNNER_TOOLS = {"".join(("n", "pm")), "".join(("play", "wright"))}
 CI_DIR = "." + "git" + "hub"
@@ -63,6 +63,14 @@ class GrepBanTests(unittest.TestCase):
         for expected in ("DESIGN.md", "LESSONS.md", "docs/parity-map.md", "tests/test_structure.py", "dev_factory/cli.py"):
             self.assertIn(expected, names)
         self.assertFalse([n for n in names if n.startswith((".git/", CI_DIR + "/"))])
+
+    def test_no_user_facing_file_mentions_the_previous_version(self):
+        """Owner decision: the previous version does not exist for the product; no user-facing file names it."""
+        word = re.compile(r"" + "v" + "0" + r"", re.I)
+        hits = [f"{p.relative_to(ROOT).as_posix()}:{n}" for p in repo_files()
+                if p.relative_to(ROOT).as_posix().startswith(("dev_factory/", "docs/schema/")) or p.relative_to(ROOT).as_posix() in ("README.md", "docs/install.md")
+                for n, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1) if word.search(line)]
+        self.assertEqual(hits, [])
 
     def test_the_pattern_actually_matches(self):
         pattern = re.compile(r"\b(" + "|".join(BANNED) + r")\b", re.I)

@@ -1,6 +1,6 @@
 # Install
 
-dev.factory v1 is a standard Python application: install it from a git tag, apart from any working tree, so a branch under edit never serves a live run [L-149, L-130].
+dev.factory is a standard Python application: install it from a git tag, apart from any working tree, so a branch under edit never serves a live run [L-149, L-130].
 
 Needs: Python 3.11 or later and `git`. Node 20 or later (`engines.node` in `browser/package.json`) and a browser only when a plan uses `browser`, `visual`, `style` or `screenshot` checks (see the end).
 The CLI has no other dependency.

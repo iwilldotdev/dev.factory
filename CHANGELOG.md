@@ -1,11 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Removed `factory init --import`: a project is configured from its own workspace, never from copied config.
+
 ## 1.0.0-alpha
 
-First release of the v1 rewrite. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Full parity with v0 (`docs/parity-map.md`): no v0 capability was dropped without a named replacement. Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.
+First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.
 
 ### M1: project, config, run, contracts, intake
-- `factory.toml` (repo, workspace and `local.toml` levels), schema validation, secrets named by key only; `factory init [--import <v0 workspace>]`, `check`, `status`, `runs`, `log`.
+- `factory.toml` (repo, workspace and `local.toml` levels), schema validation, secrets named by key only; `factory init`, `check`, `status`, `runs`, `log`.
 - A run is an append-only `events.jsonl` under `.factory/runs/<id>/`; contracts (ticket, change, pipeline, design) enter through adapters (`fetch`) or agent-written files (`ingest`); the intake gate; media seen or unseen.
 - `factory next` prints the one required action. The `agents-md` adapter. Structural tests: provider-name ban, size ceilings, git safety, no network.
 
@@ -24,10 +28,10 @@ First release of the v1 rewrite. Tag `1.0.0-alpha`, package version `1.0.0a1` (P
 ### M6: composite runs
 - Hotfix with mirror worktrees, `verify --mirror` and the same-diff gate; epics with waves and stacked branches; review runs (`review queue|start|report|fix`); `claim` and `next --session/--takeover` for parallel sessions; env slots and `shareable`; `feedback --dismiss` and `ignore_authors`.
 
-### M7: harness adapters, installation, transition
+### M7: harness adapters, installation
 - `factory init --harness <id>` for the chat harness writes a skill, one worker agent with scout, author, builder and reviewer sections, and a short managed block in the host instructions file. `--harness agents-md` writes the full equivalent prose into an `AGENTS.md` block. Every generated file has at most 100 lines; a harness has at most 3.
 - `--scope user` installs into the user's host home (no project created); `--hooks` merges one entry, `factory hook pre-tool`, into the host settings, which refuses hand edits of run events and evidence. Both are idempotent, keep a numbered backup of anything they change and leave files they did not write alone.
 - `init` in a directory that already has a `factory.toml` writes only the adapter (refresh after an upgrade).
 - `[[repo]] remote` (default `origin`) names the remote of the `push` intents of `ship plan`.
 - Adapter prose ships as package data (`dev_factory/adapters/*.md`).
-- Docs: `docs/install.md`, `docs/transition-from-v0.md`, `docs/m7-notes.md`.
+- Docs: `docs/install.md`, `docs/m7-notes.md`.

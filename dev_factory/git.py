@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -153,8 +154,13 @@ def show_file(path: Path, sha: str, rel: str) -> bytes:
     return res.raw
 
 
-def slug(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")[:40].strip("-") or "change"
+def slug(text: str, limit: int = 40) -> str:
+    """Lowercase ASCII words joined by `-` (accents folded: "árvore" -> "arvore"), cut at a word boundary within `limit`."""
+    folded = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode()
+    out = re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")
+    if len(out) > limit:
+        out = out[:limit + 1].rsplit("-", 1)[0] if "-" in out[:limit + 1] else out[:limit]
+    return out.strip("-") or "change"
 
 
 def branch_name(template: str, kind: str, key: str, title: str) -> str:

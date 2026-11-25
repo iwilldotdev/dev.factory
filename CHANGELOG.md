@@ -8,6 +8,7 @@
 - `factory setup`: `--discover [DIR]` prints JSON facts of every git repo (remotes without credentials, base branches, stacks and their commands, CI steps, env files, ports); without flags it prints a checklist of the project config (done / missing / optional, each with its key and an example) and exits 1 while something required is missing. The skill sets a project up from zero with it.
 - `gate ship` stays passed when re-run after a feedback refresh; a `plan amend` lock consumes the decision it rests on, so `gate reproduce` accepts it and it cannot be reused.
 - The intake gate points at `factory run repos <name>[,<name>]` (it works after start) and lists the configured repos; `factory next` asks for the repos once the ticket and its media are recorded.
+- Run branch slugs fold accents ("árvore" becomes "arvore") and are cut at a word boundary.
 - Autonomy in the generated prose: project config that is not product code is the orchestrator's to fix (then `factory check` and a line in the next report); intake is the only phase that asks the user, later phases decide and record the assumption in `notes/design.md`; envs start in the background once intake passes; a worker fixes the config cause of an env failure once before it returns blocked; automated proof is preferred and human checks are collected in one message; the user's language comes from their first message, or the ticket's when they only typed a command.
 
 ## 1.0.0-alpha

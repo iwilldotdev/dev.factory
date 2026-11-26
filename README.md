@@ -412,6 +412,7 @@ python tests/run_tests.py --list             # list modules
 | [`LESSONS.md`](LESSONS.md) | The incidents behind every rule, one row each, cited as `[L-nn]` |
 | [`docs/schema/`](docs/schema/) | `factory-toml.md`, `plan-json.md`, `contracts.md` (contracts, events, evidence and review records, ship plan) |
 | [`docs/install.md`](docs/install.md) | Install, harness wiring, browser runner |
+| [`docs/beta-criteria.md`](docs/beta-criteria.md) | What has to be true before the project leaves alpha, with the evidence that closes each criterion |
 | [`docs/parity-map.md`](docs/parity-map.md) | Internal history: the capability inventory and milestones |
 | [`docs/m0-decisions.md`](docs/m0-decisions.md), `docs/m4-notes.md` to `docs/m7-notes.md` | Decisions and what each milestone chose where the docs left room |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes by milestone |

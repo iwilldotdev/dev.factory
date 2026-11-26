@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Ticket fields in the templates: the ticket contract takes an optional `fields` object (name to non-empty string), filled by the adapter or the agent from the tracker. `[ship] title` and `[[repo]] branch` read any `{name}` that is not built in from it, e.g. `"[{version}] - [{key}] - {summary}"` and `"{kind}/{version}/{key}-{slug}"`. A ticket that lacks a field a template uses fails `gate intake` with the field named; `factory check` rejects anything but plain `{name}` placeholders and lists the fields the templates use. Templates without fields behave as before.
+- The setup interview ends with an optional naming step: the branch template of every repo and the change-request title template (a default answer writes nothing).
+- `factory config set repo.<name>.<key>` addresses a repo whose name holds dots (`repo.app.ai.branch`).
+
 ## 1.0.0-alpha.2 (2026-11-25)
 
 Tag `1.0.0-alpha.2`, package version `1.0.0a2`. The first release whose CI passes on Python 3.11 to 3.13, Windows and Linux.

@@ -27,8 +27,9 @@ def is_bug(run: Run, st: dict) -> bool:
     return effective_kind(run, st) in ("bug", "hotfix")
 
 
-def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
-    """Every reason `gate intake` would fail now (empty when it would pass)."""
+def intake_reasons(run: Run, cfg: dict, st: dict, fields: bool = False) -> list[str]:
+    """Every reason `gate intake` would fail now (empty when it would pass). The template fields are checked when the gate runs,
+    not when a recorded pass is re-read: a template changed later never reopens a run past its intake."""
     if st["kind"] == "review":
         from . import review_run
         return review_run.intake_reasons(run, cfg, st)
@@ -44,6 +45,9 @@ def intake_reasons(run: Run, cfg: dict, st: dict) -> list[str]:
         if env["data"]["id"] != st["ticket"]:
             out.append(f"ticket contract id {env['data']['id']!r} differs from the run ticket {st['ticket']!r}")
         out += media.reasons(run, st)
+        if fields:
+            from .naming import missing
+            out += missing(cfg, env["data"], st["repos"])
     if not st["repos"]:
         out.append(f"no affected repo is declared: factory run repos <name>[,<name>] (it works after start; repos: {', '.join(r['name'] for r in cfg['repo'])})")
     else:
@@ -243,7 +247,7 @@ def extra_reasons(run: Run, project, st: dict, name: str) -> list[str]:
 
 def reasons_for(run: Run, project, st: dict, name: str, strict: bool = True) -> list[str]:
     if name == "intake":
-        return intake_reasons(run, project.cfg, st)
+        return intake_reasons(run, project.cfg, st, fields=True)
     if name == "plan":
         return plan_reasons(run, project, st) if intake_passed(run, project.cfg, st) else ["gate intake has not passed"]
     if name == "reproduce":

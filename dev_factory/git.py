@@ -217,8 +217,9 @@ def slug(text: str, limit: int = 40) -> str:
     return out.strip("-") or "change"
 
 
-def branch_name(template: str, kind: str, key: str, title: str) -> str:
-    name = template.format(kind=kind, key=key, slug=slug(title))
+def branch_name(template: str, kind: str, key: str, title: str, fields: dict | None = None) -> str:
+    from .naming import render
+    name = render(template, "branch", {"kind": kind, "key": key, "slug": slug(title)}, fields)
     name = re.sub(r"[^A-Za-z0-9._/-]", "-", name)
     name = re.sub(r"\.{2,}|/{2,}", "-", name).strip("/.")
     return name[:-5] if name.endswith(".lock") else name
@@ -263,7 +264,8 @@ def _event(repo: dict, path: Path, branch: str | None, bp: str, throwaway: bool,
             "throwaway": throwaway, **setup}
 
 
-def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: str | None = None, base_ref: str | None = None) -> dict:
+def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: str | None = None, base_ref: str | None = None,
+                 fields: dict | None = None) -> dict:
     """Create (or finish the setup of) the run worktree of one repo; the branch point is recorded here [L-89].
     `base_ref` starts a stacked branch from another commit (the head of the dependency) [L-91, L-92]."""
     cfg, main = project.cfg, Path(repo["path"])
@@ -280,7 +282,7 @@ def add_worktree(project, run: Run, repo: dict, kind: str, title: str, actor: st
     path = config.worktree_root(cfg) / run.id / repo["name"]
     if path.exists():
         raise FactoryError(f"{fwd(path)} exists but is not a worktree of this run; remove it or set worktree_root in .factory/local.toml")
-    branch = branch_name(repo["branch"], kind, st["ticket"], title)
+    branch = branch_name(repo["branch"], kind, st["ticket"], title, fields)
     if rev(main, f"refs/heads/{branch}"):
         git(main, "worktree", "add", str(path), branch)
         bp = git(main, "merge-base", base, branch).out.strip()

@@ -22,7 +22,7 @@ TICKET = {"id": ("s", 1), "url": ("s", 0), "title": ("s", 1), "type": (("e", "fe
           "description_md": ("t", 1), "acceptance": ("ss", 0), "labels": ("ss", 0),
           "attachments": (("L", {"id": ("s", 1), "name": ("s", 1), "mime": ("t", 0), "size": ("i", 0), "url": ("s", 0)}), 1),
           "comments": (("L", {"id": ("s", 1), "author": ("s", 1), "created_at": ("ts", 1), "body_md": ("t", 1)}), 0),
-          "links": (("L", {"rel": ("s", 1), "target": ("s", 1)}), 0)}
+          "links": (("L", {"rel": ("s", 1), "target": ("s", 1)}), 0), "fields": ("map", 0)}  # fields: tracker values for the templates
 CHANGE = {"id": ("s", 1), "url": ("s", 1), "repo": ("s", 1), "title": ("s", 1), "description_md": ("t", 1),
           "source_branch": ("s", 1), "target_branch": ("s", 1), "head_sha": ("sha", 1),
           "state": (("e", "open", "merged", "closed"), 1), "draft": ("b", 1), "reviewers": ("ss", 0), "approvals": ("ss", 0),
@@ -78,6 +78,12 @@ def _check(value, typ, path: str, errs: list[str]) -> None:
         errs.append(f"{path}: must be a UTC timestamp such as 2026-11-24T14:03:11Z")
     elif typ == "sha" and not (isinstance(value, str) and SHA.match(value)):
         errs.append(f"{path}: must be a full lowercase SHA (40 or 64 hex characters)")
+    elif typ == "map":
+        from .naming import FIELD, RESERVED
+        if not isinstance(value, dict) or not all(isinstance(v, str) and v.strip() for v in value.values()):
+            errs.append(f"{path}: must be an object of non-empty strings")
+        errs += [f"{path}.{k}: a field name is lowercase letters, digits and _ and not one of {', '.join(sorted(RESERVED))}"
+                 for k in (value if isinstance(value, dict) else {}) if not FIELD.match(k) or k in RESERVED]
     elif typ == "ss" and not (isinstance(value, list) and all(isinstance(x, str) for x in value)):
         errs.append(f"{path}: must be a list of strings")
 

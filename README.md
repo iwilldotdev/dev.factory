@@ -209,7 +209,7 @@ asked at every run: repo api: target branches, standing checks
 workspace billing: ticket key or URL>
 ```
 
-The steps: the workspace, this repository (name, base branch; its path and remotes are recorded), per repository the target branches, the env (start command, base URL, health), the test database seed and reset (only when the repo shows a database), the standing checks (from its scripts and CI steps, with their variables), the login spec for browser checks (only for a repo with a UI) and free-text notes for the agent, then the sibling repositories next to it and the integrations that get an adapter command. A skipped setting is asked at every run that needs it.
+The steps: the workspace, this repository (name, base branch; its path and remotes are recorded), per repository the target branches, the env (start command, base URL, health), the test database seed and reset (only when the repo shows a database), the standing checks (from its scripts and CI steps, with their variables), the login spec for browser checks (only for a repo with a UI) and free-text notes for the agent, then the sibling repositories next to it, the integrations that get an adapter command, and the branch and change-request title templates. A skipped setting is asked at every run that needs it.
 
 Without a terminal (an agent) the same interview is JSON: `factory setup --questions --json` prints the pending questions (`id`, `text`, `kind` single / multi / text, `options` with `label` and `description`, `optional`, `default`) and exits 4; `factory setup --answer ID=VALUE [--answer ...]` applies answers (an empty value skips; a multi answer is comma separated or repeated) and prints the next questions or the summary. Both paths write the same `factory.toml`. Change one setting later with `factory config set repo.web.base develop` (checked against the schema; unknown keys are refused). In a run, `factory ask "<question>" --save-as repo.web.env.base_url` and `factory answer Q-n --user-said "<words>" --save` save the answer to the workspace so it is not asked again.
 
@@ -317,6 +317,7 @@ secrets = ["TRACKER_TOKEN"]
 [ship]
 draft = true
 ticket = "comment"                     # none | comment | transition | both
+title = "[{version}] - [{key}] - {summary}"   # {version}: a ticket field (below)
 
 [autonomy]
 max_loops = 5                          # one budget for plan amends and review rounds
@@ -385,6 +386,8 @@ Two ways in, with no mapping language:
 
 1. **Adapter.** `[providers.<kind>] fetch = "<command template>"` runs through `factory fetch <kind> <id>`. The template is split into argv before placeholders (`{id}`, `{repo}`, `{repo_path}`, `{branch}`, `{sha}`, `{run_dir}`, `{project_dir}`, `{out}`) are substituted; there is no shell, stdin is closed, and secrets reach it as environment variables only. It prints one JSON object, `{"contract": {...}, "raw": ...}`. Exit 3 means not found, 4 means credentials. The raw is stored byte for byte and its hash is bound to the contract.
 2. **No adapter.** The agent saves the raw payload to a file, writes the contract data, and runs `factory ingest <kind> --raw F --contract F` (or `--stdin`). The contract is recorded as `source: agent`. When a remote fact is used as proof, the user confirms it with `factory confirm <kind>:<id> --user-said "..."`.
+
+Templates (`[ship] title`, `[[repo]] branch`) use the built-in `{key}`, `{summary}` (title) and `{kind}`, `{key}`, `{slug}` (branch); any other `{name}` is read from the ticket contract's `fields`, which the adapter (or the agent) fills from the tracker, such as a release version. A ticket without a field a template uses fails `gate intake`, so the question goes to the intake round; projects whose templates use no field are unaffected.
 
 The core ships no adapter. A raw that drifted from its recorded hash fails any gate that reads it.
 

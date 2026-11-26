@@ -37,9 +37,14 @@ def _leaf(parts: list[str]):
     return spec.type if isinstance(spec, schema.T) else spec
 
 
-def key_path(dotted: str) -> tuple[str | None, list[str], object]:
-    """`repo.<name>.<key...>` addresses a repo by name; any other key is a path from the top. Returns (repo, keys, leaf type)."""
+def key_path(dotted: str, names=()) -> tuple[str | None, list[str], object]:
+    """`repo.<name>.<key...>` addresses a repo by name (a known name may hold dots); any other key is a path from the top.
+    Returns (repo, keys, leaf type)."""
     parts = [p for p in dotted.split(".") if p]
+    named = max((n for n in names if dotted.startswith(f"repo.{n}.")), key=len, default=None)
+    if named:
+        keys = [p for p in dotted[len(named) + 6:].split(".") if p]
+        return named, keys, _leaf(["repo", *keys])
     if parts[:1] == ["repo"]:
         if len(parts) < 3:
             raise FactoryError("a repo key is repo.<name>.<key>, e.g. repo.web.base")
@@ -51,7 +56,8 @@ def key_path(dotted: str) -> tuple[str | None, list[str], object]:
 
 def set_key(root: Path, dotted: str, text: str) -> object:
     """Write one value into the workspace factory.toml; the schema refuses unknown keys and wrong types."""
-    repo, keys, leaf = key_path(dotted)
+    doc = config.read_toml(Path(root) / "factory.toml")
+    repo, keys, leaf = key_path(dotted, [e.get("name") or (Path(root) / e.get("path", "")).resolve().name for e in doc.get("repo", [])])
     if leaf in ("c", "s", "re") or (leaf == "sl" and not text.lstrip().startswith("[")):
         value = text
     else:
@@ -59,7 +65,6 @@ def set_key(root: Path, dotted: str, text: str) -> object:
             value = tomllib.loads(f"v = {text}")["v"]
         except tomllib.TOMLDecodeError:
             value = text
-    doc = config.read_toml(Path(root) / "factory.toml")
     table = doc
     if repo is not None:
         table = next((e for e in doc.get("repo", []) if (e.get("name") or (Path(root) / e.get("path", "")).resolve().name) == repo), None)

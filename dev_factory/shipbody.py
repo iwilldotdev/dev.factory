@@ -15,7 +15,8 @@ SUMMARY = "summary.md"
 
 def title(cfg: dict, ticket: dict) -> str:
     """`[key] - summary` unless the project sets another template; an empty template already fell back in config [L-142]."""
-    return cfg["ship"]["title"].format(key=ticket["id"], summary=ticket["title"].strip())
+    from .naming import title as render_title
+    return render_title(cfg, ticket)
 
 
 def _cell(text, width: int = 60) -> str:

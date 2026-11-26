@@ -48,6 +48,7 @@ Contracts live in `contracts/<kind>/<safe-id>.json`. The CLI writes them through
 | `attachments` | list of `{id, name, mime, size?, url?}` | yes, may be empty; `mime` is case-normalized, and the extension is used when it is missing [L-28, L-29] |
 | `comments` | list of `{id, author, created_at, body_md}` | no |
 | `links` | list of `{rel, target}` | no |
+| `fields` | object of name to non-empty string | no; tracker values the branch and title templates use (e.g. `{"version": "2.4"}`); names are lowercase letters, digits and `_`, and not `key`, `summary`, `kind` or `slug`. A template that uses a field the ticket lacks fails `gate intake` |
 
 ### `change/1`
 

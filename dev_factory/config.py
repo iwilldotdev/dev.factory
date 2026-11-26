@@ -190,6 +190,8 @@ def semantic(cfg: dict) -> list[str]:
     ship = cfg["ship"]
     if not str(ship.get("title") or "").strip():
         ship["title"] = "[{key}] - {summary}"  # an empty or null title falls back [L-142]
+    from .naming import problems
+    errs += problems(ship["title"], "title", "ship.title") + [e for r in cfg["repo"] for e in problems(r["branch"], "branch", f"repo[{r['name']}].branch")]
     if ship["ticket"] in ("transition", "both") and not ship.get("transition_to"):
         errs.append('ship.transition_to: required when ship.ticket is "transition" or "both"')
     if any(not (r.get("scm") and r.get("tracker")) for r in ship.get("reviewers", [])):

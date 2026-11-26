@@ -116,7 +116,8 @@ class SetupTests(HomeCase):
                ("repo.web.env.base_url", "http://127.0.0.1:5173"), ("repo.web.env.health", "/"), ("repo.web.checks", "test,ci-make-unit"),
                ("repo.web.notes", "Use the seeded admin."), ("repo.web.login", "login/web.json"), ("repo.web.login_secrets", "TEST_USER, TEST_PASSWORD"),
                ("repo.web.seed", "node --run db:seed"), ("repo.web.reset", "-"), ("siblings", "api"),
-               ("repo.api.base", "main"), ("repo.api.targets", "-"), ("repo.api.checks", "-"), ("repo.api.notes", "-"), ("integrations", "-")]
+               ("repo.api.base", "main"), ("repo.api.targets", "-"), ("repo.api.checks", "-"), ("repo.api.notes", "-"), ("integrations", "-"),
+               ("naming.branch", "{kind}/{version}/{key}-{slug}"), ("naming.title", "[{version}] - [{key}] - {summary}")]
 
     def setUp(self):
         super().setUp()
@@ -152,6 +153,7 @@ class SetupTests(HomeCase):
         self.assertEqual((web["env"]["login_spec"], web["env"]["seed"], web["notes"]), ("login/web.json", "node --run db:seed", "Use the seeded admin."))
         self.assertEqual(doc["secrets"]["keys"], ["TEST_PASSWORD", "TEST_USER"])
         self.assertEqual([r["name"] for r in doc["repo"]], ["web", "api"])
+        self.assertEqual(([r["branch"] for r in doc["repo"]], doc["ship"]["title"]), (["{kind}/{version}/{key}-{slug}"] * 2, "[{version}] - [{key}] - {summary}"))
         for sub in ("scripts", "login", "runs", "worktrees", "secrets.env"):
             self.assertTrue((self.fhome / "shop" / sub).exists(), sub)
         self.assertNotIn("tok", by_json)
@@ -168,7 +170,7 @@ class SetupTests(HomeCase):
                                  "--answer", "repo.web.checks=", "--answer", "repo.web.notes=", "--json", code=4))
         self.assertFalse([q for q in nxt.get("questions", []) if ".env." in q["id"]], nxt)
         with mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.base / "fhome4")}):
-            ask = feeder(["shop", "web", "main", "-", "-", "-", "-", "-", "-", "-"])
+            ask = feeder(["shop", "web", "main"] + ["-"] * 9)
             self.at(self.web, "setup", ask=ask)
             self.assertNotIn("env", tomllib.loads((self.base / "fhome4" / "shop" / "factory.toml").read_text(encoding="utf-8"))["repo"][0])
 
@@ -181,7 +183,7 @@ class SetupTests(HomeCase):
         self.assertIn("not a pending question: repo.web.base", self.at(self.web, "setup", "--answer", "repo.web.base=main", code=2))
 
     def test_a_terminal_without_a_workspace_runs_the_interview_then_asks_for_the_ticket(self):
-        ask = feeder(["shop", "", ""] + ["-"] * 6)  # workspace, name, base, then 6 skips (no start command: no URL or health asked)
+        ask = feeder(["shop", "", ""] + ["-"] * 8)  # workspace, name, base, then 8 skips (no start command: no URL or health asked)
         with mock.patch.dict(os.environ, {"FACTORY_HOME": str(self.base / "fhome3")}):
             out = self.at(self.web, ask=lambda p="": ask(p) if ask.queue else "ABC-7")
         self.assertIn("workspace shop saved", out)

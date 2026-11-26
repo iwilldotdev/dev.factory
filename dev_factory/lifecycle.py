@@ -138,7 +138,7 @@ def branch(project: Project, run: Run, names: list[str] | None, actor: str | Non
     if unknown:
         raise FactoryError(f"unknown repo {', '.join(unknown)} (repos: {', '.join(by_name)})")
     kind = gates.effective_kind(run, st) or "feature"
-    title = acquire.load(run, "ticket", st["ticket"])[0]["data"]["title"] if kind != "review" else ""
+    ticket = acquire.load(run, "ticket", st["ticket"])[0]["data"] if kind != "review" else {"title": ""}
     out = []
     for n in names:
         have = git.current(st, n)
@@ -149,7 +149,8 @@ def branch(project: Project, run: Run, names: list[str] | None, actor: str | Non
             out.append(review_run.add_worktree(project, run, by_name[n], actor))
             continue
         from . import epic, envproc  # a stacked branch starts at its dependency's head [L-91, L-92]
-        ev = git.add_worktree(project, run, by_name[n], kind, title, actor, epic.base_ref(project, run, st, n, from_run))
+        ev = git.add_worktree(project, run, by_name[n], kind, ticket["title"], actor, epic.base_ref(project, run, st, n, from_run),
+                              ticket.get("fields"))
         if not by_name[n].get("setup") and (lack := envproc.ignored_missing(Path(by_name[n]["path"]), Path(ev["path"]))):
             ev = {**ev, "warning": f"the main checkout has ignored folders the run worktree lacks ({', '.join(lack[:8])}); "
                                    f"repo {n} has no `setup`, and one is likely needed (factory config set repo.{n}.setup \"<command>\")"}

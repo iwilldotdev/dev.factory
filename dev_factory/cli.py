@@ -49,9 +49,10 @@ def cmd_init(args) -> int:
 
 
 def cmd_check(args) -> int:
-    from . import project
+    from . import naming, project
     proj = _project(args)
     errs, warns = project.check(proj)
+    warns += [] if errs else [f"ticket field {n} is used by {', '.join(w)}: the ticket contract must carry it" for n, w in naming.required(proj.cfg).items()]
     _out(args, {"errors": errs, "warnings": warns},
          "\n".join([f"error: {e}" for e in errs] + [f"warning: {w}" for w in warns] + ([] if errs else [f"ok: {proj.cfg['project']['name']} ({proj.cfg['_meta']['mode']}, {len(proj.cfg['repo'])} repo(s))"])))
     return 2 if errs else 0

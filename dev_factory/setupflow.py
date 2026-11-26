@@ -8,7 +8,7 @@ import os
 import re
 from pathlib import Path
 
-from . import config, guide, home, schema
+from . import config, guide, home, naming, schema
 from .util import FactoryError, fwd
 
 SKIP = {"", "-", "skip"}
@@ -191,7 +191,7 @@ class Interview:
                              "reads them with its own tools (tracker, code host, design)" + (f"; code host: {', '.join(hosts)}" if hosts else ""),
                              "multi", list(KINDS.items()))]
         return [question(f"providers.{k}.fetch", f"Command that prints the {k} contract for {{id}} (an adapter: see factory --help fetch)")
-                for k in self.state()["integrations"] if f"providers.{k}.fetch" not in asked]
+                for k in self.state()["integrations"] if f"providers.{k}.fetch" not in asked] or naming.questions(doc, asked)
 
     def _repo_a(self, e: dict, path: Path) -> list[dict]:
         n, f = self._name(e), self.facts(path)
@@ -276,6 +276,8 @@ class Interview:
                 if bad:
                     raise FactoryError(f"integrations: unknown {', '.join(bad)} (one of {', '.join(KINDS)})")
                 st["integrations"] = list(v or [])
+            elif qid.startswith("naming.") and v:
+                naming.apply(doc, qid, v)
             elif qid.startswith("providers.") and v:
                 doc.setdefault("providers", {}).setdefault(qid.split(".")[1], {})["fetch"] = v
         home.save(self.root, doc)

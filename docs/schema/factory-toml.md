@@ -50,7 +50,7 @@ Composition rules (DESIGN §2):
 | `name` | string `^[A-Za-z0-9._-]+$` | basename of the path | no | R, W | unique; used in plan, evidence and the env lock |
 | `base` | string | `"main"` | no | R, W | this repo's base branch [L-94] |
 | `remote` | string | `"origin"` | no | R, W | the git remote of this repo that `ship plan` names in its `push` intents (the CLI never pushes; the harness does). Refs the CLI reads locally (`origin/<base>`) are unchanged |
-| `branch` | template: `{kind}`, `{key}`, `{slug}` | `"{kind}/{key}-{slug}"` | no | R, W | run branch name |
+| `branch` | template: `{kind}`, `{key}`, `{slug}`, and any other `{name}` from the ticket's `fields` | `"{kind}/{key}-{slug}"` | no | R, W | run branch name |
 | `setup` | command string | none | no | R, W | runs in every new worktree and throwaway worktree; failure blocks the check, never counts as a result [L-06, L-72] |
 | `files_from_main` | list of repo-relative paths | `[]` | no | R, W | gitignored files copied into worktrees [L-64, L-65] |
 | `commit_pattern` | regex | none | no | R, W | see decision 6; checked over `branch_point..HEAD` only, and not over commits the base already has [L-89, L-90] |
@@ -140,7 +140,7 @@ These run for every run that affects the repo. They are ordinary `cmd` checks wi
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `title` | template: `{key}`, `{summary}` | `"[{key}] - {summary}"` | an empty or null value falls back to the default [L-142] |
+| `title` | template: `{key}`, `{summary}`, and any other `{name}` from the ticket's `fields` | `"[{key}] - {summary}"` | an empty or null value falls back to the default [L-142]; `factory check` names the ticket fields the templates use |
 | `draft` | bool | `true` | |
 | `ticket` | `"none"`, `"comment"`, `"transition"` or `"both"` | `"none"` | default for `ship plan --ticket` [L-145] |
 | `transition_to` | string | none | required when `ticket` is `"transition"` or `"both"` |

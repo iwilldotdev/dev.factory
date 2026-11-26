@@ -26,11 +26,13 @@ def placeholders(template: str) -> list[str]:
 
 
 def problems(template: str, what: str, path: str) -> list[str]:
+    builtin = ", ".join("{" + n + "}" for n in BUILTIN[what])
     try:
-        placeholders(template)
+        names = placeholders(template)
     except ValueError as exc:
-        return [f"{path}: {exc} (built-in: {', '.join('{' + n + '}' for n in BUILTIN[what])}; any other {{name}} is a ticket field)"]
-    return []
+        return [f"{path}: {exc} (built-in: {builtin}; any other {{name}} is a ticket field)"]
+    return [f"{path}: {{{n}}} is built in only for the other template and is never a ticket field (built-in here: {builtin})"
+            for n in dict.fromkeys(names) if n in RESERVED and n not in BUILTIN[what]]
 
 
 def fields_of(template: str, what: str) -> list[str]:
@@ -77,10 +79,12 @@ def title(cfg: dict, ticket: dict) -> str:
 def questions(doc: dict, asked: set) -> list[dict]:
     """The optional naming step: one branch template for every repo and the change-request title."""
     from .setupflow import question
-    branches = {r.get("branch") for r in doc.get("repo", [])} - {None}
+    branches = {r.get("branch") or DEFAULTS["branch"] for r in doc.get("repo", [])} or {DEFAULTS["branch"]}
     hint = " Other {name} placeholders are ticket fields, which the ticket adapter (or the agent) fills, e.g. {version}."
-    qs = [question("naming.branch", "Branch name template of every repo (built-in: {kind}, {key}, {slug})." + hint,
-                   default=branches.pop() if len(branches) == 1 else DEFAULTS["branch"]),
+    same = len(branches) == 1  # repos with templates of their own: Enter keeps each one, an answer replaces them all
+    qs = [question("naming.branch", "Branch name template of every repo (built-in: {kind}, {key}, {slug})." + hint
+                   + ("" if same else " The repos have different templates now (" + ", ".join(sorted(branches)) + "); Enter keeps them."),
+                   default=branches.pop() if same else ""),
           question("naming.title", "Change-request title template (built-in: {key}, {summary})." + hint,
                    default=doc.get("ship", {}).get("title") or DEFAULTS["title"])]
     return [q for q in qs if q["id"] not in asked]

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- Ticket fields in the templates: the ticket contract takes an optional `fields` object (name to non-empty string), filled by the adapter or the agent from the tracker. `[ship] title` and `[[repo]] branch` read any `{name}` that is not built in from it, e.g. `"[{version}] - [{key}] - {summary}"` and `"{kind}/{version}/{key}-{slug}"`. A ticket that lacks a field a template uses fails `gate intake` with the field named; `factory check` rejects anything but plain `{name}` placeholders and lists the fields the templates use. Templates without fields behave as before.
-- The setup interview ends with an optional naming step: the branch template of every repo and the change-request title template (a default answer writes nothing).
-- `factory config set repo.<name>.<key>` addresses a repo whose name holds dots (`repo.app.ai.branch`).
+- Ticket fields in the templates: the ticket contract takes an optional `fields` object (name to non-empty string), filled by the adapter or the agent from the tracker. `[ship] title` and `[[repo]] branch` read any `{name}` that is not built in from it, e.g. `"[{version}] - [{key}] - {summary}"` and `"{kind}/{version}/{key}-{slug}"`. A ticket that lacks a field a template uses fails `gate intake` with the field named; a template with anything but plain `{name}` placeholders, or with a name built in only for the other template (`{summary}` in a branch, `{slug}` in a title), makes the workspace config invalid for every command, and `factory check` lists the fields the templates use. Templates without fields behave as before.
+- The setup interview ends with an optional naming step: the branch template of every repo and the change-request title template (Enter keeps the current templates, including different templates per repo).
+- `factory config set repo.<name>.<key>` and `factory ask --save-as` address a repo whose name holds dots (`repo.app.ai.branch`).
+- `docs/beta-criteria.md`: what has to be true before the project leaves alpha (stable formats, a track record on real tickets, feature freeze, platforms, install from the docs, security review, versioning, measured outcomes), each with the evidence that closes it and its status.
 
 ## 1.0.0-alpha.2 (2026-11-25)
 

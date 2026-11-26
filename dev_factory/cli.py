@@ -219,7 +219,7 @@ def cmd_human(args) -> int:
     cmd, a = args.cmd, args.actor
     if cmd == "ask":
         if args.save_as:
-            cli_home.key_path(args.save_as)
+            cli_home.key_path(args.save_as, [r["name"] for r in proj.cfg["repo"]])
         ev = human.ask(run, args.text, args.ref, a, args.save_as)
         print(f"opened {ev['id']}; the user answers it, then: factory answer {ev['id']} --user-said \"<their words>\"" + (" [--save]" if args.save_as else ""))
     elif cmd == "answer":

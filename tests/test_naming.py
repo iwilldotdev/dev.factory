@@ -28,6 +28,12 @@ class TemplateTests(unittest.TestCase):
             self.assertTrue(naming.problems(bad, "title", "ship.title"), bad)
         self.assertEqual(naming.problems("{{literal}} [{key}] {release_2}", "title", "ship.title"), [])
 
+    def test_a_name_built_in_only_for_the_other_template_is_refused(self):
+        """It could never be filled: the ticket contract refuses fields named like a built-in."""
+        self.assertIn("{summary} is built in only for the other template", naming.problems("{kind}/{summary}", "branch", "b")[0])
+        self.assertIn("{slug} is built in only for the other template", naming.problems("[{key}] {slug}", "title", "t")[0])
+        self.assertEqual(naming.problems("{kind}/{key}-{slug}", "branch", "b"), [])
+
 
 class ContractTests(unittest.TestCase):
     def test_ticket_fields_are_optional_named_non_empty_strings(self):
@@ -89,6 +95,25 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(doc["ship"]["title"], "[{version}] - [{key}] - {summary}")
         with self.assertRaises(FactoryError):
             naming.apply(doc, "naming.title", "{key")
+
+
+    def test_enter_keeps_templates_that_differ_between_repos(self):
+        mixed = {"repo": [{"name": "a", "branch": "feat/{key}"}, {"name": "b", "branch": "fix/{key}-{slug}"}], "ship": {}}
+        q = naming.questions(mixed, set())[0]
+        self.assertEqual(q["default"], "")
+        self.assertIn("Enter keeps them", q["text"])
+        partial = {"repo": [{"name": "a", "branch": "feat/{key}"}, {"name": "b"}], "ship": {}}
+        self.assertEqual(naming.questions(partial, set())[0]["default"], "", "a repo on the default template differs too")
+        same = {"repo": [{"name": "a", "branch": "feat/{key}"}, {"name": "b", "branch": "feat/{key}"}], "ship": {}}
+        self.assertEqual(naming.questions(same, set())[0]["default"], "feat/{key}")
+
+
+class SaveAsTests(M2Case):
+    TOML = M2Case.TOML.replace('name = "web"', 'name = "app.ai"', 1)
+
+    def test_ask_save_as_addresses_a_repo_whose_name_holds_dots(self):
+        self.start("ABC-1")
+        self.assertIn("opened Q-1", self.ok("ask", "Which base?", "--save-as", "repo.app.ai.base"))
 
 
 class ConfigSetTests(unittest.TestCase):

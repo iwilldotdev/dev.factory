@@ -16,7 +16,7 @@ Tag `1.0.0-alpha.2`, package version `1.0.0a2`. The first release whose CI passe
 - `factory setup --discover` reports the literal `env:` / `variables:` values of CI files as `vars`.
 - Generated prose: the entry resolves the workspace and asks for the ticket or runs the setup; every question goes through the harness question tool when there is one; the user hears which settings are asked at every run; run ambiguities offer "only this run" or "save to the workspace". Exit code 4 means the CLI needs the user's input.
 
-### Found on the DEV-9546 run
+### Found on a real run
 
 Every signal below is generic: exit codes, parsed ids, line counts, git status, and the run's own env processes.
 
@@ -46,7 +46,7 @@ Every signal below is generic: exit codes, parsed ids, line counts, git status, 
 
 First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of the same release; `factory --version` prints `1.0.0a1`). Python 3.11 or later, standard library only; the browser runner in `browser/` needs Node.
 
-### After M7: the first real runs (DEV-9160)
+### After M7: the first real runs
 
 - Removed `factory init --import`: a project is configured from its own workspace, never from copied config.
 - `factory run delete` also removes the run's clean worktrees and deletes its branches that have no commit beyond their base; it keeps and names a dirty worktree or a branch with commits of its own.
@@ -56,7 +56,7 @@ First release. Tag `1.0.0-alpha`, package version `1.0.0a1` (PEP 440 spelling of
 - The intake gate points at `factory run repos <name>[,<name>]` (it works after start) and lists the configured repos; `factory next` asks for the repos once the ticket and its media are recorded.
 - Run branch slugs fold accents ("árvore" becomes "arvore") and are cut at a word boundary.
 - Autonomy in the generated prose: project config that is not product code is the orchestrator's to fix (then `factory check` and a line in the next report); intake is the only phase that asks the user, later phases decide and record the assumption in `notes/design.md`; envs start in the background once intake passes; a worker fixes the config cause of an env failure once before it returns blocked; automated proof is preferred and human checks are collected in one message; the user's language comes from their first message, or the ticket's when they only typed a command.
-- Found on the first real run (DEV-9160), fixed in place:
+- Found on the first real run, fixed in place:
   - A login spec may declare `"done": {"cookie": "<name>"}` or `{"url": "<regex>"}`: an app that redirects to another app after login no longer fails the same-origin rule.
   - On Windows a dev server listening on `0.0.0.0` or `[::]` was never seen as up, so its env timed out; the probe now connects and talks to the address that accepts.
   - A run is cut from and measured against the remote base (`<remote>/<base>`) when the clone has it: a stale local base made the run start behind, count the base's merged commits against `commit_pattern`, and count the base's lint findings as new. Quality baselines move to the base commit last merged in.

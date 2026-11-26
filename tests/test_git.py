@@ -143,8 +143,8 @@ class WorktreeTests(M2Case):
 
 class SlugTests(unittest.TestCase):
     def test_the_branch_slug_folds_accents_and_cuts_at_a_word_boundary(self):
-        title = "Subtarefas no Gantt: subtarefas na árvore filtrada e ordenação"
-        self.assertEqual(gitmod.slug(title), "subtarefas-no-gantt-subtarefas-na-arvore")
+        title = "Relatórios no painel: gráficos na árvore filtrada e ordenação"
+        self.assertEqual(gitmod.slug(title), "relatorios-no-painel-graficos-na-arvore")
         self.assertEqual(gitmod.branch_name("{kind}/{key}-{slug}", "feature", "ABC-1", "Ordenação por data"), "feature/ABC-1-ordenacao-por-data")
         self.assertEqual(gitmod.slug("x" * 50), "x" * 40)
         self.assertEqual(gitmod.slug("☃ ☃"), "change")
